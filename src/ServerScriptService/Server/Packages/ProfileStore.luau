@@ -6,6 +6,9 @@
 -- written for that (see check.sh) and its own exported types don't fully
 -- match its runtime tables (a known gap upstream). --!nocheck skips
 -- analyzing its body while still exposing its `export type`s to callers.
+-- The 7 inline `-- selene: allow(...)` comments below (M1-04S) are the
+-- same kind of tooling opt-out, added once roblox.yml let selene actually
+-- run against this file; no executable line was touched.
 --[[
 MAD STUDIO (by loleris)
 
@@ -523,8 +526,10 @@ local function UpdateAsync(profile_store, profile_key, transform_params, is_user
 	
 	local next_in_queue = WaitInUpdateQueue(SessionToken(profile_store.Name, profile_key, is_user_mock))
 
+	-- selene: allow(unused_variable)
 	local success = true
 
+	-- selene: allow(shadowing)
 	local success, error_message = pcall(function()
 		local transform_function = function(latest_data)
 
@@ -612,6 +617,7 @@ local function UpdateAsync(profile_store, profile_key, transform_params, is_user
 
 				if version ~= nil then
 
+					-- selene: allow(shadowing)
 					local success, error_message = pcall(function()
 						loaded_data, key_info = profile_store.data_store:GetVersionAsync(profile_key, version)
 					end)
@@ -1321,6 +1327,7 @@ function ProfileStore.New(store_name, template)
 
 		task.spawn(function()
 
+			-- selene: allow(multiple_statements)
 			repeat task.wait() until DataStoreState ~= "NotReady"
 
 			if DataStoreState == "Access" then
@@ -1595,7 +1602,8 @@ function ProfileStore:StartSessionAsync(profile_key, params)
 						
 						-- Attempt to load the profile again after a delay
 						local wait_until = os.clock() + if request_force_load == true then FIRST_LOAD_REPEAT else LOAD_REPEAT_PERIOD
-						repeat task.wait() until os.clock() >= wait_until or ProfileStore.IsClosing == true
+						-- selene: allow(multiple_statements)
+					repeat task.wait() until os.clock() >= wait_until or ProfileStore.IsClosing == true
 
 					else
 						-- Another session tried to load this profile:
@@ -2003,6 +2011,7 @@ function ProfileVersionQuery:NextAsync()
 				is_finished = true
 			end)
 
+			-- selene: allow(unused_variable)
 			local success, error_message = pcall(function()
 				self.query_pages:AdvanceToNextPageAsync()
 				self.query_index = 0
@@ -2221,6 +2230,7 @@ task.spawn(function()
 		-- (Clone AutoSaveList to a new table because AutoSaveList changes when profiles are released)
 
 		local on_close_save_job_count = 0
+		-- selene: allow(manual_table_clone)
 		local active_profiles = {}
 		for index, profile in ipairs(AutoSaveList) do
 			active_profiles[index] = profile
