@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 3 (Combat): planning** (M2 gate passed 2026-09-27; see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build, Milestone 4 (Status and Rukh): planning** (M3 gate passed 2026-09-27 with combat feel tuning left to Bryan, docs/FOLLOWUPS.md; see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -44,8 +44,8 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | --- | --- | --- |
 | M1 Foundation | Layout, data service (#1), remotes, join pipeline (#2), dev commands (#21), debug tools (#29), data wipe, parks and removals | **done (gate passed 2026-09-27)** |
 | M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | **done (gate passed 2026-09-27)** |
-| M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | **planning** |
-| M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | todo |
+| M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | **done (gate passed 2026-09-27; feel tuning = Bryan follow-up)** |
+| M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | **planning** |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
 | M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22) | todo |
 
@@ -107,5 +107,5 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M3-04 | NpcService + Shared/BehaviorTree + AiController (Dummy, Target trees) | server-builder | done (lead checked the fix; merged) | Target chases within 30, gives up at 40, punches within 4, restarts; NPCs take hits like players |
 | M3-05 | CombatController (client input -> intentions; animations on server events) | client-builder | done (merged) | Same feel; no stacked listeners; no client-side hit reports |
 | M3-06 | EffectsController (hit fx, parry/block-break, knockout blind + freeze, ragdoll visuals, dash trail, run zoom) | client-builder | done (merged) | Same sounds and particles as today |
-| M3-07 | PLAYTEST.md M3 scenarios; Bryan plays the feel and tunes numbers; agent runs cheat checks only | Bryan + lead + playtester | agent cheat checks PASS; fix round merged; Bryan feel pass pending | Feel approved by Bryan; every cheat check rejected |
+| M3-07 | PLAYTEST.md M3 scenarios; Bryan plays the feel and tunes numbers; agent runs cheat checks only | Bryan + lead + playtester | agent cheat checks PASS; fix round merged; Bryan does the feel pass later (FOLLOWUPS) | Feel approved by Bryan; every cheat check rejected |
 - **M3 merge gate (REVIEW-M3-02 finding 1):** the server branch removes the old `Running`/`Dash`/`Hit`/`Blocking` remotes, which the old InteractionsHandler and PhysicalHandler index at load. Merge the server branch only once M3-03 (deletes those server scripts) is in, and merge the client branch (M3-05 + M3-06, deletes PhysicalHandler) in the same push. Never sync a half state to Studio.
