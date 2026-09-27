@@ -14,6 +14,17 @@
 --   sequence -- informational on the server's side; this controller
 --   drives entirely off the HeartAttack remote's own `fatal` argument.
 --
+-- Bryan tunes the scene himself (M2-FIX-C, BUG-16): every timing here
+-- comes from Config.Scene, and the return-to-the-Rukh scene's own LOOK
+-- lives in his ReplicatedFirst.AfterLife model, not in this file. This
+-- controller only ever reads three children of that model -- documented
+-- in docs/SYSTEMS.md section 4 -- and otherwise leaves it alone:
+--   AfterlifeCamera (BasePart)     -- the scene's camera CFrame/subject.
+--   AfterlifeSpawnBlock (BasePart) -- where the character is moved to.
+--   AfterlifeCore (BasePart, optional) -- what the character walks
+--     toward; a plain stand-in marker is built instead when it's absent
+--     (or when the model itself is absent).
+--
 -- Only one heart-attack pulse or death scene is ever active at a time
 -- (REVIEW-M2-05 #1/#2): a fresh HeartAttack, and a respawn mid-sequence,
 -- both cancel whatever's currently running -- gui, sound, camera, frozen
@@ -118,10 +129,56 @@ local function tweenFrame(frame: Frame, goal: { [string]: any }, duration: numbe
 	tween.Completed:Wait()
 end
 
--- "a full-screen red Frame ... that pulses twice with a heartbeat:
--- transparency 1 -> 0.55 -> 0.9 -> 0.5 -> 1 over about 1.2 s, in time with
--- a heartbeat Sound played twice. Then it passes: everything removed, no
--- message."
+-- FIX BUG-16 (Bryan, design): a heartbeat is "lub-dub" -- two quick
+-- beats BeatGap apart -- not one long pulse. Plays both beats (each
+-- dipping to `dip`), then eases to `rest` over PairGap: either the pause
+-- before the next cycle, or the final hold after the last one. Returns
+-- false the moment this generation goes stale, so callers can bail
+-- immediately instead of scheduling more tweens/sounds.
+local function playBeatCycle(
+	myGeneration: number,
+	frame: Frame,
+	dip: number,
+	rest: number,
+	color: Color3,
+	beatGap: number,
+	pairGap: number,
+	sounds: { Sound }
+): boolean
+	local mid = (dip + rest) / 2
+
+	table.insert(sounds, playHeartbeatSound())
+	tweenFrame(frame, { BackgroundTransparency = dip, BackgroundColor3 = color }, beatGap * 0.4)
+	if not isCurrent(myGeneration) then
+		return false
+	end
+
+	tweenFrame(frame, { BackgroundTransparency = mid }, beatGap * 0.2)
+	if not isCurrent(myGeneration) then
+		return false
+	end
+
+	table.insert(sounds, playHeartbeatSound())
+	tweenFrame(frame, { BackgroundTransparency = dip }, beatGap * 0.4)
+	if not isCurrent(myGeneration) then
+		return false
+	end
+
+	tweenFrame(frame, { BackgroundTransparency = rest }, pairGap)
+	if not isCurrent(myGeneration) then
+		return false
+	end
+
+	return true
+end
+
+-- "a full-screen red Frame ... Then it passes: everything removed, no
+-- message. Keep it short and not flashy." -- Config.Scene.NonFatalCycles
+-- lub-dubs, fully clearing between and after each.
+local NON_FATAL_COLOR = Color3.fromRGB(170, 0, 0)
+local NON_FATAL_DIP = 0.55
+local NON_FATAL_REST = 1
+
 local function playNonFatalPulse(myGeneration: number)
 	if not isCurrent(myGeneration) then
 		return
@@ -132,7 +189,7 @@ local function playNonFatalPulse(myGeneration: number)
 		return
 	end
 
-	local gui, frame = newPulseGui(900, Color3.fromRGB(170, 0, 0), 1)
+	local gui, frame = newPulseGui(900, NON_FATAL_COLOR, 1)
 	gui.Parent = playerGui
 
 	-- FIX (REVIEW-M2-05 #1/#2): whoever cancels this generation (a new
@@ -146,42 +203,30 @@ local function playNonFatalPulse(myGeneration: number)
 		end
 	end
 
-	local segment = 1.2 / 4
-
-	table.insert(sounds, playHeartbeatSound())
-	tweenFrame(frame, { BackgroundTransparency = 0.55 }, segment)
-	if not isCurrent(myGeneration) then
-		return
-	end
-	tweenFrame(frame, { BackgroundTransparency = 0.9 }, segment)
-	if not isCurrent(myGeneration) then
-		return
-	end
-	table.insert(sounds, playHeartbeatSound())
-	tweenFrame(frame, { BackgroundTransparency = 0.5 }, segment)
-	if not isCurrent(myGeneration) then
-		return
-	end
-	tweenFrame(frame, { BackgroundTransparency = 1 }, segment)
-	if not isCurrent(myGeneration) then
-		return
+	for _ = 1, Config.Scene.NonFatalCycles do
+		local ok =
+			playBeatCycle(myGeneration, frame, NON_FATAL_DIP, NON_FATAL_REST, NON_FATAL_COLOR, Config.Scene.BeatGap, Config.Scene.PairGap, sounds)
+		if not ok then
+			return
+		end
 	end
 
 	gui:Destroy()
 	activeCleanup = nil
 end
 
--- "three slower, heavier beats (about 2.5 s) while the red deepens to
--- (90,0,0) and does not fade; on the last beat the screen goes to
--- near-black (transparency 0.05) and a centred TextLabel ... appears ...
--- for 2 s. Then the scene."
+-- "three slower, heavier beats while the red deepens ... and does not
+-- fade; on the last beat the screen goes to near-black ... and a
+-- centred TextLabel ... appears ... Then the scene." -- each of
+-- Config.Scene.FatalCycles cycles deepens the colour/dip further and
+-- only partially recovers between cycles (never back to clear); the
+-- last holds near-black. Each cycle's BeatGap/PairGap is stretched by
+-- FatalSlowFactor again, compounding, so the beats visibly slow down.
 local FATAL_START_COLOR = Color3.fromRGB(170, 0, 0)
 local FATAL_END_COLOR = Color3.fromRGB(90, 0, 0)
-local FATAL_BEATS = {
-	{ dip = 0.5, hold = 0.75 },
-	{ dip = 0.35, hold = 0.55 },
-	{ dip = 0.15, hold = 0.05 },
-}
+local FATAL_DIP_START = 0.5
+local FATAL_DIP_END = 0.05
+local FATAL_REST_STEP = 0.2
 
 local function playFatalPulse(myGeneration: number)
 	if not isCurrent(myGeneration) then
@@ -205,17 +250,17 @@ local function playFatalPulse(myGeneration: number)
 		end
 	end
 
-	local segment = (2.5 / #FATAL_BEATS) / 2
+	local cycles = Config.Scene.FatalCycles
+	for cycle = 1, cycles do
+		local slow = Config.Scene.FatalSlowFactor ^ (cycle - 1)
+		local progress = cycle / cycles
+		local color = FATAL_START_COLOR:Lerp(FATAL_END_COLOR, progress)
+		local dip = FATAL_DIP_START + (FATAL_DIP_END - FATAL_DIP_START) * progress
+		local isLast = cycle == cycles
+		local rest = if isLast then FATAL_DIP_END else math.clamp(dip + FATAL_REST_STEP, 0, 1)
 
-	for beatIndex, beat in FATAL_BEATS do
-		local color = FATAL_START_COLOR:Lerp(FATAL_END_COLOR, beatIndex / #FATAL_BEATS)
-		table.insert(sounds, playHeartbeatSound())
-		tweenFrame(frame, { BackgroundTransparency = beat.dip, BackgroundColor3 = color }, segment)
-		if not isCurrent(myGeneration) then
-			return
-		end
-		tweenFrame(frame, { BackgroundTransparency = beat.hold }, segment)
-		if not isCurrent(myGeneration) then
+		local ok = playBeatCycle(myGeneration, frame, dip, rest, color, Config.Scene.BeatGap * slow, Config.Scene.PairGap * slow, sounds)
+		if not ok then
 			return
 		end
 	end
@@ -233,7 +278,7 @@ local function playFatalPulse(myGeneration: number)
 	message.ZIndex = 2
 	message.Parent = gui
 
-	task.wait(2)
+	task.wait(Config.Scene.MessageSeconds)
 	if not isCurrent(myGeneration) then
 		return
 	end
@@ -279,59 +324,35 @@ local function applyRukhAppearance(chara: Model)
 	end
 end
 
--- docs/reference/m2-studio-dump.md §3: RF.VFX.RukhEffects holds the
--- emitters. Cloned fresh onto the torso and a code-built glowing core,
--- rather than relying on any pre-existing attachment on the rig.
-local function attachRukhEffects(chara: Model, corePosition: Vector3): { Instance }
-	local created: { Instance } = {}
-
-	local vfx = ReplicatedFirst:FindFirstChild("VFX")
-	local rukhEffects = vfx and vfx:FindFirstChild("RukhEffects")
-	local torso = chara:FindFirstChild("Torso") or chara:FindFirstChild("UpperTorso") or chara:FindFirstChild("HumanoidRootPart")
-
-	if not rukhEffects then
-		log:Warn("ReplicatedFirst.VFX.RukhEffects missing; death scene will have no particles")
-	elseif torso then
-		for _, name in { "Rukh1", "Rukh2", "Rukh3", "Piece1", "Piece2", "Piece3", "Piece4" } do
-			local template = rukhEffects:FindFirstChild(name)
-			if not template then
-				continue
-			end
-			local clone = template:Clone()
-			if clone:IsA("ParticleEmitter") then
-				clone.Enabled = true
-			end
-			clone.Parent = torso
-			table.insert(created, clone)
+-- The walk target: Bryan's own AfterlifeCore if his AfterLife model has
+-- one, else a plain stand-in marker positioned ahead of the spawn point
+-- (or the character, if there's no AfterLife model at all). Nothing
+-- else is built here -- no particles, no extra geometry -- so the scene
+-- stays Bryan's to art-direct in his own model.
+local function resolveCoreTarget(rootPart: BasePart, afterlifeClone: Instance?, spawnBlock: BasePart?): (Vector3, Part?)
+	if afterlifeClone then
+		local afterlifeCore = afterlifeClone:FindFirstChild("AfterlifeCore") :: BasePart?
+		if afterlifeCore then
+			return afterlifeCore.Position, nil
 		end
 	end
 
+	local origin = if spawnBlock
+		then spawnBlock.Position + spawnBlock.CFrame.LookVector * Config.Scene.CoreDistance
+		else rootPart.Position + rootPart.CFrame.LookVector * Config.Scene.CoreDistance
+
 	local core = Instance.new("Part")
-	core.Name = "RukhCore"
+	core.Name = "RukhCoreStandIn"
 	core.Shape = Enum.PartType.Ball
 	core.Size = Vector3.new(2, 2, 2)
 	core.Anchored = true
 	core.CanCollide = false
 	core.Material = Enum.Material.Neon
 	core.Color = GOLD
-	core.Position = corePosition
+	core.Position = origin
 	core.Parent = Workspace
-	table.insert(created, core)
 
-	if rukhEffects then
-		for _, name in { "RukhInnerLightning", "RukhOuterLightning" } do
-			local template = rukhEffects:FindFirstChild(name)
-			if template then
-				local clone = template:Clone()
-				if clone:IsA("ParticleEmitter") then
-					clone.Enabled = true
-				end
-				clone.Parent = core
-			end
-		end
-	end
-
-	return created
+	return origin, core
 end
 
 local function playRukhScene(myGeneration: number)
@@ -369,8 +390,9 @@ local function playRukhScene(myGeneration: number)
 		ContextActionService:UnbindAction(FREEZE_ACTION)
 	end)
 
-	-- 2. Camera + AfterLife model (Bryan's, if present in Studio) or the
-	-- simple stand-in.
+	-- 2. Camera to AfterlifeCamera + character to AfterlifeSpawnBlock,
+	-- from Bryan's AfterLife model if present, or the simple stand-in
+	-- (keep the world, camera 12 studs in front looking back) if not.
 	camera.CameraType = Enum.CameraType.Scriptable
 	addCleanup(function()
 		camera.CameraType = Enum.CameraType.Custom
@@ -381,55 +403,53 @@ local function playRukhScene(myGeneration: number)
 		end
 	end)
 
-	local corePosition: Vector3
 	local afterlifeTemplate = ReplicatedFirst:FindFirstChild("AfterLife")
+	local afterlifeClone: Instance? = nil
+	local spawnBlock: BasePart? = nil
 
 	if afterlifeTemplate then
 		local clone = afterlifeTemplate:Clone()
 		clone.Parent = Workspace
+		afterlifeClone = clone
 		addCleanup(function()
 			clone:Destroy()
 		end)
 
 		local afterlifeCameraPart = clone:FindFirstChild("AfterlifeCamera") :: BasePart?
-		local spawnBlock = clone:FindFirstChild("AfterlifeSpawnBlock") :: BasePart?
+		spawnBlock = clone:FindFirstChild("AfterlifeSpawnBlock") :: BasePart?
 		if afterlifeCameraPart then
 			camera.CFrame = afterlifeCameraPart.CFrame
-			-- FIX (REVIEW-M2-05 #4): WipeHandlerPart2 also pointed the
-			-- CameraSubject at AfterlifeCamera; harmless under
-			-- Scriptable, kept for parity.
+			-- WipeHandlerPart2 also pointed CameraSubject at
+			-- AfterlifeCamera; harmless under Scriptable, kept for parity.
 			camera.CameraSubject = afterlifeCameraPart
 		end
 		if spawnBlock then
 			rootPart.CFrame = spawnBlock.CFrame
-			corePosition = spawnBlock.Position + spawnBlock.CFrame.LookVector * 15
 		else
 			log:Warn("ReplicatedFirst.AfterLife has no AfterlifeSpawnBlock")
-			corePosition = rootPart.Position + rootPart.CFrame.LookVector * 15
 		end
 	else
-		-- Stand-in: keep the world, camera 12 studs in front of the
-		-- character looking back at them.
 		local lookVector = rootPart.CFrame.LookVector
 		local cameraPosition = rootPart.Position + lookVector * 12 + Vector3.new(0, 2, 0)
 		camera.CFrame = CFrame.lookAt(cameraPosition, rootPart.Position + Vector3.new(0, 2, 0))
-		corePosition = rootPart.Position + lookVector * 15
 	end
 
 	if not isCurrent(myGeneration) then
 		return
 	end
 
-	-- 3. Character setup + VFX.
+	-- 3. The golden body.
 	applyRukhAppearance(character)
-	local effectInstances = attachRukhEffects(character, corePosition)
-	addCleanup(function()
-		for _, instance in effectInstances do
-			instance:Destroy()
-		end
-	end)
 
-	-- 4. Walk toward the core over ~6s; fade to white over the last 2s.
+	local corePosition, standInCore = resolveCoreTarget(rootPart, afterlifeClone, spawnBlock)
+	if standInCore then
+		addCleanup(function()
+			standInCore:Destroy()
+		end)
+	end
+
+	-- 4. The walk toward the core over Config.Scene.WalkSeconds; fade to
+	-- white over the last Config.Scene.FadeSeconds of it.
 	humanoid.WalkSpeed = 7
 	humanoid:MoveTo(corePosition)
 
@@ -450,12 +470,14 @@ local function playRukhScene(myGeneration: number)
 		fadeGui:Destroy()
 	end)
 
-	task.wait(4)
+	local holdSeconds = math.max(Config.Scene.WalkSeconds - Config.Scene.FadeSeconds, 0)
+	task.wait(holdSeconds)
 	if not isCurrent(myGeneration) then
 		return
 	end
 
-	local fadeTween = TweenService:Create(fade, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { BackgroundTransparency = 0 })
+	local fadeTween =
+		TweenService:Create(fade, TweenInfo.new(Config.Scene.FadeSeconds, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { BackgroundTransparency = 0 })
 	fadeTween:Play()
 	fadeTween.Completed:Wait()
 	if not isCurrent(myGeneration) then

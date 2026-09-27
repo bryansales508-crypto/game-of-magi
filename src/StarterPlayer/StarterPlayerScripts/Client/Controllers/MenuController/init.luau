@@ -139,6 +139,25 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 		return
 	end
 
+	-- FIX BUG-12: player characters aren't Archivable by default, so
+	-- Clone() silently returns nil; flip it on for the clone, then
+	-- restore it so the live character's own replication is unaffected.
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone()
+	character.Archivable = wasArchivable
+
+	if not clone then
+		log:Warn("character:Clone() returned nil; skipping the menu preview")
+		return
+	end
+
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		end
+	end
+
 	local viewport = Instance.new("ViewportFrame")
 	viewport.Name = "Preview"
 	viewport.Size = UDim2.fromScale(1, 1)
@@ -146,13 +165,6 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 
 	local worldModel = Instance.new("WorldModel")
 	worldModel.Parent = viewport
-
-	local clone = character:Clone()
-	for _, descendant in clone:GetDescendants() do
-		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
-			descendant:Destroy()
-		end
-	end
 	clone.Parent = worldModel
 
 	local camera = Instance.new("Camera")
@@ -272,7 +284,10 @@ function MenuController:Start()
 
 	local gui = MENU_TEMPLATE:Clone()
 	gui.ResetOnSpawn = false -- cloned GUIs are destroyed on respawn otherwise (REVIEW-M2-04 H1)
-	local menuMechanics = gui:FindFirstChild("MenuMechanics")
+	-- FIX BUG-14: MenuMechanics sits under MasterFrame.MenuGUIFrame, not
+	-- directly under the ScreenGui, so this needs a recursive search --
+	-- and must run before the clone is parented (it is, below).
+	local menuMechanics = gui:FindFirstChild("MenuMechanics", true)
 	if menuMechanics then
 		menuMechanics:Destroy()
 	end

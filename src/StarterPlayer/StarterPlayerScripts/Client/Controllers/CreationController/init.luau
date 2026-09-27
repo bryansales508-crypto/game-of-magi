@@ -50,7 +50,9 @@ local function buildScreen()
 
 	local gui = GENDER_TEMPLATE:Clone()
 	gui.ResetOnSpawn = false -- (REVIEW-M2-04 M1)
-	local decisions = gui:FindFirstChild("Decisions")
+	-- FIX BUG-14: recursive, and destroyed before the clone is parented
+	-- (below), same as MenuController's MenuMechanics fix.
+	local decisions = gui:FindFirstChild("Decisions", true)
 	if decisions then
 		decisions:Destroy()
 	end
