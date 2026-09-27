@@ -6,6 +6,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
@@ -25,6 +26,7 @@ local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
+local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -582,11 +584,31 @@ end
 
 -- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
 -- mirroring, exercised against plain (never PlayerService.Ready'd) Model
--- instances rather than a real character, the same trick testDataService
--- uses a Folder for a fake Player.
+-- instances rather than a real character. REVIEW-M3-01 H2: the test
+-- models are parented under a scratch ServerStorage folder (destroyed at
+-- the end) instead of left with no Parent at all, so the shared expiry
+-- loop (which unregisters anything with Parent == nil) doesn't yank them
+-- out from under the test mid-way through.
 local function testStatusService(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestStatusService"
+	scratch.Parent = ServerStorage
+
 	do
 		local character = Instance.new("Model")
+		character.Parent = scratch
+
+		local activeFires, inactiveFires = 0, 0
+		local conn = StatusService.Changed:Connect(function(firedCharacter, status, active)
+			if firedCharacter == character and status == "Stun" then
+				if active then
+					activeFires += 1
+				else
+					inactiveFires += 1
+				end
+			end
+		end)
+
 		StatusService.Register(character)
 
 		StatusService.Apply(character, "Stun", 0.15)
@@ -596,13 +618,16 @@ local function testStatusService(results: { Check })
 			"StatusService: attribute mirrors an active status",
 			character:GetAttribute("Stunned") == true
 		)
+		expect(results, "StatusService: Changed fires exactly once on Apply", activeFires == 1)
 
 		-- Refresh: re-Apply before expiry should push the expiry back out,
-		-- so waiting past the ORIGINAL duration alone must not clear it.
+		-- so waiting past the ORIGINAL duration alone must not clear it,
+		-- and must not re-fire Changed (the active state didn't change).
 		task.wait(0.1)
 		StatusService.Apply(character, "Stun", 0.15)
 		task.wait(0.1)
 		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
+		expect(results, "StatusService: a refreshing re-Apply doesn't re-fire Changed", activeFires == 1)
 
 		task.wait(0.3)
 		expect(results, "StatusService: an expired duration clears Has", not StatusService.Has(character, "Stun"))
@@ -611,9 +636,24 @@ local function testStatusService(results: { Check })
 			"StatusService: attribute clears once the status expires",
 			character:GetAttribute("Stunned") == false
 		)
+		expect(results, "StatusService: Changed fires exactly once on expiry", inactiveFires == 1)
 
+		conn:Disconnect()
+
+		-- REVIEW-M3-01 L4: Block's parry window (value 1) flips itself to
+		-- the block hold (value 0) on the shared loop, without anything
+		-- re-Applying.
 		StatusService.Apply(character, "Block", nil, { value = 1 })
 		expect(results, "StatusService: Has is true right after Apply", StatusService.Has(character, "Block"))
+
+		task.wait(Combat.Block.parryWindow + 0.15)
+		local blockInfo = StatusService.Get(character, "Block")
+		expect(
+			results,
+			"StatusService: Block's parry window flips itself to a block hold (value 0)",
+			StatusService.Has(character, "Block") and blockInfo ~= nil and (blockInfo.data :: any).value == 0
+		)
+
 		StatusService.Remove(character, "Block")
 		expect(results, "StatusService: Has is false right after Remove", not StatusService.Has(character, "Block"))
 
@@ -625,6 +665,7 @@ local function testStatusService(results: { Check })
 	-- that's already gone must never error.
 	do
 		local character = Instance.new("Model")
+		character.Parent = scratch
 		character:Destroy()
 
 		local okApply = pcall(StatusService.Apply, character, "Stun", 1)
@@ -640,6 +681,8 @@ local function testStatusService(results: { Check })
 			okHas and hasResult == false
 		)
 	end
+
+	scratch:Destroy()
 end
 
 -- M3-02: MovementService's pure helpers (stack math, dash cooldown,

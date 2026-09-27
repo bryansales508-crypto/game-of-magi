@@ -319,13 +319,19 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 | `Stun` | StringValue | (unset) | |
 | `Knocked` | IntValue | `math.ceil(duration)` | a child StringValue named after the attacker (`data.by`) if given, same as the old "personKnocker" pattern. `HealthService`'s reviveLoop still independently ticks this Value down and can destroy it early until M3-03 rewires the knockout path onto `StatusService` directly — a known, documented overlap, not a bug this task fixes |
 | `Ragdoll` | IntValue | (unset) | |
-| `Block` | IntValue | `data.value` or `1` | CombatService (M3-03) flips it 1→0 itself by re-`Apply`ing with `{value = 0}` once the parry window elapses |
+| `Block` | IntValue | `data.value` or `1` | `StatusService` itself flips it 1→0 on the shared loop, `Combat.Block.parryWindow` seconds after Apply — a caller (CombatService, M3-03) never has to re-Apply just to end the parry window (REVIEW-M3-01 L4) |
 | `BlockBroken` | IntValue | (unset) | |
 | `TrueStun` | StringValue | (unset) | |
 
+`Hit`'s marker is destroyed and recreated on **every** Apply, even while one is already active (REVIEW-M3-01 M1): several old readers (`EffectsService`'s sound/particle, `FaceControl`'s hurt face, `PhysicalHandler`'s stagger, the FragilePackage mission) key off `ChildAdded`, and reusing one instance across a quick second hit (two attackers, a player and an NPC) would go silent after the first.
+
 `StatusService` only owns the markers; it does not ragdoll, blind the screen, or play sounds itself — `EffectsService.server.luau` still reacts to these same markers exactly as before (unchanged this milestone; M3-06 replaces its client-facing half).
 
-The Effects folder itself still isn't created by `StatusService`: it looks for `character.Effects` once at `Register`, and if it isn't there yet, resolves it in the background (`WaitForChild`, then creates it itself only if it's still missing after a timeout) so `Register`/`Apply` never yield a caller. A bridge write before that resolves just silently skips — internal state and the client attributes above always work regardless of whether the Effects folder (or `EffectsService.server.luau`) exists.
+**The bridge is two-way (REVIEW-M3-01 M2).** A few old scripts still destroy these markers themselves (`HealthService`'s reviveLoop on `Knocked`, `InteractionsDesign`'s parry/block-break paths on `Block`, `EffectsService`'s own `TrueStun` when `BlockBroken` ends) until M3-03/M3-06 replace them. `StatusService` watches `Effects.ChildRemoved`: if a bridged marker disappears and it wasn't StatusService's own doing, it calls `Remove` on that status too, so `Has`/the attribute never go stale relative to the marker old code just deleted.
+
+**The Effects folder itself (REVIEW-M3-01 H1).** For a **player** (`owner ~= nil`), `StatusService` only ever *waits* for `EffectsService.server.luau` to create `character.Effects` (which can take several seconds after `PlayerService.Ready` — it waits on `AppearenceLoaded` on its own schedule) and never creates one itself; it gives up only when the character leaves. Creating one early would leave `EffectsService` to add a *second* "Effects" folder later, orphaning whichever one its own ragdoll/sound/`TrueStun` hooks ended up connected to. For an **NPC** (`owner == nil`, nothing else ever creates one), it waits a bounded 5 s and creates the folder itself if it's still missing. Either way this never yields `Register`/`Apply`'s caller — resolution happens in the background, and any status Applied before it resolves is backfilled with its marker once the folder is found or created (`Has`/the client attributes work immediately regardless).
+
+Every active status is also cleared through the real `Remove` (bridge marker destroyed, `Changed` fired) on `Unregister` and on the combatant's `Humanoid.Died`, not left to linger on a dead or deregistered character (REVIEW-M3-01 M3/L1).
 
 **Other markers still handled the old way** (unchanged, not part of this rebuild): `BigFreezeInput`/`FreezeInput`/`ActionFreezeInput` (input locks, `EffectsService` + `InputHandler.client.luau`), `Reading`/`OnMission` (MissionHandler), `MutedStep`/`Hungry`/`CombatTagged`/`FireBurn`/`Bleed` (checked for, but nothing creates them except `Hungry` via the disabled Fear&Hunger script).
 

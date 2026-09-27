@@ -13,8 +13,14 @@
 --                 continues the combo (past it, the next click restarts at 1)
 -- range/radius describe the server's hit-check shapecast (a capsule/sphere
 -- cast forward from the attacker). knockback is a speed added along the
--- direction away from the attacker; stun is seconds of the Stagger hitStun
--- feel (Combat.Stagger below), separate from a full Stun status.
+-- direction away from the attacker.
+--
+-- stun (0.6-1.0s, per move) is how long the FULL "Stun" status (can't
+-- attack/block) lasts on a landed hit: StatusService.Apply(target, "Stun",
+-- move.stun). This is separate from Combat.Stagger.hitStun below (a fixed,
+-- much shorter 0.35s) - that one drives the "Hit" status/MovementService's
+-- "Hit" speed modifier instead, the brief stagger every hit applies
+-- regardless of which move landed (see Combat.Stagger's own comment).
 --
 -- Old numbers this replaces (SYSTEMS 9 / DamageHandler): flat 5 damage, 1s
 -- stun, every 5th hit a 10x knockback multiplier, no real combo steps (the
