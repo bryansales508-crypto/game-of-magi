@@ -25,6 +25,7 @@ local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
+local RankService = require(script.Parent.RankService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
@@ -199,6 +200,18 @@ local function testDataService(results: { Check })
 		local data = ({ Version = 0 } :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
 		expect(results, "SaveSchema: Migrate bumps Version to the current schema version", data.Version == Config.Data.SchemaVersion)
+	end
+
+	-- M4-01: schema v2 only adds Progress.PendingEpithet, an optional field
+	-- a v1 save (missing the key entirely) already reads the same as nil.
+	do
+		local data = ({
+			Version = 1,
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v1 -> v2 migration bumps Version to 2", data.Version == 2)
+		expect(results, "SaveSchema: v1 -> v2 migration leaves PendingEpithet nil (nothing to fill)", data.Progress.PendingEpithet == nil)
 	end
 
 	do
@@ -652,6 +665,156 @@ local function testHealthService(results: { Check })
 		CombatService.Unregister(attacker)
 		CombatService.Unregister(npc)
 		scratch:Destroy()
+	end
+end
+
+-- M4-01: RankService's pure helpers, exercised with fake Data tables - no
+-- Player or DataService needed for any of these (ApplyMagoi/ApplyDeed/
+-- ApplyChooseEpithet/ShouldOfferOrigin only ever touch data.Progress).
+local function fakeRankData(magoi: number, gold: number, black: number, epithet: string): SaveSchema.Data
+	return ({
+		Progress = { Magoi = magoi, GoldRukh = gold, BlackRukh = black, Epithet = epithet, PendingEpithet = nil },
+	} :: any) :: SaveSchema.Data
+end
+
+local function testRankService(results: { Check })
+	do
+		local data = fakeRankData(250, 0, 0, "")
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 100) -- 250 -> 350: crosses the 300 Wanderer threshold
+		expect(results, "RankService: ApplyMagoi detects a rank-up across a threshold", newIndex > oldIndex)
+		expect(results, "RankService: ApplyMagoi actually moved Magoi", data.Progress.Magoi == 350)
+
+		local sameOld, sameNew = RankService.ApplyMagoi(data, 10) -- 350 -> 360: still Wanderer
+		expect(results, "RankService: ApplyMagoi doesn't report a rank-up within the same rank", sameNew == sameOld)
+
+		local downOld, downNew = RankService.ApplyMagoi(data, -1000)
+		expect(results, "RankService: ApplyMagoi clamps at 0", data.Progress.Magoi == 0)
+		expect(results, "RankService: a rank DOWN is never reported as a rank-up", downNew <= downOld)
+	end
+
+	do
+		local data = fakeRankData(0, 0, 0, "")
+		local oldAlignment, newAlignment = RankService.ApplyDeed(data, "Gold", 10)
+		expect(
+			results,
+			"RankService: ApplyDeed moves White to Gold once MinDeeds is cleared",
+			oldAlignment == "White" and newAlignment == "Gold"
+		)
+	end
+
+	do
+		local choices = Epithets.pick3("Renowned", "Black", 0)
+		expect(
+			results,
+			"RankService: pick3 returns 3 distinct entries for a real rank/alignment",
+			#choices == 3 and choices[1] ~= choices[2] and choices[1] ~= choices[3] and choices[2] ~= choices[3]
+		)
+	end
+
+	do
+		local data = fakeRankData(300, 0, 0, "")
+		local ok, reason = RankService.ApplyChooseEpithet(data, 1)
+		expect(results, "RankService: ChooseEpithet rejects with nothing pending", not ok and reason ~= nil)
+
+		data.Progress.PendingEpithet = { rank = 2, choices = { "A", "B", "C" } }
+		local okBadIndex = RankService.ApplyChooseEpithet(data, 4)
+		expect(results, "RankService: ChooseEpithet rejects an out-of-range index", not okBadIndex and data.Progress.Epithet == "")
+
+		local okGood = RankService.ApplyChooseEpithet(data, 2)
+		expect(
+			results,
+			"RankService: ChooseEpithet applies a valid choice and clears the pending one",
+			okGood and data.Progress.Epithet == "B" and data.Progress.PendingEpithet == nil
+		)
+	end
+
+	do
+		local fresh = fakeRankData(0, 0, 0, "")
+		expect(
+			results,
+			"RankService: a fresh template with Gender 0 isn't offered an origin choice yet",
+			not RankService.ShouldOfferOrigin(fresh, 0)
+		)
+		expect(
+			results,
+			"RankService: a fresh template offers its origin choice once Gender is chosen",
+			RankService.ShouldOfferOrigin(fresh, 1)
+		)
+
+		local pending = fakeRankData(0, 0, 0, "")
+		pending.Progress.PendingEpithet = { rank = 1, choices = { "A", "B", "C" } }
+		expect(results, "RankService: no origin offer while one is already pending", not RankService.ShouldOfferOrigin(pending, 1))
+
+		local chosen = fakeRankData(0, 0, 0, "The Sand-Born")
+		expect(results, "RankService: no origin offer once an epithet is already chosen", not RankService.ShouldOfferOrigin(chosen, 1))
+	end
+
+	do
+		expect(results, "RankService: TitleForIndex resolves King/Queen for a known gender", RankService.TitleForIndex(7, 1) == "King")
+	end
+
+	-- H1 (REVIEW-M4-01): a rank-up must never overwrite a choice that's
+	-- still pending, and a grant crossing several thresholds at once must
+	-- walk the player through every rank one card at a time.
+	do
+		local data = fakeRankData(0, 0, 0, "")
+		data.Progress.PendingEpithet = { rank = 1, choices = { "The Merchant's Child", "The Sand-Born", "The Unwanted" } }
+
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 300) -- 0 -> 300: crosses into Wanderer
+		expect(
+			results,
+			"RankService H1: Magoi crossing a threshold while origin is pending still reports a rank-up",
+			newIndex > oldIndex
+		)
+
+		local announceIndex = RankService.NextRankToAnnounce(data, oldIndex, newIndex)
+		expect(results, "RankService H1: a rank-up never overwrites a still-pending choice", announceIndex == nil)
+		expect(
+			results,
+			"RankService H1: the pending choice itself is untouched (still the origin choices)",
+			data.Progress.PendingEpithet ~= nil
+				and data.Progress.PendingEpithet.rank == 1
+				and data.Progress.PendingEpithet.choices[1] == "The Merchant's Child"
+		)
+	end
+
+	do
+		local data = fakeRankData(300, 0, 0, "") -- already at Wanderer's threshold
+		data.Progress.PendingEpithet = { rank = 1, choices = { "The Merchant's Child", "The Sand-Born", "The Unwanted" } }
+
+		local ok = RankService.ApplyChooseEpithet(data, 2) -- chooses "The Sand-Born"
+		expect(results, "RankService H1: choosing the origin epithet succeeds", ok and data.Progress.Epithet == "The Sand-Born")
+
+		local announceIndex = RankService.NextRankAfterChoice(data, 1)
+		expect(
+			results,
+			"RankService H1: answering origin immediately reveals the Wanderer card (Magoi already there)",
+			announceIndex == 2
+		)
+	end
+
+	do
+		local data = fakeRankData(0, 0, 0, "The Sand-Born") -- origin already answered
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 1500) -- 0 -> 1500: Street Rat -> Renowned in one grant
+		expect(results, "RankService H1: a big grant reaches Renowned (index 4) in one step", oldIndex == 1 and newIndex == 4)
+
+		local first = RankService.NextRankToAnnounce(data, oldIndex, newIndex)
+		expect(results, "RankService H1: the first card announced is Wanderer, not the top rank", first == 2)
+
+		data.Progress.PendingEpithet = { rank = first :: number, choices = { "X", "Y", "Z" } }
+		local okWanderer = RankService.ApplyChooseEpithet(data, 1)
+		local second = RankService.NextRankAfterChoice(data, first :: number)
+		expect(results, "RankService H1: answering Wanderer immediately reveals Adventurer next", okWanderer and second == 3)
+
+		data.Progress.PendingEpithet = { rank = second :: number, choices = { "X", "Y", "Z" } }
+		local okAdventurer = RankService.ApplyChooseEpithet(data, 1)
+		local third = RankService.NextRankAfterChoice(data, second :: number)
+		expect(results, "RankService H1: answering Adventurer immediately reveals Renowned next", okAdventurer and third == 4)
+
+		data.Progress.PendingEpithet = { rank = third :: number, choices = { "X", "Y", "Z" } }
+		local okRenowned = RankService.ApplyChooseEpithet(data, 1)
+		local fourth = RankService.NextRankAfterChoice(data, third :: number)
+		expect(results, "RankService H1: once caught up to the actual rank, nothing more is announced", okRenowned and fourth == nil)
 	end
 end
 
@@ -1269,6 +1432,7 @@ function SelfTestService:Start()
 		testCharacterService(collected)
 		testAgeService(collected)
 		testHealthService(collected)
+		testRankService(collected)
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)

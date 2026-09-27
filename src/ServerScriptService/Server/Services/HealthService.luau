@@ -1,6 +1,7 @@
 --!strict
--- Max health, health/block regen and the Rank/Epithet/Alignment display
--- attributes (TRIAGE #14, DESIGN.md section 3a "Rank raises max health").
+-- Max health and health/block regen (TRIAGE #14, DESIGN.md section 3a "Rank
+-- raises max health"). Rank/Epithet/Alignment are M4-01's RankService's
+-- attributes now, not this service's - see RankService.luau.
 -- Replaces the old StarterCharacterScripts/Health.server.luau and
 -- BlockHealthRegen.server.luau. The old "revive from Knocked" countdown
 -- those scripts also did (decrementing character.Effects.Knocked.Value
@@ -22,7 +23,6 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
-local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
@@ -285,10 +285,9 @@ function HealthService:Start()
 
 	Players.PlayerRemoving:Connect(clearState)
 
-	-- One shared loop: health/block regen, and the Rank/Epithet/Alignment
-	-- display attributes (M2-06's Shared/Data modules), refreshed from
-	-- Progress every tick rather than hooked to a change signal - simplest
-	-- correct option, per the M2-03 task's own suggestion.
+	-- One shared loop: health/block regen (M4-01 moved the Rank/Epithet/
+	-- Alignment attribute refresh out to RankService, which updates them
+	-- itself on every Progress change instead of every tick).
 	task.spawn(function()
 		while true do
 			task.wait(Config.Health.Tick)
@@ -317,14 +316,12 @@ function HealthService:Start()
 					-- copy of it, and keeps AgeService and HealthService
 					-- decoupled (no new call from AgeService into
 					-- HealthService needed).
+					-- M4-01: Rank/Epithet/Alignment are RankService's attributes
+					-- now (one writer) - it refreshes them itself on every
+					-- Progress change instead of this loop refreshing them
+					-- every tick.
 					if character and data then
 						setupCharacter(player, character, data)
-					end
-
-					if data then
-						player:SetAttribute("Rank", Ranks.titleFor(data.Progress.Magoi, data.Character.Gender))
-						player:SetAttribute("Epithet", data.Progress.Epithet)
-						player:SetAttribute("Alignment", Alignment.label(Alignment.alignmentFor(data.Progress.GoldRukh, data.Progress.BlackRukh)))
 					end
 				else
 					-- An NPC (REVIEW-M3-04 H1): no rank/save, just health/
