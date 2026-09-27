@@ -1,0 +1,5 @@
+# One line-ending style for everyone (Windows lead, Linux cloud agents).
+* text=auto eol=lf
+*.rbxm binary
+*.rbxl binary
+*.exe binary
