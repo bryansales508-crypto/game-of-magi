@@ -212,19 +212,28 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 
 ---
 
-## 8. Movement and speed
+## 8. Movement and speed — rebuilt M3-02 (TRIAGE #9, fixes AUDIT H10/M4/M5/M6/D2)
 
-**What it does.** Walk speed is 16 and run speed 28. The race- and height-based speeds are commented out. Double-tapping W runs, which zooms the camera out and plays the run animation. Anything that changes speed (running, blocking, dashing, being hit, heavy cargo, parried, stunned) adds a named child to `character.IntFold.MovementSpeed`. The server recomputes WalkSpeed from the smallest multiplier present, and `0` means frozen. Low health also slows you, down to half run speed and a quarter walk speed.
+**What it does.** `MovementService` is now the one owner of `Humanoid.WalkSpeed`, keyed by the combatant's **character Model**, never by Player (NPCs move exactly like players; M3-04's `NpcService` registers them the same way `PlayerService.Ready` registers players).
 
-**Files:**
-- `RS/Modules/SpeedHandler.luau`: add or remove a speed modifier.
-- `SSS/Interactions/InteractionsDesign.server.luau`: creates `IntFold`, recomputes speed, and has a separate copy of the logic for NPCs.
-- `SSS/Interactions/InteractionsHandler.server.luau`: the `Running` and `Dash` remotes.
-- `SCS/Scripts/PhysicalHandler.client.luau`: run and dash input.
+**Speed stack.** `SetModifier(character, name, mult)` / `ClearModifier(character, name)` keep a named-multiplier table per combatant. The effective multiplier is the **smallest active one** (`0` freezes, matching the old "smallest wins" idea) — with none active, `1.0`. WalkSpeed is written **immediately** on every change (AUDIT M6: the old code updated its base speeds but only re-applied WalkSpeed when something else happened to touch it). Base walk is 16; running is `Combat.Run.speedMult × 16` (28, unchanged) — `Run` isn't folded into the same min-pool as everything else, because it picks which *baseline* (16 or 28) the stack multiplies, not a multiplier of that baseline itself: "half of run speed" and "a quarter of walk speed" (see Low health below) are two different final speeds for the same kind of low multiplier, which a single flat `min()` can't express. Named modifiers other systems use: `Run`, `Block`, `Stun`, `TrueStun`, `Knocked`, `Hit`, `LowHealth`, `HeavyCargo` (missions, via the bridge below).
 
-**Remotes (client → server):**
-- `Running(bool)`
-- `CombatRemotes.Dash("Dash" | "Release" | "RunningHit")`
+**Run.** `Run(true)` is ignored while `Stun`/`TrueStun`/`Knocked`/`Block` is active (checked against `StatusService.Has`); the server also clears `Run` itself the instant one of those statuses turns on (subscribed via `StatusService.Changed`), so a client can't keep running through a stun by just not sending `Run(false)`.
+
+**Dash.** A server cooldown (`Combat.Dash.cooldown`, AUDIT M4 — old code had none and let dashes stack); rejected while `Stun`/`TrueStun`/`Knocked` (not `Block`: dashing out of a block is fine). No first-punch requirement (**fixes H10** — the old client gated Dash on an attack animation's `Speed` reaching 0) and no cardinal-only restriction (**fixes H10's diagonal half**: the old code built animation names like `"DW"` that never existed; the server just takes any non-zero `(x, z)` in the character's own local space, normalises it itself, and pushes a `LinearVelocity` for `Combat.Dash.distance` studs over `Combat.Dash.duration` seconds along that world direction). Sets the `NextDashAt` attribute (`workspace:GetServerTimeNow()`-based, for a client cooldown UI) and emits `CombatEvent("Dash", {character, x, z})`.
+
+**Low health.** Subscribed directly to the combatant's own `Humanoid.HealthChanged`/`MaxHealth` changes (not `HealthService`'s Player attributes — those are just a mirror of the same Humanoid, and reading the Humanoid directly works for NPCs too, which have no Player). Below full health, a `LowHealth` modifier is applied and kept current: down to half of run speed or a quarter of walk speed at 0 health (old SYSTEMS 8 numbers, `MovementService.LowHealthMult`), scaling linearly with the health ratio in between; at full health it's removed entirely, not just decayed to 1.0.
+
+**Bridge (kept until M5/M6 per the M3 plan).** `character.IntFold.MovementSpeed` keeps one child per active modifier (old code and `PhysicalHandler.client.luau`'s attack-cancel-on-dash both watch `ChildAdded`/`ChildRemoved` there by name), and `IntFold["Running?"]` mirrors the run flag (M3-03's `FootstepService` reads it verbatim for step-sound volume). Unlike `StatusService`'s `Effects` folder, `MovementService` creates `IntFold`/`IntFold.MovementSpeed`/`IntFold["Running?"]` itself if they're missing — `InteractionsDesign.server.luau` used to, and M3-03 deletes that file. `RS/Modules/SpeedHandler.luau` (the old add/remove-a-modifier module) is now a compatibility **shim**: its two remaining real callers, `MissionHandler`'s heavy-cargo slow and `EffectsService.server.luau`'s TrueStun freeze, keep calling it exactly as before, and it forwards into `MovementService.SetModifier`/`ClearModifier`. `Running.model.json` and `CombatRemotes/Dash.model.json` (the old remotes) are deleted — approved TRIAGE #9; `InteractionsHandler.server.luau`'s own `Running`/`Dash` handlers (and its footstep code, which M3-03 moves into `FootstepService`) go with M3-03's deletions, not this one.
+
+**Remotes (client → server, declared in `Shared/Remotes.luau`):** `Run(on: boolean)` (4/s), `Dash(x: number, z: number)` (2/s, each clamped to `[-1, 1]`; the server normalises the resulting vector). **Server → client:** `CombatEvent(kind: string, data: table)` — `Run`/`Dash` kinds from this service, more kinds from M3-03's `CombatService`.
+
+**Attributes:** `SpeedMult` (number, the current effective multiplier), `Running` (bool), `NextDashAt` (server clock).
+
+**Files:** `Server/Services/MovementService.luau`, `Shared/Remotes.luau` (Run/Dash/CombatEvent added), `Modules/SpeedHandler.luau` (now a shim, see above).
+**Depends on:** `PlayerService.Ready`/`Players.PlayerRemoving` (player registration), `StatusService` (gates Run/Dash, clears Run on a status), `Shared/Data/Combat` (Run/Dash numbers).
+**Depended on by:** `MissionHandler` (heavy cargo, via the `SpeedHandler` shim), `EffectsService.server.luau` (TrueStun, via the same shim), `PhysicalHandler.client.luau`'s dash-cancel (via the `IntFold.MovementSpeed` bridge), M3-03's `CombatService`/`FootstepService`, M3-04's `NpcService`.
+**Not yet touched this milestone:** `Interactions/InteractionsDesign.server.luau` and `Interactions/InteractionsHandler.server.luau` still exist and still reference the now-deleted `Running`/`CombatRemotes.Dash` remotes directly — they will error until M3-03 deletes them (next in this same milestone; nothing gets merged or Studio-synced in between).
 
 ---
 

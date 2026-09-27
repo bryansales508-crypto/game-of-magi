@@ -24,6 +24,7 @@ local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local StatusService = require(script.Parent.StatusService)
+local MovementService = require(script.Parent.MovementService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -641,6 +642,76 @@ local function testStatusService(results: { Check })
 	end
 end
 
+-- M3-02: MovementService's pure helpers (stack math, dash cooldown,
+-- low-health thresholds), the same "test the math directly" approach as
+-- HealthService's self-test.
+local function testMovementService(results: { Check })
+	do
+		expect(results, "MovementService: no modifiers is 1.0 (full speed)", MovementService.EffectiveMultiplier({}) == 1.0)
+		expect(
+			results,
+			"MovementService: the smallest active modifier wins",
+			MovementService.EffectiveMultiplier({ Run = 1.75, Block = 0.6 }) == 0.6
+		)
+		expect(
+			results,
+			"MovementService: a 0 modifier freezes",
+			MovementService.EffectiveMultiplier({ Run = 1.75, TrueStun = 0 }) == 0
+		)
+		expect(
+			results,
+			"MovementService: clearing the only modifier restores 1.0",
+			MovementService.EffectiveMultiplier({}) == 1.0
+		)
+	end
+
+	do
+		expect(
+			results,
+			"MovementService: CanDash with no prior dash is allowed",
+			MovementService.CanDash(100, nil, 1.2)
+		)
+		expect(
+			results,
+			"MovementService: CanDash rejects a second dash inside the cooldown",
+			not MovementService.CanDash(100.5, 100, 1.2)
+		)
+		expect(
+			results,
+			"MovementService: CanDash allows a dash once the cooldown has fully elapsed",
+			MovementService.CanDash(101.2, 100, 1.2)
+		)
+	end
+
+	do
+		expect(
+			results,
+			"MovementService: LowHealthMult at full health (walking) is 1.0",
+			MovementService.LowHealthMult(false, 1) == 1.0
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at 0 health (walking) is a quarter",
+			MovementService.LowHealthMult(false, 0) == 0.25
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at full health (running) is Combat.Run.speedMult",
+			math.abs(MovementService.LowHealthMult(true, 1) - 1.75) < 1e-9
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at 0 health (running) is half of Combat.Run.speedMult",
+			math.abs(MovementService.LowHealthMult(true, 0) - 0.875) < 1e-9
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult clamps an out-of-range ratio",
+			MovementService.LowHealthMult(false, 5) == 1.0 and MovementService.LowHealthMult(false, -5) == 0.25
+		)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -662,6 +733,7 @@ function SelfTestService:Start()
 		testAgeService(collected)
 		testHealthService(collected)
 		testStatusService(collected)
+		testMovementService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

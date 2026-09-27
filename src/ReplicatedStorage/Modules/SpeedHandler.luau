@@ -1,75 +1,79 @@
+-- Compatibility shim (M3-02, TRIAGE #9 approved removal). The real
+-- SpeedHandler/InteractionsDesign speed system is gone; MovementService
+-- (ServerScriptService/Server/Services/MovementService.luau) owns WalkSpeed
+-- now. Two real callers are left until later milestones delete them too:
+-- MissionHandler's heavy-cargo slow (kept until M6, TRIAGE #8) and
+-- EffectsService.server.luau's TrueStun freeze (kept until M3-06). Both
+-- just want "name a modifier, remove a modifier by name" - decoded from how
+-- they actually call this module (the `duration` argument, when it's a
+-- string rather than a number of seconds, was always the removable tag the
+-- old code later matched in SpeedHandleRemove, whatever its literal
+-- Instance.Name/Value bookkeeping did under the hood).
+--
+-- This module is required from both the server (real work, forwarded to
+-- MovementService) and the client (PhysicalHandler.client.luau requires it
+-- but never calls anything on it - AUDIT D2, dead code): ServerScriptService
+-- isn't replicated, so MovementService is only required when IsServer().
+--
+-- Not part of the new (checked) code - see scripts/check.sh's TARGETS - so
+-- this intentionally isn't --!strict, matching every other legacy module
+-- it sits alongside.
+
+local RunService = game:GetService("RunService")
+
 local module = {}
 
-local db = game:GetService("Debris")
+local MovementService = nil
+if RunService:IsServer() then
+	local ok, result = pcall(function()
+		return require(game.ServerScriptService.Server.Services.MovementService)
+	end)
+	if ok then
+		MovementService = result
+	end
+end
 
-function module.Set(walkspeed, runspeed)
-
-	--[[local StatsFold = module.player:WaitForChild("Stats")
-	local race = StatsFold:WaitForChild("Race")
-	local height = StatsFold:WaitForChild("Height")]]
-
-	--Race Guide
-	-- 1 = Fanalis, 2 = Human, 3 = Immuchak, 4 = Magician, 5 = Magi
-
-	--[[if race.Value == 1 then
-		walkspeed = 18
-		walkspeed = walkspeed - height.Value
-		runspeed = 50 
-		runspeed = runspeed - height.Value * 3
-	elseif race.Value == 2 then
-		walkspeed = 16
-		walkspeed = walkspeed - height.Value
-		runspeed = 32
-		runspeed = runspeed - height.Value * 2
-	elseif race.Value  == 3 then
-		walkspeed = 16
-		walkspeed = walkspeed - height.Value
-		runspeed = 36
-		runspeed = runspeed - height.Value * 2
-	elseif race.Value == 4 or race.Value == 5 then
-		walkspeed = 16
-		walkspeed = walkspeed + height.Value
-		runspeed = 28
-		runspeed = runspeed + height.Value * 2
-	end]]
-
-	walkspeed = 16
-	walkspeed = walkspeed
-	runspeed = 28
-	runspeed = runspeed
-
-	return walkspeed, runspeed
+-- Old callers used this for the base walk/run numbers before applying
+-- their own multipliers; MovementService's own WALK_SPEED/RUN_SPEED
+-- constants are the one source of truth for those now. Kept only so a
+-- straggling `local walkspeed, runspeed = speedMod.Set(w, r)` call doesn't
+-- error; nothing still uses the numbers it returns for anything real.
+function module.Set(_walkspeed, _runspeed)
+	return 16, 28
 end
 
 function module.SpeedHandle(chara, value, duration)
-	local MoveFold = chara:WaitForChild("IntFold"):WaitForChild("MovementSpeed")
+	if MovementService == nil or chara == nil then
+		return
+	end
 
-	local newVal = Instance.new("StringValue")
-	newVal.Name = value
-	newVal.Parent = MoveFold
-	newVal.Value = ""
-
-	-- If a number give, set the duration.
-	if type(duration) == "number" then
-		db:AddItem(newVal,duration)
+	local name, mult
+	if type(duration) == "string" then
+		name = duration
+		mult = if type(value) == "number" then value else 1
+	elseif type(value) == "string" and duration == nil then
+		name = value
+		mult = 1
 	else
-		-- If not, it will be handled by SpeedHandleRemove.
-		if duration then
-			newVal.Value = duration
-		end
+		-- Old Run/Dash/Block/Parry call shapes: those systems are owned by
+		-- MovementService/CombatService directly now (M3-02/M3-03), never
+		-- reached through this shim in the new code.
+		return
+	end
+
+	MovementService.SetModifier(chara, name, mult)
+	if type(duration) == "number" then
+		task.delay(duration, function()
+			MovementService.ClearModifier(chara, name)
+		end)
 	end
 end
 
 function module.SpeedHandleRemove(chara, val)
-	-- Finds a name given value.
-	local MoveFold = chara:FindFirstChild("IntFold"):FindFirstChild("MovementSpeed")
-	for _,v in MoveFold:GetChildren() do
-		if v.Value == val then
-			v:Destroy()
-		elseif v.Name == val then
-			v:Destroy()
-		end
+	if MovementService == nil or chara == nil or type(val) ~= "string" then
+		return
 	end
+	MovementService.ClearModifier(chara, val)
 end
 
 return module

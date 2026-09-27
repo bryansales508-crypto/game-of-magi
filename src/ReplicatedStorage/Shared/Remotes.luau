@@ -84,6 +84,33 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 2, per = 60 },
 	},
+	-- M3-02: MovementService. Intentions only - the server decides whether
+	-- Run/Dash actually apply (stunned/knocked/blocking, cooldowns).
+	Run = {
+		kind = "Event",
+		args = { Validate.boolean() },
+		rate = { count = 4, per = 1 },
+	},
+	-- x/z are the dash direction in the character's own local space
+	-- (forward/right), each clamped to [-1, 1]; MovementService normalises
+	-- the resulting vector itself, so an off-axis diagonal like (1, 1) is
+	-- still just "that diagonal direction", not a faster dash.
+	Dash = {
+		kind = "Event",
+		args = { Validate.number({ min = -1, max = 1 }), Validate.number({ min = -1, max = 1 }) },
+		rate = { count = 2, per = 1 },
+	},
+	-- M3-02/M3-03: server -> client only (MovementService and CombatService
+	-- never register a handler, so a client calling this back is just
+	-- dropped, same pattern as HeartAttack/RukhSceneDone). `data` isn't
+	-- shape-checked here since nothing ever validates an outbound Fire/
+	-- FireAll call; the second arg only matters if a client tries to
+	-- invoke this itself, which goes nowhere.
+	CombatEvent = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 32 }) },
+		rate = { count = 1, per = 5 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"
