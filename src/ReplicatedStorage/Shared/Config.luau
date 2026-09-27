@@ -28,7 +28,8 @@ Config.Debug = {
 
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
-	SchemaVersion = 1,
+	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
+	SchemaVersion = 2,
 }
 
 -- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.

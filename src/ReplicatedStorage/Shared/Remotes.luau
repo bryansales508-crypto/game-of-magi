@@ -124,6 +124,29 @@ Remotes.Definitions = {
 		args = { Validate.boolean() },
 		rate = { count = 4, per = 1 },
 	},
+	-- M4-01: RankService. Server -> client only (RankService never registers
+	-- a handler, so a client calling either back is just dropped, same
+	-- pattern as HeartAttack/CombatEvent); the one table argument isn't
+	-- shape-checked here for the same reason CombatEvent's data argument
+	-- isn't.
+	RankUp = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 10 },
+	},
+	AlignmentChanged = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 10 },
+	},
+	-- M4-01: the client's answer to a pending RankUp choice. The server
+	-- never trusts the string itself - only this index, into the three
+	-- choices it already rolled and stored in the save.
+	ChooseEpithet = {
+		kind = "Event",
+		args = { Validate.number({ min = 1, max = 3, integer = true }) },
+		rate = { count = 3, per = 10 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

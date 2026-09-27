@@ -12,14 +12,15 @@ Paths are shortened: `SSS` = ServerScriptService, `RS` = ReplicatedStorage, `RF`
 
 **Store and key.** Store name `Config.Data.StoreName` (`"GameOfMagi_v1"`, a new store — the old `"GameOfMagi_v0.01am"` data is not read by the new code). Key: `Config.Debug.SaveScope .. "_" .. userId`, where `SaveScope` is `"Studio"` in Studio and `"Live"` in a published server — so play tests in Studio can never touch or corrupt a live save. `Config.Debug.FreshSave` (Studio only) forces every session onto `ProfileStore.Mock` instead: nothing persists, and every run starts from a brand-new template. DataService also falls back to `.Mock` on its own, for the rest of that server's life, if the very first real `StartSessionAsync` call throws (DataStore API unavailable, e.g. testing offline).
 
-**Schema (v1)**, defined in `RS/Shared/SaveSchema.luau` as `SaveSchema.Template`, deep-copied per profile by ProfileStore:
+**Schema (v2)**, defined in `RS/Shared/SaveSchema.luau` as `SaveSchema.Template`, deep-copied per profile by ProfileStore:
 ```
 Version   number                            -- schema version; SaveSchema.Migrate walks old saves up to Config.Data.SchemaVersion
 
 Character = { FirstName, Gender, Race, Kingdom, SkinTone, HairColor {R,G,B},
               EyeColor, FaceBase, MouthShape, Height, GrowthProfile }   -- same fields/meanings as the old Stats shape below
 Age       = { Years, TimePassed, ProgToAge }   -- TimePassed set to os.time() on first load
-Progress  = { Magoi, GoldRukh, BlackRukh, Epithet }   -- DESIGN.md section 3a
+Progress  = { Magoi, GoldRukh, BlackRukh, Epithet,
+              PendingEpithet? = { rank, choices {3 strings} } }   -- DESIGN.md section 3a; PendingEpithet added in v2 (M4-01), see section 19
 Bounty    number
 Economy   = { Copper, Silver, Gold }
 Gear      = { Shirt, Pants, Hats {3 slots}, Inventory {item code list} }
@@ -28,6 +29,8 @@ Magic     table   -- reserved, empty
 Meta      = { Created, LastSeen, Lives }
 ```
 Missing keys on an existing save are filled in by `Profile:Reconcile()` before `SaveSchema.Migrate` runs, so a migration can assume its own version's shape already exists.
+
+**Migrations.** `SaveSchema.Migrations[N]` is a function that turns a save at version `N-1` into version `N`; `Migrate` walks a save up from its own `Version` to `Config.Data.SchemaVersion` one step at a time. `Migrations[2]` (M4-01, the first real one) is an intentional no-op: v2 only adds `Progress.PendingEpithet`, an optional field, so a v1 save missing the key entirely already reads the same as `nil` — there's nothing to backfill, but the entry exists (rather than being left out) so the version bump always walks through a real migration function.
 
 **Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use), `.NewLife(player)` (M2-02: like `Wipe`, but keeps `Meta.Lives` — incremented — and `Meta.Created`; used by `AgeService`'s old-age death).
 
@@ -268,7 +271,7 @@ At `hitTime` seconds later, the hit-check only runs if the attacker is still ali
 
 **Footsteps (section 12) moved into `FootstepService.luau`** unchanged (same sounds, same sand/mud footprints, same `MiscRemotes.Footstep` remote) since the combat file it used to live inside is gone; see section 12.
 
-**Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). The same loop also refreshes the `Rank`/`Epithet`/`Alignment` attributes from `Progress` every tick (simplest correct option; no separate change signal). The old `Knocked`-revival countdown (decrement once a second while health is above a threshold, destroy at 0) that moved over unchanged in M2-03 is **gone as of M3-03** (REVIEW-M3-03 L6): `CombatService`/`StatusService` are the sole authority on when a knockout ends now (`Combat.Knockout.getUpSeconds`, `Recovered`), and an independent second timer here was a real conflict, not just a documented overlap — `Config.Health.KnockedReviveThreshold` is removed with it.
+**Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). **M4-01:** the `Rank`/`Epithet`/`Alignment` attributes moved out to `RankService` (section 19), which refreshes them itself on every `Progress` change instead of this loop refreshing them every tick — one writer. The old `Knocked`-revival countdown (decrement once a second while health is above a threshold, destroy at 0) that moved over unchanged in M2-03 is **gone as of M3-03** (REVIEW-M3-03 L6): `CombatService`/`StatusService` are the sole authority on when a knockout ends now (`Combat.Knockout.getUpSeconds`, `Recovered`), and an independent second timer here was a real conflict, not just a documented overlap — `Config.Health.KnockedReviveThreshold` is removed with it.
 
 **FIX M11:** the old `Health.server.luau` had `HealthDetermine("Height", ...)` as its own branch, but `Height.Changed` called `HealthDetermine("MaxHealth", ...)` instead, so growing taller never added health. The new formula always recomputes `MaxHealth` from scratch instead of tracking deltas, so there's no branch to wire to the wrong name.
 
@@ -284,8 +287,8 @@ At `hitTime` seconds later, the hit-check only runs if the attacker is still ali
 
 **Files:** `SSS/Server/Services/HealthService.luau`.
 **Removed (TRIAGE #14):** `SCS/Health.server.luau`, `SCS/BlockHealthRegen.server.luau`.
-**Depends on:** `DataService` (`Character.Height`, `Progress.Magoi`/`GoldRukh`/`BlackRukh`/`Epithet`, `Character.Gender`), `PlayerService.Ready`, `Shared/Data/Ranks`, `Shared/Data/Alignment`, `DevService.Register`/`.ResolvePlayer`.
-**Depended on by:** the HUD (`Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` attributes, plus `Humanoid.Health`/`MaxHealth` directly) and the menu (`Rank`/`Epithet`/`Alignment` attributes) for a player; an NPC's own character attributes for whatever reads those later. M3-03's `CombatService` calls the API above for both; M3-04's `NpcService` calls `.Register`/`.Unregister`.
+**Depends on:** `DataService` (`Character.Height`, `Progress.Magoi`), `PlayerService.Ready`, `Shared/Data/Ranks`, `DevService.Register`/`.ResolvePlayer`.
+**Depended on by:** the HUD (`Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` attributes, plus `Humanoid.Health`/`MaxHealth` directly) for a player; an NPC's own character attributes for whatever reads those later. M3-03's `CombatService` calls the API above for both; M3-04's `NpcService` calls `.Register`/`.Unregister`. (The menu's `Rank`/`Epithet`/`Alignment` attributes are M4-01's `RankService` now, section 19.)
 
 **Not in use:** `RS/Modules/Combat/LightCombat.luau` and `BasicSwordCombat.luau` are an older server-side combat design. Nothing requires them, and they would error if something did: they require `SSS.Services.DamageService`, which doesn't exist.
 
@@ -414,10 +417,11 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 | `.watch on\|off` | streams `DevState` to the caller every second |
 | `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency |
 | `.age <years> [player]`, `.age+ <n>` | set or add to `Age.Years`, then runs every `DevService.OnAgeChanged` hook (**BUG-15**: resize + grey hair via `AgeService`, max health via `HealthService` — these used to only catch up on the next `.birthday`) |
-| `.magoi <n> [player]`, `.magoi+ <n>` | set or add to `Progress.Magoi` |
-| `.rukh <gold> <black> [player]` | sets both Rukh tallies |
+| `.magoi <n> [player]`, `.magoi+ <n>` | set or add to `Progress.Magoi`, through `RankService.AddMagoi` (**M4-01**: re-registered by `RankService`, replacing `DevService`'s own version, so a rank-up fires immediately instead of waiting on a poll) |
+| `.rukh <gold> <black> [player]` | sets both Rukh tallies, through `RankService.AddDeed` (**M4-01**, same reasoning as `.magoi`) |
 | `.bounty <n> [player]` | sets `Bounty` |
-| `.epithet <text> [player]` | sets `Progress.Epithet` (quote multi-word text) |
+| `.epithet <text> [player]`, `.epithet clear [player]` | sets `Progress.Epithet` (quote multi-word text), or clears both the epithet and any pending choice and re-checks the origin condition (**M4-01**, `RankService`, replacing `DevService`'s own version) |
+| `.rankup [player]` | adds exactly enough Magoi to reach the next rank threshold (**M4-01**, `RankService`) |
 | `.tp <city>` | teleports the caller's character to a spawn point (matches `Workspace.MAP.Spawns` children case-insensitively, with or without the `Spawn` suffix — `.tp qarzin` finds `QarzinSpawn`) |
 | `.cities` | lists the spawn points that exist |
 | `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
@@ -437,7 +441,7 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 
 Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 
-**The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, mortal, sessionSeconds`. A system that isn't built yet (rank, until M4) sends `"n/a"`.
+**The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, mortal, sessionSeconds`. **⚠** `rank` still always sends `"n/a"` — `DevService`'s own snapshot code was written before rank existed (M1-05) and hasn't been pointed at `RankService.GetRank` yet; the player's `Rank`/`RankIndex`/`Alignment`/`EpithetPending` attributes (M4-01) are the live source until a follow-up wires this up.
 
 **Remotes:** `Net.DevCommand` (client → server, one string, 5/s), `Net.DevReply` (server → client, one string), `Net.DevState` (server → client, one table).
 
@@ -454,6 +458,36 @@ Every stat-editing command writes through the `DataService` table and calls `Leg
 ## 18. Ocean (Workspace, not synced)
 
 766 server Scripts under `Workspace.MAP.OCEAN`, three per ocean tile, animate the waves: parts bob 2 studs over 15 s, and wave decals fade in and out over 10 s. **⚠** The `OceanWaves` copies move up and then "down" to the same spot, so they stop after one bob. Every copy adds more event connections each cycle, so the cost keeps growing the longer a server runs.
+
+---
+
+## 19. Rank, Rukh alignment and epithets — new M4-01
+
+**What it does.** `RankService` (`SSS/Server/Services/RankService.luau`) computes each player's rank and Rukh alignment from `Progress` (`Magoi`, `GoldRukh`, `BlackRukh`) using the pure `Shared/Data/Ranks`/`Alignment`/`Epithets` modules (DESIGN.md section 3a, data since M2-06), owns the `Rank`/`RankIndex`/`Epithet`/`Alignment`/`EpithetPending` player attributes (taken over from `HealthService`'s old per-tick refresh — see section 9), and fires the rank-up, alignment-changed and origin-choice moments for M4-02's client to show.
+
+**No shared polling loop.** Every write to `Progress.Magoi`/`GoldRukh`/`BlackRukh` goes through `RankService.AddMagoi`/`.AddDeed`, which check for a rank/alignment change right where the number actually changes — including the dev `.magoi`/`.magoi+`/`.rukh` commands, which `RankService` re-registers under their existing names (`DevService.Register` is a plain table write keyed by command name — any service can add to it, and re-registering the same name overwrites the previous entry; this is how `RankService` swaps in a version that routes through `AddMagoi`/`AddDeed` without `DevService` needing to require `RankService` back, which Roblox would refuse as a cyclic `ModuleScript` require).
+
+**Rank-up.** `AddMagoi(player, amount, reason)` clamps `Progress.Magoi` at 0 and compares the rank index before and after (`Ranks.rankFor`). A rise (never a fall — a dev removing Magoi just updates the attributes, no card) rolls three distinct epithets for the new rank and the player's *current* alignment (`Epithets.pick3(newTitle, alignmentKey, gender, {currentEpithet})`, excluding the epithet they already have so they're never offered a repeat), stores `Progress.PendingEpithet = {rank, choices}`, sets `EpithetPending = true`, and fires `RankUp {title, rankIndex, alignment, choices, origin = false}`.
+
+**Origin at birth.** The Street Rat epithet is chosen once, before a life is judged (White Rukh): `RankService.ShouldOfferOrigin(data, gender)` is true once `Progress.Epithet == ""`, nothing is already pending, and `Gender ~= 0` (character creation done — M2-01's `CharacterService` sets this player attribute). One connection per session on `player:GetAttributeChangedSignal("Gender")` (not a `CharacterService.Created` signal — chosen because the attribute already exists and this avoids touching a file outside this task) does double duty: when `Gender` goes back to 0 (a fresh life — `DataService.NewLife`/`Wipe` already reset `Progress` by the time the new character's attributes are set), it just resyncs the display attributes; when `Gender` goes non-zero, it checks `ShouldOfferOrigin` and, if true, rolls from the Street Rat bank and fires `RankUp {..., rankIndex = 1, origin = true}` the same way a real rank-up does.
+
+**Reconnecting with a choice still pending** (left the game before answering): `RankService:Start()` re-sends the *same stored* `Progress.PendingEpithet.choices` as a `RankUp` (never re-rolled) the moment `DataService.Loaded` fires, so the client shows the same card again. `origin` is inferred as `pending.rank == 1 and Progress.Epithet == ""` — the only way `PendingEpithet.rank` can ever be 1 is the origin flow, since a real rank-up's "before" index is already at least 1 the very first time `AddMagoi` runs.
+
+**Alignment.** `AddDeed(player, "Gold" | "Black", amount)` clamps the given Rukh tally at 0 and compares `Alignment.alignmentFor(GoldRukh, BlackRukh)` before and after. A change that lands on anything but `"White"` fires `AlignmentChanged {alignment}` — landing back on `"White"` never does (that only means dropping below `Alignment.MinDeeds` total deeds, i.e. a dev command lowering the tallies, not a moment worth announcing).
+
+**`ChooseEpithet(index)`:** rejected unless `Progress.PendingEpithet` exists and `index` is an in-range integer 1–3 (the remote's own validator, `Shared/Remotes.luau`, already guarantees the integer/range part; `RankService.ApplyChooseEpithet` re-checks it anyway as the self-tested, Player-free core). On success, `Progress.Epithet` is set from the *stored* choice at that index — never a string the client sends — and `PendingEpithet` is cleared.
+
+**Public API (for M5's missions):** `RankService.AddMagoi(player, amount, reason)`, `.AddDeed(player, kind, amount)`, `.GetRank(player): (index, title)`, `.GetAlignment(player)`. Also `.TitleForIndex(index, gender)` (resolves a stored rank index to its gendered title, e.g. for a `PendingEpithet` resend) and the pure, self-tested core (`ApplyMagoi`, `ApplyDeed`, `ApplyChooseEpithet`, `ShouldOfferOrigin`) the Player-facing functions above are thin wrappers around.
+
+**Dev commands (section 16):** `.rankup [player]` (adds exactly enough Magoi to reach the next threshold), `.epithet clear [player]` (new); `.magoi`/`.magoi+`/`.rukh` re-registered to route through `AddMagoi`/`AddDeed` (same usage and reply text as before).
+
+**Remotes** (`Shared/Remotes.luau`): `RankUp` (server → client, `{title: string, rankIndex: number, alignment: string, choices: {string}, origin: boolean}`), `AlignmentChanged` (server → client, `{alignment: string}`), `ChooseEpithet` (client → server, `index: number` integer 1–3, 3/10s).
+
+**Player attributes:** `Rank` (title via `Ranks.titleFor`), `RankIndex`, `Epithet`, `Alignment` (label), `EpithetPending` (bool) — moved here from `HealthService` (section 9), which still owns `Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` and still reads `Ranks.rankFor` itself for the max-health formula.
+
+**Files:** `SSS/Server/Services/RankService.luau`.
+**Depends on:** `DataService` (`Progress.*`, `Character.Gender`, `.Loaded`/`.Get`/`.IsLoaded`), `LegacyBridge.Refresh` (Magoi is one-way bridged to the legacy `Stats.MaxMagoi`, section 1), `DevService.Register`/`.ResolvePlayer`, `Shared/Data/Ranks`/`Alignment`/`Epithets`, `Shared/Remotes`.
+**Depended on by:** M4-02's client `RankController` (the remotes and attributes above); M5's missions (`AddMagoi`/`AddDeed`).
 
 ---
 

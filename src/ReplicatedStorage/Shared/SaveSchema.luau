@@ -37,6 +37,12 @@ export type Data = {
 		GoldRukh: number,
 		BlackRukh: number,
 		Epithet: string,
+		-- Schema v2 (M4-01). The epithet choice offered at the last rank-up
+		-- (or the origin choice at birth) and not yet answered by
+		-- ChooseEpithet. nil when nothing is pending. Optional, so a v1 save
+		-- (missing the key entirely) already reads the same as nil - nothing
+		-- for Migrations[2] to fill in.
+		PendingEpithet: { rank: number, choices: { string } }?,
 	},
 	Bounty: number,
 	Economy: {
@@ -116,14 +122,15 @@ SaveSchema.Template = template
 -- Migrations[data.Version + 1], then [+2], and so on up to
 -- Config.Data.SchemaVersion. Schema v1 is the baseline: no real save is
 -- ever below it, so there's no Migrations[1] entry.
--- Example for when v2 adds, say, a Progress.Rank field that Reconcile won't
--- backfill correctly on its own (Reconcile only fills top-level template
--- keys that are nil; it can't tell a "0 by intent" from "missing"):
---
--- SaveSchema.Migrations[2] = function(data: Data)
--- 	(data :: any).Progress.Rank = "Street Rat"
--- end
 SaveSchema.Migrations = {} :: { [number]: (data: Data) -> () }
+
+-- v2 (M4-01, DESIGN.md 3a) only adds Progress.PendingEpithet, an optional
+-- field: a v1 save missing the key entirely already reads as nil, the
+-- field's own "nothing pending" value, so there's nothing to backfill.
+-- Kept as an explicit (empty) entry rather than left out, so Migrate's
+-- version bump and the self-test's v1 -> v2 case both walk through a real
+-- migration, not just the loop's own version-number increment.
+SaveSchema.Migrations[2] = function(_data: Data) end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,
 -- in order. Call Profile:Reconcile() before this, so missing template keys
