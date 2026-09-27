@@ -24,6 +24,6 @@ Bryan's direction: judge each system by what it was **meant** to do (comments, T
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| P3-01 | Full code audit: security, bugs, race conditions, leaks, dead code, performance, fragile patterns | reviewer | in progress | Every finding has file, line, severity, what's wrong, plain explanation |
-| P3-02 | Playtest every system and capture every Output error and warning | playtester | in progress | Each system in SYSTEMS.md tried; every error/warning reported with repro steps |
-| P3-03 | Write docs/AUDIT.md | lead | todo | Findings with ID, severity, system, file:line, what's wrong, plain explanation |
+| P3-01 | Full code audit: security, bugs, race conditions, leaks, dead code, performance, fragile patterns | reviewer | done | Every finding has file, line, severity, what's wrong, plain explanation |
+| P3-02 | Playtest every system and capture every Output error and warning | playtester | partial (stopped early; Bryan confirming the rest) | Each system in SYSTEMS.md tried; every error/warning reported with repro steps |
+| P3-03 | Write docs/AUDIT.md | lead | waiting on Bryan | Findings with ID, severity, system, file:line, what's wrong, plain explanation |
