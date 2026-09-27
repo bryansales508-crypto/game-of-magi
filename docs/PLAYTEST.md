@@ -398,3 +398,43 @@ m2-E/F; yeah ill tweak dand look into it later. don't let me forget, and make su
 
 Boot: `[SelfTest] PASS (120 checks)`, controllers ready, save loaded; only the usual 5 s "Infinite yield possible on AppearenceLoaded / Stats" warnings from old scripts while the Studio save loads (~10 s), and a `▶ {...}` print from the Studio-only ClothingSpawn:164. No red lines, no missing-asset warnings.
 "Clothing stand is stocked. Age works perfectly. Mortal shows false. Mortal on kills. It isn't perfect, but it is good enough for now." Follow-ups Bryan keeps himself: docs/FOLLOWUPS.md (heartbeat sound, afterlife cutscene, viewport).
+
+---
+
+## M3 Combat
+
+Setup as before. Numbers you can tune live: `Shared/Data/Combat.luau` (Rojo syncs; restart Play). Dev commands: `.combat log on|off` (every hit decision in Output), `.knock [player]`, `.stun <s> [player]`, `.npc list|reset|type <name> Dummy|Target`, `.hp`, `.tier`.
+
+**Bryan runs (feel):**
+
+### M3-A Fist combo
+- Click three times in rhythm at a dummy: jab, cross, finisher (bigger knockback). Wait past the combo window and click: it restarts at the jab. Fast clicking gives no extra hits. **Pass:** 3 distinct hits with your swing animation each, the finisher throws the dummy, `.combat log on` shows one decision per swing.
+
+### M3-B Block, parry, block break
+- Hold F while a Target dummy punches: block sound and pose, no damage. Tap F just as a punch lands: parry effect, the dummy staggers. Keep blocking through many hits: the block bar drains, breaks, TrueStun, then refills. **Pass:** immune while the block holds; break feels right; a second parry within 1.5 s is a normal block.
+
+### M3-C Dash and run
+- Q right after spawning (no punch first), then Q with W+D held (diagonal), then Q again immediately (rejected, cooldown). Double-tap W to run: camera zooms, speed up; release: back. **Pass:** all four behave; `.state` walkSpeed shows 16 / 28.
+
+### M3-D Knockout and getting up
+- `.hp 5` then let a dummy hit you: knocked (ragdoll, blind screen, no input), then you get up after ~8 s with a quarter health. **Pass:** no death, controls back, no stuck camera. Repeat on a dummy with `.knock` on it.
+
+### M3-E Dummies
+- Walk near the Target dummy: it chases within 30 studs, punches within reach, gives up when you run past 40 studs, wanders, and re-acquires you when you return. Knock it out: it gets up and resumes. The Dummy type only flinches. **Pass:** all of it; `.npc list` shows both with their types.
+
+### M3-F Low health slow and hurt stagger
+- `.hp 10`: you slow immediately; `.hp 100`: full speed back. A hit staggers you briefly. **Pass:** both.
+
+### M3-G Footsteps and old systems
+- Walk on stone, sand, wood: the same step sounds and footprints as before. Take a delivery with heavy cargo if reachable: the slow still applies. **Pass:** nothing that worked before is silent or broken.
+
+**Agent runs (cheat checks, `execute_luau` on the client):**
+
+### M3-H Remote abuse
+- `Net.Attack:FireServer()` 30 times in a loop: at most the rate-limited number of swings, one warning. `Net.Attack:FireServer("x")`, `Net.Dash:FireServer(1e9, 0)`, `Net.Dash:FireServer(0/0, 1)`, `Net.Block:FireServer(5)`: all dropped with `[Remotes]` warnings, no errors. Move the character 200 studs from a dummy (server-side `PivotTo`) and fire `Attack`: `.combat log` shows no hit. **Pass:** every line.
+
+### M3-I Dash stacking and parry spam
+- Fire `Dash(0,1)` 10 times in 1 s: one dash. Fire `Block(true)`/`Block(false)` 20 times: one parry window per cooldown. **Pass:** logs confirm.
+
+---
+
