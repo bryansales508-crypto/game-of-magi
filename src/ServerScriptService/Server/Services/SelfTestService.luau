@@ -13,6 +13,7 @@ local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local log = Log.new("SelfTest")
 
 type Check = { name: string, pass: boolean }
+type RemoteDef = Remotes.RemoteDef
 
 local function expect(results: { Check }, name: string, condition: boolean)
 	table.insert(results, { name = name, pass = condition })
@@ -64,30 +65,94 @@ end
 
 local function testRemoteWrapper(results: { Check })
 	-- No real player is needed: CheckCall only uses it as a rate-limit key.
-	local fakePlayer = ({} :: any) :: Player
-
-	local ok = Remotes.Server.CheckCall("DebugPing", fakePlayer, { "hello" })
-	expect(results, "remote: good DebugPing call accepted", ok)
-
-	local okWrongType = Remotes.Server.CheckCall("DebugPing", fakePlayer, { 123 })
-	expect(results, "remote: wrong-type DebugPing call rejected", not okWrongType)
-
-	local okTooLong = Remotes.Server.CheckCall("DebugPing", fakePlayer, { string.rep("x", 51) })
-	expect(results, "remote: over-length DebugPing call rejected", not okTooLong)
-
-	local okUnknown = Remotes.Server.CheckCall("NotARealRemote", fakePlayer, {})
-	expect(results, "remote: unknown remote name rejected", not okUnknown)
-
-	-- DebugPing allows 5 calls per second; the "good" call above spent one.
-	local withinLimit = true
-	for _ = 1, 4 do
-		local passed = Remotes.Server.CheckCall("DebugPing", fakePlayer, { "x" })
-		withinLimit = withinLimit and passed
+	-- Each scenario gets its own fake player so their rate windows don't
+	-- interfere with each other; every one is cleared at the end (a fake
+	-- player never fires PlayerRemoving, so nothing else will clear it).
+	local fakePlayers: { Player } = {}
+	local function newFakePlayer(): Player
+		local player = ({} :: any) :: Player
+		table.insert(fakePlayers, player)
+		return player
 	end
-	expect(results, "remote: calls within rate limit accepted", withinLimit)
 
-	local overLimit = Remotes.Server.CheckCall("DebugPing", fakePlayer, { "x" })
-	expect(results, "remote: call over rate limit rejected", not overLimit)
+	do
+		local player = newFakePlayer()
+		local ok = Remotes.Server.CheckCall("DebugPing", player, table.pack("hello"))
+		expect(results, "remote: good DebugPing call accepted", ok)
+
+		local okWrongType = Remotes.Server.CheckCall("DebugPing", player, table.pack(123))
+		expect(results, "remote: wrong-type DebugPing call rejected", not okWrongType)
+
+		local okTooLong = Remotes.Server.CheckCall("DebugPing", player, table.pack(string.rep("x", 51)))
+		expect(results, "remote: over-length DebugPing call rejected", not okTooLong)
+
+		local okUnknown = Remotes.Server.CheckCall("NotARealRemote", player, { n = 0 })
+		expect(results, "remote: unknown remote name rejected", not okUnknown)
+	end
+
+	-- DebugPing allows 5 calls per second.
+	do
+		local player = newFakePlayer()
+		local withinLimit = true
+		for _ = 1, 5 do
+			local passed = Remotes.Server.CheckCall("DebugPing", player, table.pack("x"))
+			withinLimit = withinLimit and passed
+		end
+		expect(results, "remote: calls within rate limit accepted", withinLimit)
+
+		local overLimit = Remotes.Server.CheckCall("DebugPing", player, table.pack("x"))
+		expect(results, "remote: call over rate limit rejected", not overLimit)
+	end
+
+	-- H2: bad calls must still count against the rate limit, otherwise an
+	-- attacker floods the server for free by never sending a valid call.
+	do
+		local player = newFakePlayer()
+		local allRejectedForType = true
+		for _ = 1, 5 do
+			local ok, reason = Remotes.Server.CheckCall("DebugPing", player, table.pack(123))
+			allRejectedForType = allRejectedForType and not ok and reason ~= "rate limit exceeded"
+		end
+		expect(results, "remote (H2): bad calls rejected for their own reason", allRejectedForType)
+
+		local ok, reason = Remotes.Server.CheckCall("DebugPing", player, table.pack("valid"))
+		expect(results, "remote (H2): rate limit still trips after only bad calls", not ok and reason == "rate limit exceeded")
+	end
+
+	-- M1: argument counting must use table.pack's .n, not #args, so a nil
+	-- hole or an omitted trailing optional argument is handled correctly.
+	do
+		local def: RemoteDef = {
+			kind = "Event",
+			args = { Validate.string({ maxLen = 10 }), Validate.optional(Validate.number()) },
+			rate = { count = 100, per = 1 },
+		}
+
+		local nilHoleInSecondArg = table.pack("a", nil)
+		expect(
+			results,
+			"argcount (M1): nil-hole trailing optional accepted",
+			(Remotes.Server.ValidateArgsForTest(def, nilHoleInSecondArg))
+		)
+
+		local omittedTrailingOptional = table.pack("a")
+		expect(
+			results,
+			"argcount (M1): omitted trailing optional accepted",
+			(Remotes.Server.ValidateArgsForTest(def, omittedTrailingOptional))
+		)
+
+		local tooManyArgs = table.pack("a", 1, "extra")
+		expect(
+			results,
+			"argcount (M1): extra argument rejected",
+			not (Remotes.Server.ValidateArgsForTest(def, tooManyArgs))
+		)
+	end
+
+	for _, player in fakePlayers do
+		Remotes.Server.ClearPlayerState(player)
+	end
 end
 
 local SelfTestService = {}

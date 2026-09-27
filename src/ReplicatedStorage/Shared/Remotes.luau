@@ -21,6 +21,10 @@ export type RemoteDef = {
 	rate: { count: number, per: number },
 }
 
+-- table.pack(...) result: .n is the real argument count, so a nil in the
+-- middle or at the end (a "hole") is never lost the way #args would lose it.
+export type PackedArgs = { n: number, [number]: any }
+
 local Remotes = {}
 
 -- Declare every remote here, once. Kept empty except for the self-test remote.
@@ -38,18 +42,36 @@ local NET_FOLDER_NAME = "Net"
 
 Remotes.Server = {}
 
+local initialized = false
 local instances: { [string]: RemoteEvent | RemoteFunction } = {}
-local eventHandlers: { [string]: (player: Player, ...any) -> () } = {}
+-- Stored with a variadic return (not `()`) so pcall(handler, ...) below
+-- type-checks as (boolean, ...any) instead of just (boolean); On()'s public
+-- signature below still only promises callers a no-return handler.
+local eventHandlers: { [string]: (player: Player, ...any) -> ...any } = {}
 local functionHandlers: { [string]: (player: Player, ...any) -> ...any } = {}
 
 -- [player][remoteName] = { count of calls in the current window, window start }
 local rateState: { [Player]: { [string]: { count: number, windowStart: number } } } = {}
+-- [player][remoteName] = os.clock() the last "dropped" warning was logged
+local warnState: { [Player]: { [string]: number } } = {}
 
-local function validateArgs(def: RemoteDef, args: { any }): (boolean, string?)
-	if #args ~= #def.args then
-		return false, string.format("expected %d argument(s), got %d", #def.args, #args)
+local function clearPlayerState(player: Player)
+	rateState[player] = nil
+	warnState[player] = nil
+end
+
+-- Clears a player's rate/warn state immediately. PlayerRemoving does this
+-- for real players; tests that use a fake player table should call it too,
+-- since no PlayerRemoving event will ever fire for one.
+Remotes.Server.ClearPlayerState = clearPlayerState
+
+local function validateArgs(def: RemoteDef, args: PackedArgs): (boolean, string?)
+	if args.n > #def.args then
+		return false, string.format("expected at most %d argument(s), got %d", #def.args, args.n)
 	end
 	for i, validator in def.args do
+		-- args[i] is nil both for a real hole and for an omitted trailing
+		-- argument; Validate.optional(...) is what allows either through.
 		local ok, reason = validator(args[i])
 		if not ok then
 			return false, string.format("argument %d: %s", i, reason or "invalid")
@@ -80,73 +102,150 @@ local function checkRate(player: Player, name: string, def: RemoteDef): (boolean
 	return true
 end
 
--- Checks a call against its definition (args + rate limit) without invoking
--- any handler. Exposed so SelfTestService can exercise it directly.
-function Remotes.Server.CheckCall(name: string, player: Player, args: { any }): (boolean, string?)
+-- Checks a call against its definition (rate limit, then args) without
+-- invoking any handler. Exposed so SelfTestService can exercise it
+-- directly. The rate check runs first so a flood of bad calls still gets
+-- throttled instead of validating for free every time.
+function Remotes.Server.CheckCall(name: string, player: Player, args: PackedArgs): (boolean, string?)
 	local def = Remotes.Definitions[name]
 	if not def then
 		return false, "unknown remote"
 	end
 
-	local okArgs, argReason = validateArgs(def, args)
-	if not okArgs then
-		return false, argReason
+	local okRate, rateReason = checkRate(player, name, def)
+	if not okRate then
+		return false, rateReason
 	end
 
-	return checkRate(player, name, def)
+	return validateArgs(def, args)
+end
+
+-- Exposed for SelfTestService only: lets it test the argument-count/hole
+-- handling directly, against an ad-hoc definition, without registering a
+-- real remote.
+Remotes.Server.ValidateArgsForTest = validateArgs
+
+local function warnDropped(player: Player, name: string, def: RemoteDef, reason: string?)
+	local playerWarnState = warnState[player]
+	if not playerWarnState then
+		playerWarnState = {}
+		warnState[player] = playerWarnState
+	end
+
+	local now = os.clock()
+	local last = playerWarnState[name]
+	if last and now - last < def.rate.per then
+		return
+	end
+	playerWarnState[name] = now
+
+	log:Warn(string.format("dropped %s from %s: %s", name, player.Name, reason or "invalid"))
 end
 
 local function makeEventDispatch(name: string)
 	return function(player: Player, ...: any)
-		local ok, reason = Remotes.Server.CheckCall(name, player, { ... })
-		if not ok then
-			log:Warn(string.format("dropped %s from %s: %s", name, player.Name, reason or "invalid"))
+		if player.Parent == nil then
+			-- The player already left; don't resurrect their rate state.
 			return
 		end
+
+		local def = Remotes.Definitions[name] :: RemoteDef
+		local packed = table.pack(...) :: PackedArgs
+		local ok, reason = Remotes.Server.CheckCall(name, player, packed)
+		if not ok then
+			warnDropped(player, name, def, reason)
+			return
+		end
+
 		local handler = eventHandlers[name]
-		if handler then
-			handler(player, ...)
+		if not handler then
+			return
+		end
+
+		local success, err = pcall(handler, player, table.unpack(packed, 1, #def.args))
+		if not success then
+			log:Error(string.format("%s handler error (from %s): %s", name, player.Name, tostring(err)))
 		end
 	end
 end
 
 local function makeFunctionDispatch(name: string)
 	return function(player: Player, ...: any): ...any
-		local ok, reason = Remotes.Server.CheckCall(name, player, { ... })
-		if not ok then
-			log:Warn(string.format("dropped %s from %s: %s", name, player.Name, reason or "invalid"))
+		if player.Parent == nil then
 			return nil
 		end
+
+		local def = Remotes.Definitions[name] :: RemoteDef
+		local packed = table.pack(...) :: PackedArgs
+		local ok, reason = Remotes.Server.CheckCall(name, player, packed)
+		if not ok then
+			warnDropped(player, name, def, reason)
+			return nil
+		end
+
 		local handler = functionHandlers[name]
 		if not handler then
 			return nil
 		end
-		return handler(player, ...)
+
+		local results = table.pack(pcall(handler, player, table.unpack(packed, 1, #def.args)))
+		if not results[1] then
+			log:Error(string.format("%s handler error (from %s): %s", name, player.Name, tostring(results[2])))
+			return nil
+		end
+		return table.unpack(results, 2, results.n)
+	end
+end
+
+local function getOrCreateNetFolder(): Folder
+	local existing = ReplicatedStorage:FindFirstChild(NET_FOLDER_NAME)
+	if existing then
+		if existing:IsA("Folder") then
+			return existing
+		end
+		existing:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = NET_FOLDER_NAME
+	folder.Parent = ReplicatedStorage
+	return folder
+end
+
+local function getOrCreateRemote(folder: Folder, name: string, kind: RemoteKind): RemoteEvent | RemoteFunction
+	local existing = folder:FindFirstChild(name)
+	if existing then
+		if kind == "Event" and existing:IsA("RemoteEvent") then
+			return existing
+		elseif kind == "Function" and existing:IsA("RemoteFunction") then
+			return existing
+		end
+		existing:Destroy()
+	end
+
+	if kind == "Event" then
+		local remoteEvent = Instance.new("RemoteEvent")
+		remoteEvent.Name = name
+		remoteEvent.Parent = folder
+		return remoteEvent
+	else
+		local remoteFunction = Instance.new("RemoteFunction")
+		remoteFunction.Name = name
+		remoteFunction.Parent = folder
+		return remoteFunction
 	end
 end
 
 function Remotes.Server.Init()
-	local folder = ReplicatedStorage:FindFirstChild(NET_FOLDER_NAME) :: Folder?
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = NET_FOLDER_NAME
-		folder.Parent = ReplicatedStorage
+	if initialized then
+		return
 	end
+	initialized = true
+
+	local folder = getOrCreateNetFolder()
 
 	for name, def in Remotes.Definitions do
-		local existing = (folder :: Folder):FindFirstChild(name)
-		local instance: RemoteEvent | RemoteFunction
-		if existing then
-			instance = existing :: any
-		elseif def.kind == "Event" then
-			instance = Instance.new("RemoteEvent")
-			instance.Name = name
-			instance.Parent = folder
-		else
-			instance = Instance.new("RemoteFunction")
-			instance.Name = name
-			instance.Parent = folder
-		end
+		local instance = getOrCreateRemote(folder, name, def.kind)
 		instances[name] = instance
 
 		if def.kind == "Event" then
@@ -156,20 +255,33 @@ function Remotes.Server.Init()
 		end
 	end
 
-	Players.PlayerRemoving:Connect(function(player: Player)
-		rateState[player] = nil
-	end)
+	Players.PlayerRemoving:Connect(clearPlayerState)
 end
 
 function Remotes.Server.On(name: string, handler: (player: Player, ...any) -> ())
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Event" then
+		log:Error(string.format("On(%s): not a declared Event remote", name))
+		return
+	end
 	eventHandlers[name] = handler
 end
 
 function Remotes.Server.Handle(name: string, handler: (player: Player, ...any) -> ...any)
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Function" then
+		log:Error(string.format("Handle(%s): not a declared Function remote", name))
+		return
+	end
 	functionHandlers[name] = handler
 end
 
 function Remotes.Server.Fire(name: string, player: Player, ...: any)
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Event" then
+		log:Error(string.format("Fire(%s): not a declared Event remote", name))
+		return
+	end
 	local instance = instances[name]
 	if not instance then
 		log:Warn(string.format("Fire(%s): remote not initialized", name))
@@ -179,6 +291,11 @@ function Remotes.Server.Fire(name: string, player: Player, ...: any)
 end
 
 function Remotes.Server.FireAll(name: string, ...: any)
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Event" then
+		log:Error(string.format("FireAll(%s): not a declared Event remote", name))
+		return
+	end
 	local instance = instances[name]
 	if not instance then
 		log:Warn(string.format("FireAll(%s): remote not initialized", name))
@@ -216,32 +333,42 @@ end
 
 local DEFAULT_INVOKE_TIMEOUT = 10
 
-function Remotes.Client.Invoke(name: string, ...: any): ...any
+-- Returns (true, ...result) on a normal reply, or (false, reason) on a
+-- server-side error or timeout, so callers can tell a failure from a real
+-- nil result. Uses the calling thread's own coroutine (no poll loop, no
+-- leaked thread waiting on a result nobody will read).
+function Remotes.Client.Invoke(name: string, ...: any): (boolean, ...any)
 	local instance = getClientInstance(name) :: RemoteFunction
 	local args = table.pack(...)
+	local caller = coroutine.running()
+	local settled = false
 
-	local result: { any }? = nil
-	local errored = false
+	local timeoutThread = task.delay(DEFAULT_INVOKE_TIMEOUT, function()
+		if settled then
+			return
+		end
+		settled = true
+		task.spawn(caller, false, "timeout")
+	end)
+
 	task.spawn(function()
-		local ok, packed = pcall(function()
-			return table.pack(instance:InvokeServer(table.unpack(args, 1, args.n)))
-		end)
-		if ok then
-			result = packed
+		local results = table.pack(pcall(function()
+			return instance:InvokeServer(table.unpack(args, 1, args.n))
+		end))
+		if settled then
+			return
+		end
+		settled = true
+		task.cancel(timeoutThread)
+
+		if results[1] then
+			task.spawn(caller, true, table.unpack(results, 2, results.n))
 		else
-			errored = true
+			task.spawn(caller, false, tostring(results[2]))
 		end
 	end)
 
-	local deadline = os.clock() + DEFAULT_INVOKE_TIMEOUT
-	while result == nil and not errored and os.clock() < deadline do
-		task.wait(0.03)
-	end
-
-	if result == nil then
-		return nil
-	end
-	return table.unpack(result, 1, (result :: any).n)
+	return coroutine.yield()
 end
 
 return Remotes

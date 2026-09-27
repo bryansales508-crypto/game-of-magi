@@ -26,6 +26,8 @@ Config.Data = {
 	SchemaVersion = 1,
 }
 
+table.freeze(Config.Debug)
+table.freeze(Config.Data)
 table.freeze(Config)
 
 return Config

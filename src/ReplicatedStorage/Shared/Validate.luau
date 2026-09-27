@@ -129,4 +129,30 @@ function Validate.enum(list: { any }): Validator
 	end
 end
 
+-- Validates a table against a fixed shape: every key must be declared in
+-- `shape`, and every declared key's value must pass its validator (missing
+-- keys are validated as nil, so wrap optional ones in Validate.optional).
+function Validate.table(shape: { [string]: Validator }): Validator
+	return function(value: any): (boolean, string?)
+		if type(value) ~= "table" then
+			return false, "expected a table"
+		end
+
+		for key in value :: { [any]: any } do
+			if type(key) ~= "string" or shape[key] == nil then
+				return false, string.format("unexpected key %s", tostring(key))
+			end
+		end
+
+		for key, validator in shape do
+			local ok, reason = validator((value :: { [string]: any })[key])
+			if not ok then
+				return false, string.format("%s: %s", key, reason or "invalid")
+			end
+		end
+
+		return true
+	end
+end
+
 return Validate

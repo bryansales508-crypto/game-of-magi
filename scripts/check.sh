@@ -3,8 +3,11 @@
 # sourcemap so luau-lsp knows the real Roblox instance types (e.g. that
 # script.Parent.Config is a ModuleScript, not a generic Instance).
 #
-# First run downloads selene, luau-lsp and rojo (7.x) Linux binaries into
-# ~/tools/bin (skipped if already present).
+# First run downloads pinned selene, luau-lsp and rojo Linux binaries into
+# ~/tools/bin (skipped if already present). Versions are pinned on purpose:
+# no GitHub API "latest" lookups, so a run never silently picks up a newer
+# tool with different behavior. Bump the *_VERSION values below on purpose,
+# not by accident.
 #
 # Only the new code is checked; the rest of the game is still being
 # rebuilt and isn't held to this yet:
@@ -14,8 +17,12 @@
 #
 # Usage: scripts/check.sh
 
-set -uo pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
+
+SELENE_VERSION="0.29.0"
+LUAU_LSP_VERSION="1.54.0"
+ROJO_VERSION="7.5.1"
 
 TOOLS_DIR="$HOME/tools/bin"
 mkdir -p "$TOOLS_DIR"
@@ -23,17 +30,8 @@ export PATH="$TOOLS_DIR:$PATH"
 
 log() { echo "[check.sh] $*" >&2; }
 
-# Resolves the latest release tag for a GitHub repo (e.g. "Kampfkarren/selene").
-latest_tag() {
-	curl -fsSL "https://api.github.com/repos/$1/releases/latest" | jq -r '.tag_name'
-}
-
-# Resolves the latest release tag matching a prefix (e.g. rojo's 7.x line),
-# so a future 8.x release doesn't silently get picked up here.
-latest_tag_matching() {
-	curl -fsSL "https://api.github.com/repos/$1/releases" | jq -r --arg p "$2" '[.[] | select(.tag_name | startswith($p))][0].tag_name'
-}
-
+# Downloads $1 to $2, or aborts immediately (set -e + curl -f) with a clear
+# error naming the URL, instead of unzipping a 403/404 error page.
 fetch() {
 	log "downloading $1"
 	curl -fsSL "$1" -o "$2"
@@ -41,10 +39,9 @@ fetch() {
 
 install_selene() {
 	if [ -x "$TOOLS_DIR/selene" ]; then return; fi
-	local tag zip
-	tag="$(latest_tag Kampfkarren/selene)"
+	local zip
 	zip="$(mktemp)"
-	fetch "https://github.com/Kampfkarren/selene/releases/download/${tag}/selene-linux.zip" "$zip"
+	fetch "https://github.com/Kampfkarren/selene/releases/download/${SELENE_VERSION}/selene-${SELENE_VERSION}-linux.zip" "$zip"
 	unzip -o -q "$zip" -d "$TOOLS_DIR"
 	chmod +x "$TOOLS_DIR/selene"
 	rm -f "$zip"
@@ -52,23 +49,22 @@ install_selene() {
 
 install_luau_lsp() {
 	if [ -x "$TOOLS_DIR/luau-lsp" ]; then return; fi
-	local tag zip
-	tag="$(latest_tag JohnnyMorganz/luau-lsp)"
+	local zip
 	zip="$(mktemp)"
-	fetch "https://github.com/JohnnyMorganz/luau-lsp/releases/download/${tag}/luau-lsp-linux.zip" "$zip"
+	fetch "https://github.com/JohnnyMorganz/luau-lsp/releases/download/${LUAU_LSP_VERSION}/luau-lsp-linux-x86_64.zip" "$zip"
 	unzip -o -q "$zip" -d "$TOOLS_DIR"
 	chmod +x "$TOOLS_DIR/luau-lsp"
 	rm -f "$zip"
-	fetch "https://github.com/JohnnyMorganz/luau-lsp/releases/download/${tag}/globalTypes.d.lua" "$TOOLS_DIR/globalTypes.d.lua"
+	# Not a release asset: the type definitions ship as a file in the repo,
+	# tagged in lockstep with each luau-lsp release.
+	fetch "https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/${LUAU_LSP_VERSION}/scripts/globalTypes.d.luau" "$TOOLS_DIR/globalTypes.d.luau"
 }
 
 install_rojo() {
 	if [ -x "$TOOLS_DIR/rojo" ]; then return; fi
-	local tag version zip
-	tag="$(latest_tag_matching rojo-rbx/rojo v7.)"
-	version="${tag#v}"
+	local zip
 	zip="$(mktemp)"
-	fetch "https://github.com/rojo-rbx/rojo/releases/download/${tag}/rojo-${version}-linux-x86_64.zip" "$zip"
+	fetch "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/rojo-${ROJO_VERSION}-linux-x86_64.zip" "$zip"
 	unzip -o -q "$zip" -d "$TOOLS_DIR"
 	chmod +x "$TOOLS_DIR/rojo"
 	rm -f "$zip"
@@ -93,16 +89,30 @@ TARGETS=(
 
 echo
 echo "== selene =="
-selene "${TARGETS[@]}"
-selene_exit=$?
+selene_exit=0
+selene "${TARGETS[@]}" || selene_exit=$?
 
 echo
 echo "== luau-lsp analyze =="
+# luau-lsp reports each diagnostic once for the file's disk path and once
+# for its sourcemap (instance) path; dedupe lines so a single real error
+# isn't misread as two.
+luau_lsp_raw="$(mktemp)"
+luau_lsp_exit=0
 luau-lsp analyze \
 	--sourcemap="$SOURCEMAP" \
-	--defs="$TOOLS_DIR/globalTypes.d.lua" \
-	"${TARGETS[@]}"
-luau_lsp_exit=$?
+	--defs="$TOOLS_DIR/globalTypes.d.luau" \
+	"${TARGETS[@]}" > "$luau_lsp_raw" 2>&1 || luau_lsp_exit=$?
+# Normalize away the absolute-vs-relative path and the optional
+# "[game/Instance/Path]" sourcemap annotation before deduping, since the
+# same diagnostic is otherwise printed once per addressing mode.
+awk -v repo="$(pwd)/" '{
+	line = $0
+	gsub(repo, "", line)
+	gsub(/ \[[^]]*\]/, "", line)
+	if (!seen[line]++) print line
+}' "$luau_lsp_raw"
+rm -f "$luau_lsp_raw"
 
 echo
 if [ "$selene_exit" -eq 0 ] && [ "$luau_lsp_exit" -eq 0 ]; then
