@@ -1,7 +1,7 @@
 # Renovation setup
 
 ## Phase 0: Protect the original (do this first)
-1. Open your RPG in Studio and use **File → Save to File As** to save a copy, for example `sindria-copy.rbxl`, inside this project folder. The agents only ever touch this copy.
+1. Open your RPG in Studio and use **File → Save to File As** to save a copy, for example `game of magi.rbxl`, inside this project folder. The agents only ever touch this copy.
 2. Copy `rojo.exe` into this folder.
 3. In a terminal here:
    ```
@@ -9,7 +9,7 @@
    git add -A
    git commit -m "Renovation kit"
    ```
-4. Close the original place. Open **sindria-copy.rbxl** in Studio.
+4. Close the original place. Open **game of magi.rbxl** in Studio.
 
 ## Connect Claude Code
 In **Command Prompt** in this folder (Studio is already registered from The Grave War, but it's per-project):
@@ -27,7 +27,7 @@ Then run `claude` and check `/mcp`.
 1. In Studio, **save** the copy (Ctrl+S).
 2. In the terminal:
    ```
-   .\rojo syncback default.project.json --input sindria-copy.rbxl
+   .\rojo syncback default.project.json --input "game of magi.rbxl"
    ```
 3. Tell the lead "syncback done."
 
