@@ -76,16 +76,24 @@ local RANKS: { [string]: AlignmentBanks } = {
 	},
 }
 
+-- BUG-09: Street Rat's four alignment keys all alias the same STREET_RAT
+-- table (its one shared bank), so this loop visits it - and its gendered
+-- entries - more than once. table.freeze errors on an already-frozen
+-- table, so every freeze here is guarded instead of unconditional.
 for _, banks in RANKS do
 	for _, bank in banks do
 		for _, entry in bank do
-			if type(entry) == "table" then
+			if type(entry) == "table" and not table.isfrozen(entry) then
 				table.freeze(entry)
 			end
 		end
-		table.freeze(bank)
+		if not table.isfrozen(bank) then
+			table.freeze(bank)
+		end
 	end
-	table.freeze(banks)
+	if not table.isfrozen(banks) then
+		table.freeze(banks)
+	end
 end
 table.freeze(RANKS)
 

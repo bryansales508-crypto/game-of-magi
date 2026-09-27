@@ -12,6 +12,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local LegacyBridge = require(ServerScriptService.Server.Services.LegacyBridge)
 local PlayerService = require(ServerScriptService.Server.Services.PlayerService)
@@ -29,6 +30,32 @@ type CommandSpec = {
 local Commands: { [string]: CommandSpec } = {}
 
 local DevService = {}
+
+-- ==================== Age-change hooks (BUG-15) ====================
+-- `.age`/`.age+` only changed the number; height, hair and max health
+-- waited for the next birthday to catch up. AgeService and HealthService
+-- each register a hook here instead of DevService requiring either back
+-- (Roblox errors on a cyclic ModuleScript require, and both already
+-- require DevService for Register/GetTimeScale).
+
+-- Typed as variadic (not `()`) so pcall(hook, ...) below type-checks as
+-- (boolean, ...any) instead of just (boolean); a real hook still isn't
+-- expected to return anything meaningful (same trick Remotes.luau uses).
+export type AgeChangeHook = (player: Player, data: SaveSchema.Data) -> ...any
+local ageChangeHooks: { AgeChangeHook } = {}
+
+function DevService.OnAgeChanged(hook: AgeChangeHook)
+	table.insert(ageChangeHooks, hook)
+end
+
+local function runAgeChangeHooks(player: Player, data: SaveSchema.Data)
+	for _, hook in ageChangeHooks do
+		local ok, err = pcall(hook, player, data)
+		if not ok then
+			log:Error(string.format("an OnAgeChanged hook errored for %s: %s", player.Name, tostring(err)))
+		end
+	end
+end
 
 -- ==================== Permission ====================
 
@@ -375,6 +402,9 @@ local function ageCommand(mode: "set" | "add"): (Player, { string }) -> string
 		local old = data.Age.Years
 		data.Age.Years = if mode == "add" then old + years else years
 		LegacyBridge.Refresh(target, data)
+		-- BUG-15: resize, grey hair and refresh max health right away
+		-- instead of waiting for the next birthday.
+		runAgeChangeHooks(target, data)
 
 		return string.format("%s's age: %d -> %d", target.Name, old, data.Age.Years)
 	end

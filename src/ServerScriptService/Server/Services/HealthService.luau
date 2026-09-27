@@ -220,6 +220,16 @@ end
 
 function HealthService:Init()
 	registerDevCommands()
+
+	-- BUG-15: `.age`/`.age+` used to leave MaxHealth stale until the next
+	-- birthday; recompute it (rank can move too, so not just height)
+	-- right away instead.
+	DevService.OnAgeChanged(function(player: Player, data: Data)
+		local character = player.Character
+		if character then
+			setupCharacter(player, character, data)
+		end
+	end)
 end
 
 function HealthService:Start()

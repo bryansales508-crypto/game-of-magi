@@ -306,33 +306,35 @@ end
 -- Exposed for the .birthday/.heart dev commands (registered below). R4:
 -- both refuse while Dying, so `.heart fatal` during a real death sequence
 -- (or a repeat) can't start a second one - NewLife running twice would
--- double Meta.Lives and load the character twice.
-function AgeService.ForceBirthday(player: Player): boolean
+-- double Meta.Lives and load the character twice. BUG-08: the reason a
+-- refusal happened is returned too, so the dev command can say why
+-- ("already dying") instead of the same generic failure as no-save-loaded.
+function AgeService.ForceBirthday(player: Player): (boolean, string?)
 	if player:GetAttribute("Dying") then
-		return false
+		return false, "already dying"
 	end
 	local data = DataService.Get(player)
 	if data == nil then
-		return false
+		return false, "no save loaded"
 	end
 	onBirthday(player, data)
-	return true
+	return true, nil
 end
 
-function AgeService.ForceHeartAttack(player: Player, fatal: boolean): boolean
+function AgeService.ForceHeartAttack(player: Player, fatal: boolean): (boolean, string?)
 	if player:GetAttribute("Dying") then
-		return false
+		return false, "already dying"
 	end
 	local data = DataService.Get(player)
 	if data == nil then
-		return false
+		return false, "no save loaded"
 	end
 	Remotes.Server.Fire("HeartAttack", player, data.Age.Years, fatal)
 	if fatal then
 		active[player] = nil
 		task.spawn(startDeathSequence, player, data)
 	end
-	return true
+	return true, nil
 end
 
 -- ==================== service ====================
@@ -340,6 +342,17 @@ end
 function AgeService:Init()
 	Remotes.Server.On("RukhSceneDone", function(player: Player)
 		sceneDoneBindable:Fire(player)
+	end)
+
+	-- BUG-15: `.age`/`.age+` used to only change the number; resize and
+	-- grey hair right away too instead of waiting for the next birthday.
+	DevService.OnAgeChanged(function(player: Player, data: Data)
+		resizeCharacter(player, data)
+		local character = player.Character
+		if character then
+			AgeService.ApplyHairColor(character, data)
+		end
+		LegacyBridge.Refresh(player, data)
 	end)
 
 	-- Registered here (DevService.Register, not a direct require of
@@ -351,8 +364,9 @@ function AgeService:Init()
 		if target == nil then
 			return err or "player not found"
 		end
-		if not AgeService.ForceBirthday(target) then
-			return string.format("%s has no save loaded", target.Name)
+		local ok, reason = AgeService.ForceBirthday(target)
+		if not ok then
+			return string.format("%s: %s", target.Name, reason or "failed")
 		end
 		local data = DataService.Get(target)
 		return string.format("%s's birthday: now age %s", target.Name, if data then tostring(data.Age.Years) else "?")
@@ -372,8 +386,9 @@ function AgeService:Init()
 			if target == nil then
 				return err or "player not found"
 			end
-			if not AgeService.ForceHeartAttack(target, fatal) then
-				return string.format("%s has no save loaded", target.Name)
+			local ok, reason = AgeService.ForceHeartAttack(target, fatal)
+			if not ok then
+				return string.format("%s: %s", target.Name, reason or "failed")
 			end
 			return string.format("Heart attack fired for %s (fatal=%s)", target.Name, tostring(fatal))
 		end

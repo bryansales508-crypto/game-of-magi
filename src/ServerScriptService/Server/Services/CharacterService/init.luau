@@ -121,15 +121,24 @@ end
 -- A stand-in for the old Stats Value folder: RF.Assets' facebase/mouthshape/
 -- eyecolor/eyebrow functions all read `stat["Field"].Value`. Cheaper than
 -- waiting on LegacyBridge's real Values, and works before Build() has run.
-local function statShim(data: Data): any
+-- BUG-10: must cover every key RF/Assets reads via `stat["X"].Value`
+-- (grepped: Gender, FaceBase, Race, EyeColor, MouthShape, HairColor -
+-- Assets.eyebrow reads HairColor as a Color3 to tint the eyebrow decal).
+-- Missing HairColor crashed buildFalseHead, which aborted the whole build
+-- before AppearenceLoaded was ever set, hanging every old script waiting
+-- on it. SelfTestService.testCharacterService checks this list stays
+-- complete against Assets' real reads.
+function CharacterService.StatShim(data: Data): any
 	return {
 		Gender = { Value = data.Character.Gender },
 		FaceBase = { Value = data.Character.FaceBase },
 		MouthShape = { Value = data.Character.MouthShape },
 		EyeColor = { Value = data.Character.EyeColor },
 		Race = { Value = data.Character.Race },
+		HairColor = { Value = Color3.new(data.Character.HairColor.R, data.Character.HairColor.G, data.Character.HairColor.B) },
 	}
 end
+local statShim = CharacterService.StatShim
 
 local function stripDefaultAvatar(character: Model)
 	for _, child in character:GetChildren() do
@@ -223,15 +232,37 @@ local function buildFalseHead(character: Model, data: Data): BasePart?
 		normMeshie.Parent = head
 	end
 
+	-- BUG-10/BUG-13: one broken Assets call (missing HairColor) used to
+	-- throw here, unprotected, aborting the rest of buildCharacter -
+	-- AppearenceLoaded never got set, so AgeService's own spawn-triggered
+	-- resize (gated on it) never ran either, leaving every respawn at
+	-- Roblox's unscaled default size until the next birthday (whose
+	-- resize isn't gated on AppearenceLoaded) fixed it again. Each face
+	-- decal call is now its own pcall, so a future bad Assets read drops
+	-- just that one decal (logged) instead of the whole build.
 	local stat = statShim(data)
-	local faceBase = Assets.facebase(stat)
-	faceBase.Parent = falseHead
-	local mouthShape = Assets.mouthshape(stat)
-	mouthShape.Parent = falseHead
-	local eyeColor = Assets.eyecolor(stat)
-	eyeColor.Parent = falseHead
-	local eyebrow = Assets.eyebrow(stat)
-	eyebrow.Parent = falseHead
+	local function safeDecal(label: string, build: () -> Decal): Decal?
+		local ok, result = pcall(build)
+		if not ok then
+			log:Error(string.format("Assets.%s(stat) errored, skipping that decal: %s", label, tostring(result)))
+			return nil
+		end
+		(result :: Decal).Parent = falseHead
+		return result :: Decal
+	end
+
+	safeDecal("facebase", function()
+		return Assets.facebase(stat)
+	end)
+	safeDecal("mouthshape", function()
+		return Assets.mouthshape(stat)
+	end)
+	safeDecal("eyecolor", function()
+		return Assets.eyecolor(stat)
+	end)
+	safeDecal("eyebrow", function()
+		return Assets.eyebrow(stat)
+	end)
 
 	return falseHead
 end

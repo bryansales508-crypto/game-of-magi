@@ -4,6 +4,7 @@
 -- PASS/FAIL summary line.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
@@ -20,6 +21,7 @@ local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HealthService = require(script.Parent.HealthService)
+local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
 
@@ -409,6 +411,44 @@ local function testCharacterService(results: { Check })
 			"CharacterService (P4): Kingdom 2 lightens Brown to LightTan",
 			CharacterService.SkinTemplateName(2, 2) == "LightTan"
 		)
+	end
+
+	-- BUG-10: StatShim must expose every key RF/Assets reads via
+	-- stat["X"].Value (it was missing HairColor, which crashed
+	-- buildFalseHead and aborted the whole build). Exercised against the
+	-- real Assets functions, not just a key-presence check, with two
+	-- genders and both the human/magician EyeColor branches (L2).
+	do
+		local function checkShim(label: string, data: SaveSchema.Data)
+			local stat = CharacterService.StatShim(data)
+			for _, key in { "Gender", "FaceBase", "MouthShape", "EyeColor", "Race", "HairColor" } do
+				expect(results, string.format("CharacterService StatShim (%s): has %s", label, key), stat[key] ~= nil and stat[key].Value ~= nil)
+			end
+
+			local ok, err = pcall(function()
+				local faceBase = Assets.facebase(stat)
+				faceBase:Destroy()
+				local mouthShape = Assets.mouthshape(stat)
+				mouthShape:Destroy()
+				local eyeColor = Assets.eyecolor(stat)
+				eyeColor:Destroy()
+				local eyebrow = Assets.eyebrow(stat)
+				eyebrow:Destroy()
+			end)
+			expect(results, string.format("CharacterService StatShim (%s): Assets functions don't error", label), ok)
+			if not ok then
+				log:Warn(string.format("StatShim (%s) self-test: %s", label, tostring(err)))
+			end
+		end
+
+		local male = fakeCharacterData()
+		male.Character.Gender = 1
+		checkShim("male, human", male)
+
+		local femaleMagician = fakeCharacterData()
+		femaleMagician.Character.Gender = 2
+		femaleMagician.Character.Race = 4
+		checkShim("female, magician (L2)", femaleMagician)
 	end
 
 	do
