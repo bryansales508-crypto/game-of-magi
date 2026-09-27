@@ -49,6 +49,7 @@ local function buildScreen()
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
 	local gui = GENDER_TEMPLATE:Clone()
+	gui.ResetOnSpawn = false -- (REVIEW-M2-04 M1)
 	local decisions = gui:FindFirstChild("Decisions")
 	if decisions then
 		decisions:Destroy()

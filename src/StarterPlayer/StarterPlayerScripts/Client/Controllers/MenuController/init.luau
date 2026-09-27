@@ -271,6 +271,7 @@ function MenuController:Start()
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
 	local gui = MENU_TEMPLATE:Clone()
+	gui.ResetOnSpawn = false -- cloned GUIs are destroyed on respawn otherwise (REVIEW-M2-04 H1)
 	local menuMechanics = gui:FindFirstChild("MenuMechanics")
 	if menuMechanics then
 		menuMechanics:Destroy()
