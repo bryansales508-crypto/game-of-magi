@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 1 (Foundation)** (see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build, Milestone 1 (Foundation): built, reviewed and playtested; waiting for Bryan's gate approval** (see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -70,7 +70,7 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | M1-04 | Join pipeline: `PlayerService` runs load → character ready → spawn at `QarzinSpawn` → `Ready`, in order. The client loading screen waits on the server instead of racing it. Split: **M1-04S** (server: PlayerService, JoinState attribute, ClientReady remote, spawn placement; removes LocationHandler and Protection) and **M1-04C** (client: LoadController replaces the old Load script, same look) | server-builder + client-builder | done (merged; playtest pending) | No missed signal; spawns at QarzinSpawn every time; no kick during character creation; slow-load test passes |
 | M1-05 | Dev tools: `DevService` (UserId check; commands for coins, age, Magoi, Rukh, bounty, teleport to any city, time scale, fresh save, `.state` dump to Output) plus a client **dev panel** and **debug overlay** (F8: live status, speed modifiers, save state). Split: **M1-05S** (DevService, `.cmd` commands, DevCommand/DevReply/DevState remotes) and **M1-05C** (F8 overlay, F9 dev panel) | server-builder + client-builder | done (merged; playtest pending) | Every command works in play; non-devs are rejected on the server; `.state` gives a readable dump the playtester can use instead of clicking around |
 | M1-06 | Parks (K1–K3) and removals (R1–R9) from TRIAGE, including the dagger auto-equip and the hunger HUD bar | server-builder | done (R7, R8 left for Bryan in Studio) | Parked code doesn't run; removed files are gone; game still runs. (Studio-only removals R7/R8 are listed for Bryan) |
-| M1-07 | `docs/PLAYTEST.md`: repeatable scenarios per system with exact dev-command setup, then the M1 playtest | lead + playtester | playtest 1 done (A, B-spawn, J-overlay PASS; rest blocked by input tooling, fixed); playtest 2 running | Scenarios written; M1 playtest passes |
+| M1-07 | `docs/PLAYTEST.md`: repeatable scenarios per system with exact dev-command setup, then the M1 playtest | lead + playtester | M1 playtest done: A, B, C, D, F, G, J PASS; I partial (BUG-04, low). E, H, K not run | Scenarios written; M1 playtest passes |
 | M1-08 | Wipe the live debug data (Bryan approved) | lead | todo | Old `GameOfMagi_v0.01am` data no longer loaded; new store in use |
 
 ### M1 follow-ups noted by reviews

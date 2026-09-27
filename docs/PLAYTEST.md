@@ -57,11 +57,11 @@ Repeatable checks the playtester runs after each milestone. Every scenario says 
   r:FireServer(5)                                -- wrong type
   for i = 1, 20 do r:FireServer("hi") end        -- over the rate limit
   ```
-- **Pass:** Output shows `[Net]` warnings naming the player, the remote and the reason (throttled, not one per call), and no errors.
+- **Pass:** Output shows `[Remotes]` warnings naming the player, the remote and the reason (throttled, not one per call), and no errors.
 
 ### M1-J Dev panel and overlay
 - **Setup:** press F8, then the backquote key (`, left of 1).
-- **Look (one screenshot):** the F8 overlay in the top-left lists the snapshot keys in order and updates once a second; the backquote panel in the top-right has the command box, reply log and quick buttons. `.timescale 10` then `.state` shows `timeScale = 10`. `.tp rathole` moves the character; `.cities` lists the spawns.
+- **Look (one screenshot):** the F8 overlay in the top-left lists the snapshot keys in order and updates once a second; the backquote panel in the top-right has the command box, reply log and quick buttons. `.timescale 10` then `.state` shows `timeScale = 10`. `.tp qarzin` moves the character (only QarzinSpawn exists today); `.cities` lists the spawns.
 - **Pass:** both toggle cleanly, no input leaks into gameplay while typing, no errors.
 
 ### M1-K Leave and rejoin under load (two players)
