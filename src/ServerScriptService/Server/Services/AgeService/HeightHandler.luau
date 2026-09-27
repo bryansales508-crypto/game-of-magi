@@ -196,8 +196,11 @@ function HeightHandler.resize(
 			local originalSize = getOrCreateVector3Value(part, "OriginalSize", part.Size)
 			part.Size = originalSize * partRatio
 
+			-- R9: any DataModelMesh subclass (SpecialMesh, BlockMesh,
+			-- FileMesh, CylinderMesh), not only SpecialMesh - the old code
+			-- scaled any child named "Mesh" regardless of its exact class.
 			local mesh = part:FindFirstChild("Mesh")
-			if mesh and mesh:IsA("SpecialMesh") then
+			if mesh and mesh:IsA("DataModelMesh") then
 				local originalScale = getOrCreateVector3Value(mesh, "OriginalScale", mesh.Scale)
 				mesh.Scale = originalScale * partRatio
 			end
@@ -217,7 +220,14 @@ function HeightHandler.resize(
 			local originalC0 = getOrCreateCFrameValue(joint, "OriginalC0", joint.C0)
 			local originalC1 = getOrCreateCFrameValue(joint, "OriginalC1", joint.C1)
 
-			if joint.Name:find("Neck") then
+			-- R8: a hair accessory's own AccessoryWeld (its Handle's joint)
+			-- follows the head's scale too, same as its parts above -
+			-- otherwise the weld itself still offsets by the full body
+			-- ratio and the hair sits wrong on a tall/short adult.
+			if isHairPart(joint) then
+				joint.C0 = scaleOffset(originalC0, headScale)
+				joint.C1 = scaleOffset(originalC1, headScale)
+			elseif joint.Name:find("Neck") then
 				joint.C0 = scaleOffset(originalC0, Vector3.new(1, ratio.Y, 1)) + Vector3.new(0, NECK_SEAT, 0)
 				joint.C1 = scaleOffset(originalC1, headScale)
 			else
@@ -226,8 +236,10 @@ function HeightHandler.resize(
 			end
 		elseif part:IsA("Attachment") and not part:FindFirstAncestor("Head") and not part:FindFirstAncestor("FalseHead") then
 			local attachment = part
+			-- R8: same reasoning as the joint branch above.
+			local attachmentRatio = if isHairPart(attachment) then headScale else ratio
 			local originalPosition = getOrCreateVector3Value(attachment, "OriginalPosition", attachment.Position)
-			attachment.Position = originalPosition * ratio
+			attachment.Position = originalPosition * attachmentRatio
 		end
 	end
 end

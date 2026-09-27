@@ -262,20 +262,12 @@ local function buildHitbox(character: Model)
 	hitbox.Parent = character
 end
 
--- M2-02 visible aging: the applied colour lerps toward grey from
--- Config.Aging.GreyStart to GreyEnd; the SAVED HairColor never changes
--- (it's the natural colour, re-applied fresh on every build/birthday).
-local GREY_HAIR = Color3.fromRGB(200, 200, 200)
-
-local function applyHairColor(character: Model, data: Data)
-	local natural = Color3.new(data.Character.HairColor.R, data.Character.HairColor.G, data.Character.HairColor.B)
-	local color = natural:Lerp(GREY_HAIR, AgeService.GreyFactor(data.Age.Years))
-	for _, part in character:GetDescendants() do
-		if part:IsA("BasePart") and part.Name:find("Handle") then
-			part.Color = color
-		end
-	end
-end
+-- M2-02 visible aging, REVIEW-M2-02 R3: the shared implementation lives in
+-- AgeService.ApplyHairColor (also called from onBirthday, so hair greys
+-- in on the birthday it's due, not only on the next respawn). The applied
+-- colour lerps toward grey from Config.Aging.GreyStart to GreyEnd; the
+-- SAVED HairColor never changes (it's the natural colour).
+local applyHairColor = AgeService.ApplyHairColor
 
 -- ART TASK (Bryan): wrinkle decal. RF.Assets has no wrinkle/aged-face
 -- decal yet, so visible aging is hair-only for now; add one to the face

@@ -34,10 +34,12 @@ Config.Dev = {
 }
 
 -- M2-02: aging (DESIGN.md section 3, "Aging while offline"/"Aging and
--- death"). AgeService multiplies the online tick's banked seconds, and
--- SceneTimeout's wait, by DevService.GetTimeScale() (a runtime override of
--- Config.Debug.TimeScale, since Config is frozen); offline aging is always
--- real time, never scaled.
+-- death"). AgeService multiplies the online tick's banked seconds by
+-- DevService.GetTimeScale() (a runtime override of Config.Debug.TimeScale,
+-- since Config is frozen); offline aging is always real time, never
+-- scaled. SceneTimeout is real time too (REVIEW-M2-02 R7): the client's
+-- scene takes about the same wall-clock time to play regardless of aging
+-- speed, so scaling it down at a high timescale used to cut it off mid-play.
 Config.Aging = {
 	SecondsPerYear = if Config.IsStudio then 60 else 1800,
 	OfflineYearsPerDay = 2,

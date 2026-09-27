@@ -69,11 +69,26 @@ function AgeService.DeathChance(age: number): number
 	return points[#points][2]
 end
 
--- 0 before GreyStart, 1 at/after GreyEnd, linear between. CharacterService
--- calls this to lerp the applied (not saved) hair colour toward grey.
+-- 0 before GreyStart, 1 at/after GreyEnd, linear between.
 function AgeService.GreyFactor(age: number): number
 	local start, finish = Config.Aging.GreyStart, Config.Aging.GreyEnd
 	return math.clamp((age - start) / (finish - start), 0, 1)
+end
+
+-- R3: the applied (not saved) hair colour, lerped toward grey by age.
+-- Called from CharacterService's build (every spawn) AND from onBirthday
+-- below (so hair actually greys in on the birthday it's supposed to,
+-- not only the next time the character happens to respawn).
+local GREY_HAIR = Color3.fromRGB(200, 200, 200)
+
+function AgeService.ApplyHairColor(character: Model, data: Data)
+	local natural = Color3.new(data.Character.HairColor.R, data.Character.HairColor.G, data.Character.HairColor.B)
+	local color = natural:Lerp(GREY_HAIR, AgeService.GreyFactor(data.Age.Years))
+	for _, part in character:GetDescendants() do
+		if part:IsA("BasePart") and part.Name:find("Handle") then
+			part.Color = color
+		end
+	end
 end
 
 -- ==================== growth / resize ====================
@@ -133,6 +148,13 @@ end
 
 -- ==================== offline aging ====================
 
+-- R6: `daysAway` is only ever turned into whole years (OfflineAgingYears
+-- floors it), and TimePassed is then reset to now - so a fractional
+-- leftover day is dropped, not banked. Intended: a player who reliably
+-- rejoins every ~11h (say) never ages offline from that alone. This is
+-- fine at the design's real scale (2 years/day; the shortfall is well
+-- under a day even played daily for months) and deliberately NOT banked
+-- into ProgToAge, which would count it at the much faster online rate.
 local function applyOfflineAging(player: Player, data: Data)
 	local daysAway = (os.time() - data.Age.TimePassed) / SECONDS_PER_DAY
 	local add = AgeService.OfflineAgingYears(data.Age.Years, daysAway)
@@ -150,9 +172,12 @@ local active: { [Player]: boolean } = {}
 local sceneDoneBindable = Instance.new("BindableEvent")
 
 -- Suspends the calling thread until `player` fires RukhSceneDone, or
--- Config.Aging.SceneTimeout (scaled by DevService.GetTimeScale) elapses.
+-- Config.Aging.SceneTimeout elapses. R7: NOT scaled by DevService.GetTimeScale
+-- (unlike the online tick) - the client's scene takes about the same real
+-- time to play regardless of aging speed, so scaling this down (e.g. to
+-- 0.5s at .timescale 60) used to cut the scene off mid-playback during tests.
 local function waitForRukhSceneDone(player: Player)
-	local timeoutSeconds = Config.Aging.SceneTimeout / math.max(DevService.GetTimeScale(), 0.0001)
+	local timeoutSeconds = Config.Aging.SceneTimeout
 	local callingThread = coroutine.running()
 	local settled = false
 	local connection: RBXScriptConnection
@@ -176,9 +201,9 @@ local function waitForRukhSceneDone(player: Player)
 	coroutine.yield()
 end
 
--- Freezes the humanoid, waits for the scene (or its timeout), then starts a
--- completely fresh life and respawns. Runs as its own task so it never
--- blocks the shared aging loop for every other player.
+-- Freezes the humanoid, starts a completely fresh life right away, waits
+-- for the scene (or its timeout), then respawns. Runs as its own task so
+-- it never blocks the shared aging loop for every other player.
 local function startDeathSequence(player: Player, data: Data)
 	player:SetAttribute("Dying", true)
 
@@ -190,22 +215,29 @@ local function startDeathSequence(player: Player, data: Data)
 		humanoid.JumpHeight = 0
 	end
 
+	-- R2: NewLife runs now, before the scene wait, not after - a player
+	-- who leaves mid-scene (or during the timeout) then never keeps the
+	-- old 60+ life; the save is already the fresh one no matter when they
+	-- come back. F2's reasoning still applies to the fresh life: NewLife
+	-- resets Character.Gender to 0 too, so it goes through
+	-- CharacterService's wait-for-CreateCharacter path again, which rolls
+	-- growth once gender is known - not eagerly here, gender-blind.
+	DataService.NewLife(player)
+	LegacyBridge.Refresh(player, data)
+	player:SetAttribute("Age", data.Age.Years)
+	player:SetAttribute("Lives", data.Meta.Lives)
+
 	waitForRukhSceneDone(player)
 
 	if player.Parent ~= Players then
 		return
 	end
 
-	-- F2's same reasoning applies here: NewLife resets Character.Gender to
-	-- 0 too, so this new life goes through CharacterService's
-	-- wait-for-CreateCharacter path again, which rolls growth once gender
-	-- is known again - not eagerly here, where it would be gender-blind.
-	DataService.NewLife(player)
-	LegacyBridge.Refresh(player, data)
-
 	player:SetAttribute("Dying", false)
-	player:SetAttribute("Age", data.Age.Years)
-	player:SetAttribute("Lives", data.Meta.Lives)
+	-- R1: without this, tickPlayer never picks this player up again this
+	-- session (onBirthday cleared it before spawning this task) and the
+	-- fresh life stays 13 forever, until they rejoin.
+	active[player] = true
 
 	player:LoadCharacter()
 end
@@ -213,11 +245,22 @@ end
 -- Applies one birthday: age up, resize, and (from DeathStart) roll a heart
 -- attack. Returns true if this birthday was fatal (the caller must stop
 -- processing any further banked years this tick: `data` now belongs to a
--- brand-new life once NewLife runs).
+-- brand-new life once NewLife runs). R4: a no-op while already Dying, so a
+-- forced birthday (or a stray tick) can't roll again mid-death-sequence.
 local function onBirthday(player: Player, data: Data): boolean
+	if player:GetAttribute("Dying") then
+		return false
+	end
+
 	data.Age.Years += 1
 	player:SetAttribute("Age", data.Age.Years)
 	resizeCharacter(player, data)
+	-- R3: greys in on the birthday it's actually due, not only whenever
+	-- the character next happens to respawn.
+	local character = player.Character
+	if character then
+		AgeService.ApplyHairColor(character, data)
+	end
 	LegacyBridge.Refresh(player, data)
 
 	if data.Age.Years < Config.Aging.DeathStart then
@@ -260,8 +303,14 @@ local function tickPlayer(player: Player, data: Data)
 	end
 end
 
--- Exposed for the .birthday/.heart dev commands (registered below).
+-- Exposed for the .birthday/.heart dev commands (registered below). R4:
+-- both refuse while Dying, so `.heart fatal` during a real death sequence
+-- (or a repeat) can't start a second one - NewLife running twice would
+-- double Meta.Lives and load the character twice.
 function AgeService.ForceBirthday(player: Player): boolean
+	if player:GetAttribute("Dying") then
+		return false
+	end
 	local data = DataService.Get(player)
 	if data == nil then
 		return false
@@ -271,6 +320,9 @@ function AgeService.ForceBirthday(player: Player): boolean
 end
 
 function AgeService.ForceHeartAttack(player: Player, fatal: boolean): boolean
+	if player:GetAttribute("Dying") then
+		return false
+	end
 	local data = DataService.Get(player)
 	if data == nil then
 		return false
@@ -360,6 +412,19 @@ function AgeService:Start()
 			local data = DataService.Get(player)
 			if data == nil then
 				return
+			end
+
+			-- R10: startDeathSequence only froze the character alive at the
+			-- fatal roll; a character that spawns mid-scene (a reset, or
+			-- any other stray respawn while Dying) used to be left free to
+			-- move around before the scene actually finishes.
+			if player:GetAttribute("Dying") then
+				local humanoid = character:FindFirstChildOfClass("Humanoid")
+				if humanoid then
+					humanoid.WalkSpeed = 0
+					humanoid.JumpPower = 0
+					humanoid.JumpHeight = 0
+				end
 			end
 
 			local appearenceLoaded = character:WaitForChild("AppearenceLoaded", 30)
