@@ -25,9 +25,13 @@ local controllers: { ControllerModule } = {}
 local names: { string } = {}
 
 for _, moduleScript in moduleScripts do
-	local controller = require(moduleScript) :: ControllerModule
-	table.insert(controllers, controller)
-	table.insert(names, moduleScript.Name)
+	local ok, result = pcall(require, moduleScript)
+	if ok then
+		table.insert(controllers, result :: ControllerModule)
+		table.insert(names, moduleScript.Name)
+	else
+		warn(string.format("[Client.Main] require(%s) failed: %s", moduleScript.Name, tostring(result)))
+	end
 end
 
 for i, controller in controllers do

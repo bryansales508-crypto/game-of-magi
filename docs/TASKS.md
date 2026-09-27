@@ -64,7 +64,7 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M1-01 | New folder layout and Rojo project update (`Server`, `Client`, `Shared`, `ServerStorage/Parked`) | server-builder | todo | Rojo builds; old scripts still sync; new folders exist |
+| M1-01 | New folder layout and Rojo project update (`Server`, `Client`, `Shared`, `ServerStorage/Parked`) | server-builder | done | Rojo builds; old scripts still sync; new folders exist |
 | M1-02 | Shared core: `Config` (with `Debug` flags auto-on in Studio), `Log` (tagged levels, no raw prints), `Remotes` registry (every remote declared once, with argument-type validation and per-player rate limits) | server-builder | todo | Unit-style self-check runs on server start; a bad remote call is rejected and logged, not errored |
 | M1-03 | `DataService` on ProfileStore: one key, schema v1 (DESIGN §3a fields included), versioned migrations, session lock, save on leave and shutdown, Studio scope, FreshSave, wipe; plus the legacy bridge | server-builder | todo | Join, change a value, rejoin: the value persists. Two servers can't load the same save. Old systems still work through the bridge. Old save scripts removed |
 | M1-04 | Join pipeline: `PlayerService` runs load → character ready → spawn at `QarzinSpawn` → `Ready`, in order. The client loading screen waits on the server instead of racing it | server-builder + client-builder | todo | No missed signal; spawns at QarzinSpawn every time; no kick during character creation; slow-load test passes |

@@ -25,9 +25,13 @@ local services: { ServiceModule } = {}
 local names: { string } = {}
 
 for _, moduleScript in moduleScripts do
-	local service = require(moduleScript) :: ServiceModule
-	table.insert(services, service)
-	table.insert(names, moduleScript.Name)
+	local ok, result = pcall(require, moduleScript)
+	if ok then
+		table.insert(services, result :: ServiceModule)
+		table.insert(names, moduleScript.Name)
+	else
+		warn(string.format("[Server.Main] require(%s) failed: %s", moduleScript.Name, tostring(result)))
+	end
 end
 
 for i, service in services do
