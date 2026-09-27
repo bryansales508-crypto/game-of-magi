@@ -585,6 +585,10 @@ function CharacterService:Init()
 			return
 		end
 		LegacyBridge.Refresh(player, data)
+		-- N2: HeightStuds here is transiently the Height==10 sentinel until
+		-- buildCharacter's own thread rolls the growth profile (F2) and
+		-- calls setAttributes again; harmless today since nothing reads it
+		-- this early, but worth knowing if that ever changes.
 		setAttributes(player, data)
 	end)
 
