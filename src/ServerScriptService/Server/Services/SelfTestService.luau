@@ -174,6 +174,17 @@ local function testRemoteWrapper(results: { Check })
 		)
 	end
 
+	-- BUG-25/BUG-04 (M3-FIX-S): confirms Validate.number's NaN rejection
+	-- actually reaches a real remote through the full CheckCall wrapper
+	-- (not just Validate.number in isolation, already self-tested
+	-- elsewhere) - the reported "no warning" turned out to be BUG-04's
+	-- per-window throttle hiding a real drop, not a validation gap.
+	do
+		local player = newFakePlayer()
+		local okNaN, reasonNaN = Remotes.Server.CheckCall("Dash", player, table.pack(0 / 0, 1))
+		expect(results, "remote: Dash(NaN, 1) is rejected through the wrapper (BUG-25)", not okNaN and reasonNaN ~= nil)
+	end
+
 	for _, player in fakePlayers do
 		Remotes.Server.ClearPlayerState(player)
 	end
@@ -673,7 +684,25 @@ local function testStatusService(results: { Check })
 
 		StatusService.Register(character)
 
-		StatusService.Apply(character, "Stun", 0.15)
+		-- BUG-23 (M3-FIX-S): both fixes below are test-side, not
+		-- StatusService bugs. (1) Roblox's default Signal Behavior is
+		-- Deferred: changedBindable:Fire(...) inside Apply/Remove does NOT
+		-- invoke this connection synchronously, so checking activeFires
+		-- immediately after Apply (no yield in between) reliably read it
+		-- as 0, not 1 - a `task.wait()` lets the deferred call actually
+		-- dispatch before we look. (2) the original 0.15s duration against
+		-- 0.1s waits left only a 0.05s margin either side of Studio's own
+		-- task.wait scheduling jitter (worse right after server start,
+		-- when the self-test actually runs) - "re-Apply refreshes" could
+		-- read Has as false if the ORIGINAL entry expired inside that
+		-- first 0.1s wait before the refreshing Apply even ran. Both
+		-- Apply/Remove/the shared expiry loop are correct; the test just
+		-- needs to give real time enough room.
+		local DURATION = 1
+		local MARGIN = 0.3
+
+		StatusService.Apply(character, "Stun", DURATION)
+		task.wait()
 		expect(results, "StatusService: Apply makes Has true", StatusService.Has(character, "Stun"))
 		expect(
 			results,
@@ -682,16 +711,18 @@ local function testStatusService(results: { Check })
 		)
 		expect(results, "StatusService: Changed fires exactly once on Apply", activeFires == 1)
 
-		-- Refresh: re-Apply before expiry should push the expiry back out,
-		-- so waiting past the ORIGINAL duration alone must not clear it,
-		-- and must not re-fire Changed (the active state didn't change).
-		task.wait(0.1)
-		StatusService.Apply(character, "Stun", 0.15)
-		task.wait(0.1)
+		-- Refresh: re-Apply well before expiry should push the expiry
+		-- back out, so waiting past the ORIGINAL duration alone must not
+		-- clear it, and must not re-fire Changed (the active state didn't
+		-- change).
+		task.wait(MARGIN)
+		StatusService.Apply(character, "Stun", DURATION)
+		task.wait()
+		task.wait(MARGIN)
 		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
 		expect(results, "StatusService: a refreshing re-Apply doesn't re-fire Changed", activeFires == 1)
 
-		task.wait(0.3)
+		task.wait(DURATION + MARGIN)
 		expect(results, "StatusService: an expired duration clears Has", not StatusService.Has(character, "Stun"))
 		expect(
 			results,
@@ -1068,7 +1099,16 @@ local function testCombatService(results: { Check })
 			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
 		)
 
-		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 100 -> 65
+		-- BUG-23 (M3-FIX-S): this is a test-bookkeeping fix, not a
+		-- HealthService/CombatService bug. The meter was already 65 here
+		-- (the cooldown-forced "held" hit above at line ~1056 already
+		-- drained 100 -> 65 - the comments below previously forgot that
+		-- and restarted counting from 100, so the block had actually
+		-- already broken one ApplyHit call before the "still holds" check
+		-- ran). Confirmed HealthService.SpendBlock's own boundary
+		-- (`current < amount` fails) isn't an off-by-one here either:
+		-- 100/35 doesn't land on an exact multiple, so this scenario never
+		-- exercises the current==amount edge at all.
 		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 65 -> 30
 		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
 

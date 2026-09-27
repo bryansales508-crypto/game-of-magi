@@ -142,8 +142,20 @@ local functionHandlers: { [string]: (player: Player, ...any) -> ...any } = {}
 
 -- [player][remoteName] = { count of calls in the current window, window start }
 local rateState: { [Player]: { [string]: { count: number, windowStart: number } } } = {}
--- [player][remoteName] = os.clock() the last "dropped" warning was logged
-local warnState: { [Player]: { [string]: number } } = {}
+
+-- BUG-04/BUG-25 (M3-FIX-S): one dropped-call warning per player+remote per
+-- window used to mean every OTHER drop in that same window (a flood of
+-- rate-limit drops, say) logged nothing at all - silent, not just quiet.
+-- The first drop in a window still logs immediately; everything else in
+-- that window is counted here and flushed as one summary line when the
+-- window closes (scheduled once per window, not per drop).
+type DropWindow = {
+	windowStart: number,
+	total: number,
+	reasonCounts: { [string]: number },
+}
+-- [player][remoteName] = the current window's drop tally
+local warnState: { [Player]: { [string]: DropWindow } } = {}
 
 local function clearPlayerState(player: Player)
 	rateState[player] = nil
@@ -215,6 +227,31 @@ end
 -- real remote.
 Remotes.Server.ValidateArgsForTest = validateArgs
 
+-- Logs a window's leftover drops (everything after the first, which
+-- already got its own immediate warning) as one summary line, grouped by
+-- reason. Scheduled once per window at warnDropped's first drop; a no-op
+-- if nothing else was dropped, or if this window was already superseded
+-- (a newer one started, or the player's state was cleared entirely).
+local function flushDropWindow(player: Player, name: string, window: DropWindow)
+	local playerWarnState = warnState[player]
+	if playerWarnState == nil or playerWarnState[name] ~= window then
+		return
+	end
+	playerWarnState[name] = nil
+
+	local extra = window.total - 1
+	if extra <= 0 then
+		return
+	end
+
+	local reasonParts: { string } = {}
+	for reason, count in window.reasonCounts do
+		table.insert(reasonParts, string.format("%s: %d", reason, count))
+	end
+	table.sort(reasonParts)
+	log:Warn(string.format("%s from %s: dropped %d more call(s) this window (%s)", name, player.Name, extra, table.concat(reasonParts, ", ")))
+end
+
 local function warnDropped(player: Player, name: string, def: RemoteDef, reason: string?)
 	local playerWarnState = warnState[player]
 	if not playerWarnState then
@@ -223,13 +260,20 @@ local function warnDropped(player: Player, name: string, def: RemoteDef, reason:
 	end
 
 	local now = os.clock()
-	local last = playerWarnState[name]
-	if last and now - last < def.rate.per then
-		return
-	end
-	playerWarnState[name] = now
+	local reasonKey = reason or "invalid"
+	local window = playerWarnState[name]
 
-	log:Warn(string.format("dropped %s from %s: %s", name, player.Name, reason or "invalid"))
+	if window == nil or now - window.windowStart >= def.rate.per then
+		window = { windowStart = now, total = 0, reasonCounts = {} }
+		playerWarnState[name] = window
+		log:Warn(string.format("dropped %s from %s: %s", name, player.Name, reasonKey))
+		task.delay(def.rate.per, function()
+			flushDropWindow(player, name, window :: DropWindow)
+		end)
+	end
+
+	window.total += 1
+	window.reasonCounts[reasonKey] = (window.reasonCounts[reasonKey] or 0) + 1
 end
 
 local function makeEventDispatch(name: string)
