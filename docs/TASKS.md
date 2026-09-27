@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 2 (A life)** (M1 gate passed 2026-09-27; see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build, Milestone 3 (Combat): planning** (M2 gate passed 2026-09-27; see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -43,8 +43,8 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | Milestone | Scope (TRIAGE #) | Status |
 | --- | --- | --- |
 | M1 Foundation | Layout, data service (#1), remotes, join pipeline (#2), dev commands (#21), debug tools (#29), data wipe, parks and removals | **done (gate passed 2026-09-27)** |
-| M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | **planning** |
-| M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | todo |
+| M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | **done (gate passed 2026-09-27)** |
+| M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | **planning** |
 | M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | todo |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
 | M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22) | todo |
@@ -93,4 +93,4 @@ Bryan's additions: old-age death styled as a heart attack (every online birthday
 | M2-03 | HealthService: max HP from height and rank, real regen tiers, block refill; attributes for the HUD/menu | server-builder | done (merged) | Height/rank change MaxHealth; `.tier` changes regen; bars follow |
 | M2-04 | Client: CreationController, MenuController (rank/epithet/alignment, fixed stat line, live preview), HudController | client-builder | done (merged) | Same look; M menu shows the new fields; creation works through the remote |
 | M2-05 | Client: RukhController (heart attack pulses, fatal message, return-to-the-Rukh scene with AfterLife or stand-in) | client-builder | done (merged) | `.heart` passes in ~1 s; `.heart fatal` plays the scene and respawns fresh |
-| M2-07 | PLAYTEST.md M2 scenarios and the M2 playtest | Bryan + lead + playtester | playtest 1 done (Bryan A,C-I; agent B PASS, J blocked): E, H, I(title) pass; character build crash blocks the rest (BUG-09..16). Fix round M2-FIX merged; second pass done (A, C, D, I pass; BUG-17..22 logged). Fix round 2 merged; final check by Bryan, then the gate | All scenarios pass |
+| M2-07 | PLAYTEST.md M2 scenarios and the M2 playtest | Bryan + lead + playtester | playtest 1 done (Bryan A,C-I; agent B PASS, J blocked): E, H, I(title) pass; character build crash blocks the rest (BUG-09..16). Fix round M2-FIX merged; second pass done (A, C, D, I pass; BUG-17..22 logged). done: final check passed 2026-09-27 (Bryan) | All scenarios pass |

@@ -393,3 +393,8 @@ m2-c; resets are fine.
 m2-d; was able to age and my heart instantly changed as it post to. though i will not that not heartbeat events play on .age only on birthday, which is lowkey fine since we don't want someone instantly dying when dev commands fire. in fact lets set that up that u can age / birthday without worry of the person dying, like lets make it toggleable.
 m2-I; it does, but their facing away and its from the side. instead, could we possibly make it like camera, that mirrors the player? ive seen that before in a game. or if it is too hard to implement, we can forget about it as well.
 m2-E/F; yeah ill tweak dand look into it later. don't let me forget, and make sure to completely disable character input in the afterlife sequence, there should freeze bind somewhjere in the scripts that can help but if you have ab etter method then use it.
+
+### M2 playtest 3, final check (Bryan, 2026-09-27 14:47)
+
+Boot: `[SelfTest] PASS (120 checks)`, controllers ready, save loaded; only the usual 5 s "Infinite yield possible on AppearenceLoaded / Stats" warnings from old scripts while the Studio save loads (~10 s), and a `▶ {...}` print from the Studio-only ClothingSpawn:164. No red lines, no missing-asset warnings.
+"Clothing stand is stocked. Age works perfectly. Mortal shows false. Mortal on kills. It isn't perfect, but it is good enough for now." Follow-ups Bryan keeps himself: docs/FOLLOWUPS.md (heartbeat sound, afterlife cutscene, viewport).
