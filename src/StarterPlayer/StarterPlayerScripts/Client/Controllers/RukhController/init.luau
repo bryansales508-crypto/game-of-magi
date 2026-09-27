@@ -27,8 +27,13 @@
 --
 -- Only one heart-attack pulse or death scene is ever active at a time
 -- (REVIEW-M2-05 #1/#2): a fresh HeartAttack, and a respawn mid-sequence,
--- both cancel whatever's currently running -- gui, sound, camera, frozen
--- input, clones -- through the shared generation/cleanup pair below.
+-- both cancel whatever's currently running -- gui, sound, frozen input,
+-- camera, clones -- through the shared generation/cleanup list below.
+-- FIX BUG-22 (Bryan): for a fatal HeartAttack, input is frozen (the
+-- ContextActionService sink, Roblox's own PlayerModule controls, the
+-- humanoid's own movement fields, and the camera) for the *whole*
+-- pulse-then-scene sequence, not just once the scene itself starts, and
+-- every piece of it is restored together on the same cleanup.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -56,13 +61,29 @@ local RukhController = {}
 -- ==================== shared generation/cleanup ====================
 
 local activeGeneration = 0
-local activeCleanup: (() -> ())? = nil
+local activeCleanupFns: { () -> () } = {}
+
+-- Registers a teardown step for whatever's running under the current
+-- generation. Returns the function itself so a phase that finishes
+-- normally (not cancelled) can retire just its own step early with
+-- removeActiveCleanup, instead of leaving it to run redundantly later.
+local function addActiveCleanup(fn: () -> ()): () -> ()
+	table.insert(activeCleanupFns, fn)
+	return fn
+end
+
+local function removeActiveCleanup(fn: () -> ())
+	local index = table.find(activeCleanupFns, fn)
+	if index then
+		table.remove(activeCleanupFns, index)
+	end
+end
 
 local function runActiveCleanup()
-	local cleanup = activeCleanup
-	activeCleanup = nil
-	if cleanup then
-		local results = table.pack(pcall(cleanup))
+	local fns = activeCleanupFns
+	activeCleanupFns = {}
+	for i = #fns, 1, -1 do
+		local results = table.pack(pcall(fns[i]))
 		if not results[1] then
 			log:Warn("cleanup failed: " .. tostring(results[2]))
 		end
@@ -100,6 +121,101 @@ local function playHeartbeatSound(): Sound
 		sound:Destroy()
 	end)
 	return sound
+end
+
+-- ==================== input freeze (BUG-22) ====================
+
+-- The default PlayerModule's Controls object (WASD/gamepad/touch
+-- movement input); GetControls()/Disable()/Enable() is its public API.
+-- Returns nil (and warns once) if anything about it is missing or
+-- errors, so a freeze/unfreeze never itself throws.
+local function getControls(): any
+	local playerScripts = player:FindFirstChild("PlayerScripts") :: PlayerScripts?
+	local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+	if not playerModule then
+		log:Warn("PlayerScripts.PlayerModule missing; Controls won't be disabled")
+		return nil
+	end
+
+	local ok, moduleOrErr = pcall(require, playerModule)
+	if not ok then
+		log:Warn("require(PlayerModule) failed: " .. tostring(moduleOrErr))
+		return nil
+	end
+
+	local okControls, controlsOrErr = pcall(function()
+		return moduleOrErr:GetControls()
+	end)
+	if not okControls then
+		log:Warn("PlayerModule:GetControls() failed: " .. tostring(controlsOrErr))
+		return nil
+	end
+
+	return controlsOrErr
+end
+
+-- Locks down every input path at once -- the ContextActionService sink
+-- (WipeHandlerPart2's own trick), Roblox's own PlayerModule controls,
+-- the current humanoid's WalkSpeed/JumpPower/AutoRotate, and the camera
+-- -- and registers the matching restore for each, so whichever cleanup
+-- eventually runs (a cancelling HeartAttack, or the next CharacterAdded)
+-- puts all of it back together. Covers the whole fatal sequence: called
+-- once, before the fatal pulse even starts, not just once the scene does.
+local function freezeInput(myGeneration: number)
+	if not isCurrent(myGeneration) then
+		return
+	end
+
+	ContextActionService:BindAction(FREEZE_ACTION, function()
+		return Enum.ContextActionResult.Sink
+	end, false, table.unpack(Enum.PlayerActions:GetEnumItems() :: any))
+	addActiveCleanup(function()
+		ContextActionService:UnbindAction(FREEZE_ACTION)
+	end)
+
+	local controls = getControls()
+	if controls then
+		local ok, err = pcall(function()
+			controls:Disable()
+		end)
+		if not ok then
+			log:Warn("Controls:Disable() failed: " .. tostring(err))
+		end
+		addActiveCleanup(function()
+			local okEnable, enableErr = pcall(function()
+				controls:Enable()
+			end)
+			if not okEnable then
+				log:Warn("Controls:Enable() failed: " .. tostring(enableErr))
+			end
+		end)
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local originalWalkSpeed = humanoid.WalkSpeed
+		local originalJumpPower = humanoid.JumpPower
+		local originalAutoRotate = humanoid.AutoRotate
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		humanoid.AutoRotate = false
+		addActiveCleanup(function()
+			humanoid.WalkSpeed = originalWalkSpeed
+			humanoid.JumpPower = originalJumpPower
+			humanoid.AutoRotate = originalAutoRotate
+		end)
+	end
+
+	camera.CameraType = Enum.CameraType.Scriptable
+	addActiveCleanup(function()
+		camera.CameraType = Enum.CameraType.Custom
+		local currentCharacter = player.Character
+		local currentHumanoid = currentCharacter and currentCharacter:FindFirstChildOfClass("Humanoid")
+		if currentHumanoid then
+			camera.CameraSubject = currentHumanoid
+		end
+	end)
 end
 
 -- ==================== full-screen pulse frame ====================
@@ -174,7 +290,8 @@ end
 
 -- "a full-screen red Frame ... Then it passes: everything removed, no
 -- message. Keep it short and not flashy." -- Config.Scene.NonFatalCycles
--- lub-dubs, fully clearing between and after each.
+-- lub-dubs, fully clearing between and after each. (Never freezes input
+-- -- BUG-22 only calls for that on the fatal path.)
 local NON_FATAL_COLOR = Color3.fromRGB(170, 0, 0)
 local NON_FATAL_DIP = 0.55
 local NON_FATAL_REST = 1
@@ -196,12 +313,12 @@ local function playNonFatalPulse(myGeneration: number)
 	-- HeartAttack, or a respawn) tears down this gui and any sound this
 	-- pulse has started that hasn't self-destroyed yet.
 	local sounds: { Sound } = {}
-	activeCleanup = function()
+	local cleanup = addActiveCleanup(function()
 		gui:Destroy()
 		for _, sound in sounds do
 			sound:Destroy()
 		end
-	end
+	end)
 
 	for _ = 1, Config.Scene.NonFatalCycles do
 		local ok =
@@ -212,7 +329,7 @@ local function playNonFatalPulse(myGeneration: number)
 	end
 
 	gui:Destroy()
-	activeCleanup = nil
+	removeActiveCleanup(cleanup)
 end
 
 -- "three slower, heavier beats while the red deepens ... and does not
@@ -243,12 +360,12 @@ local function playFatalPulse(myGeneration: number)
 
 	-- Same cancellation contract as the non-fatal pulse above.
 	local sounds: { Sound } = {}
-	activeCleanup = function()
+	local cleanup = addActiveCleanup(function()
 		gui:Destroy()
 		for _, sound in sounds do
 			sound:Destroy()
 		end
-	end
+	end)
 
 	local cycles = Config.Scene.FatalCycles
 	for cycle = 1, cycles do
@@ -284,7 +401,7 @@ local function playFatalPulse(myGeneration: number)
 	end
 
 	gui:Destroy()
-	activeCleanup = nil
+	removeActiveCleanup(cleanup)
 end
 
 -- ==================== return-to-the-Rukh scene ====================
@@ -371,38 +488,11 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	local cleanupFns: { () -> () } = {}
-	local function addCleanup(fn: () -> ())
-		table.insert(cleanupFns, fn)
-	end
-	activeCleanup = function()
-		for i = #cleanupFns, 1, -1 do
-			cleanupFns[i]()
-		end
-	end
-
-	-- 1. Freeze every player action (the same ContextActionService sink
-	-- trick WipeHandlerPart2 used).
-	ContextActionService:BindAction(FREEZE_ACTION, function()
-		return Enum.ContextActionResult.Sink
-	end, false, table.unpack(Enum.PlayerActions:GetEnumItems() :: any))
-	addCleanup(function()
-		ContextActionService:UnbindAction(FREEZE_ACTION)
-	end)
-
-	-- 2. Camera to AfterlifeCamera + character to AfterlifeSpawnBlock,
+	-- 1. Camera to AfterlifeCamera + character to AfterlifeSpawnBlock,
 	-- from Bryan's AfterLife model if present, or the simple stand-in
 	-- (keep the world, camera 12 studs in front looking back) if not.
-	camera.CameraType = Enum.CameraType.Scriptable
-	addCleanup(function()
-		camera.CameraType = Enum.CameraType.Custom
-		local currentCharacter = player.Character
-		local currentHumanoid = currentCharacter and currentCharacter:FindFirstChildOfClass("Humanoid")
-		if currentHumanoid then
-			camera.CameraSubject = currentHumanoid
-		end
-	end)
-
+	-- Input/camera-scriptable itself is freezeInput's job, already
+	-- running since before the fatal pulse.
 	local afterlifeTemplate = ReplicatedFirst:FindFirstChild("AfterLife")
 	local afterlifeClone: Instance? = nil
 	local spawnBlock: BasePart? = nil
@@ -411,7 +501,7 @@ local function playRukhScene(myGeneration: number)
 		local clone = afterlifeTemplate:Clone()
 		clone.Parent = Workspace
 		afterlifeClone = clone
-		addCleanup(function()
+		addActiveCleanup(function()
 			clone:Destroy()
 		end)
 
@@ -438,18 +528,22 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	-- 3. The golden body.
+	-- 2. The golden body.
 	applyRukhAppearance(character)
 
 	local corePosition, standInCore = resolveCoreTarget(rootPart, afterlifeClone, spawnBlock)
 	if standInCore then
-		addCleanup(function()
+		addActiveCleanup(function()
 			standInCore:Destroy()
 		end)
 	end
 
-	-- 4. The walk toward the core over Config.Scene.WalkSeconds; fade to
-	-- white over the last Config.Scene.FadeSeconds of it.
+	-- 3. The walk toward the core over Config.Scene.WalkSeconds; fade to
+	-- white over the last Config.Scene.FadeSeconds of it. AutoRotate is
+	-- re-enabled just for this scripted walk so the character visibly
+	-- turns to face the core; Controls stays disabled throughout
+	-- regardless (freezeInput), so this is never player-driven.
+	humanoid.AutoRotate = true
 	humanoid.WalkSpeed = 7
 	humanoid:MoveTo(corePosition)
 
@@ -466,7 +560,7 @@ local function playRukhScene(myGeneration: number)
 	fade.BorderSizePixel = 0
 	fade.Parent = fadeGui
 	fadeGui.Parent = playerGui
-	addCleanup(function()
+	addActiveCleanup(function()
 		fadeGui:Destroy()
 	end)
 
@@ -484,9 +578,10 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	-- 5. Done. Cleanup (camera, frozen input, clones) happens on the next
-	-- CharacterAdded, below, not here -- the white screen is meant to
-	-- keep hiding the transition until the fresh life actually spawns.
+	-- 4. Done. Cleanup (camera, frozen input/controls, clones) happens
+	-- on the next CharacterAdded, below, not here -- the white screen is
+	-- meant to keep hiding the transition until the fresh life actually
+	-- spawns.
 	Remotes.Client.Fire("RukhSceneDone")
 end
 
@@ -513,6 +608,12 @@ function RukhController:Start()
 
 		if fatal then
 			task.spawn(function()
+				-- FIX BUG-22: freeze input for the whole fatal
+				-- sequence, starting here, before the pulse even plays.
+				freezeInput(myGeneration)
+				if not isCurrent(myGeneration) then
+					return
+				end
 				playFatalPulse(myGeneration)
 				if isCurrent(myGeneration) then
 					playRukhScene(myGeneration)
