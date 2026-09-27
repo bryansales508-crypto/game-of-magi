@@ -23,6 +23,7 @@ local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
+local StatusService = require(script.Parent.StatusService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -578,6 +579,68 @@ local function testHealthService(results: { Check })
 	end
 end
 
+-- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
+-- mirroring, exercised against plain (never PlayerService.Ready'd) Model
+-- instances rather than a real character, the same trick testDataService
+-- uses a Folder for a fake Player.
+local function testStatusService(results: { Check })
+	do
+		local character = Instance.new("Model")
+		StatusService.Register(character)
+
+		StatusService.Apply(character, "Stun", 0.15)
+		expect(results, "StatusService: Apply makes Has true", StatusService.Has(character, "Stun"))
+		expect(
+			results,
+			"StatusService: attribute mirrors an active status",
+			character:GetAttribute("Stunned") == true
+		)
+
+		-- Refresh: re-Apply before expiry should push the expiry back out,
+		-- so waiting past the ORIGINAL duration alone must not clear it.
+		task.wait(0.1)
+		StatusService.Apply(character, "Stun", 0.15)
+		task.wait(0.1)
+		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
+
+		task.wait(0.3)
+		expect(results, "StatusService: an expired duration clears Has", not StatusService.Has(character, "Stun"))
+		expect(
+			results,
+			"StatusService: attribute clears once the status expires",
+			character:GetAttribute("Stunned") == false
+		)
+
+		StatusService.Apply(character, "Block", nil, { value = 1 })
+		expect(results, "StatusService: Has is true right after Apply", StatusService.Has(character, "Block"))
+		StatusService.Remove(character, "Block")
+		expect(results, "StatusService: Has is false right after Remove", not StatusService.Has(character, "Block"))
+
+		StatusService.Unregister(character)
+		character:Destroy()
+	end
+
+	-- AUDIT M18: applying to (or removing from, or querying) a character
+	-- that's already gone must never error.
+	do
+		local character = Instance.new("Model")
+		character:Destroy()
+
+		local okApply = pcall(StatusService.Apply, character, "Stun", 1)
+		expect(results, "StatusService: Apply on a destroyed model doesn't error", okApply)
+
+		local okRemove = pcall(StatusService.Remove, character, "Stun")
+		expect(results, "StatusService: Remove on a destroyed model doesn't error", okRemove)
+
+		local okHas, hasResult = pcall(StatusService.Has, character, "Stun")
+		expect(
+			results,
+			"StatusService: Has on a destroyed model doesn't error and reports false",
+			okHas and hasResult == false
+		)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -598,6 +661,7 @@ function SelfTestService:Start()
 		testCharacterService(collected)
 		testAgeService(collected)
 		testHealthService(collected)
+		testStatusService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

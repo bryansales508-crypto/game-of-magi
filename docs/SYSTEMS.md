@@ -289,24 +289,41 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 
 ---
 
-## 10. Effects (status markers)
+## 10. Status effects — rebuilt M3-01 (TRIAGE #13, fixes AUDIT M18)
 
-**What it does.** A shared convention rather than one script. Status is shown by putting a named Value in `character.Effects`, and other scripts react when it's added or removed.
+**What it does.** `StatusService` is now the one owner of every combat status: `Hit`, `Stun`, `Knocked`, `Ragdoll`, `Block`, `BlockBroken`, `TrueStun`. It's keyed by the combatant's **character Model**, never by Player — NPCs are combatants exactly like players (Bryan, 2026-09-27), so nothing in this service may assume a Player exists. A player is registered automatically when `PlayerService.Ready` fires; M3-04's `NpcService` registers NPCs the same way.
 
-| Marker | Added by | Effect |
-|---|---|---|
-| `Hit` | DamageHandler | stagger animation, hit sound and particle, hurt face; cancels your swing or block |
-| `Stun` | DamageHandler, parry | blocks attacking |
-| `Knocked` | DamageHandler | ragdoll, blind screen, input freeze; removed by Health regen |
-| `Ragdoll` | EffectsService | physics ragdoll, knocked-out face |
-| `Block` | Blocking remote | blocking; value 1 = parry window |
-| `BlockBroken` | InteractionsDesign | adds `TrueStun` for 3 s |
-| `TrueStun` | EffectsService | speed 0, no jumping |
-| `BigFreezeInput` / `FreezeInput` / `ActionFreezeInput` | EffectsService | client input lock (`InputHandler`) |
-| `Reading`, `OnMission` | MissionHandler | mission state |
-| `MutedStep`, `Hungry`, `CombatTagged`, `FireBurn`, `Bleed` | checked for, but nothing creates them now, except `Hungry`, which only the disabled Fear&Hunger script creates |
+**API:**
+- `StatusService.Register(character, owner: Player?)` / `.Unregister(character)` — set up or tear down a combatant's status table. Safe to call more than once; `Unregister` on an unregistered or already-gone character is a no-op, never an error (AUDIT M18).
+- `StatusService.Apply(character, status, duration?, data?)` — applies a status. With a `duration` (seconds), it auto-expires on one shared loop (0.1 s tick, not a `task.delay` per status: no leaked threads on respawn). Without one, it stays until `Remove` is called explicitly (e.g. `Block`, which CombatService removes on `Block(false)`). Re-applying an already-active status refreshes its duration and `data` (and the bridge marker below) without re-firing `Changed`, since the active/inactive state itself didn't change.
+- `StatusService.Remove(character, status)` — clears it early. No-op if it isn't active or the character is already gone.
+- `StatusService.Has(character, status): boolean`, `.Get(character, status): StatusInfo?` (`{ expiresAt: number?, duration: number?, data: any? }`).
+- `StatusService.Changed` (`RBXScriptSignal`, fires `(character, status, active)`) — only on an actual active/inactive transition, not on a refresh.
 
-**Files:** `SSS/Services/EffectsService.server.luau`, `SCS/Scripts/InputHandler.client.luau` (input freezes, and posting ForcedChat lines to chat).
+**Character attributes** (client-readable, same cheap-replication pattern as `HealthService`'s player attributes): `Stunned` ← `Stun`, `Knocked` ← `Knocked`, `Blocking` ← `Block`, `TrueStunned` ← `TrueStun`. `Hit` and `BlockBroken` don't get an attribute (nothing client-side reads them directly yet).
+
+**Bridge to the old markers (kept until M3-03/M3-06 replace their readers).** Every `Apply`/`Remove` also creates/destroys the matching Value under `character.Effects`, with the same Name/ClassName/Value semantics the old `DamageHandler`/`InteractionsDesign`/`EffectsService` used, so old readers (missions, regions, and `EffectsService.server.luau`'s own ragdoll/blind-screen/sound/TrueStun reactions, still unmodified and still running) keep working:
+
+| Marker | Class | Value | Notes |
+|---|---|---|---|
+| `Hit` | StringValue | `data.kind` or `"Fist"` | old code always wrote `"Fist"` regardless of weapon |
+| `Stun` | StringValue | (unset) | |
+| `Knocked` | IntValue | `math.ceil(duration)` | a child StringValue named after the attacker (`data.by`) if given, same as the old "personKnocker" pattern. `HealthService`'s reviveLoop still independently ticks this Value down and can destroy it early until M3-03 rewires the knockout path onto `StatusService` directly — a known, documented overlap, not a bug this task fixes |
+| `Ragdoll` | IntValue | (unset) | |
+| `Block` | IntValue | `data.value` or `1` | CombatService (M3-03) flips it 1→0 itself by re-`Apply`ing with `{value = 0}` once the parry window elapses |
+| `BlockBroken` | IntValue | (unset) | |
+| `TrueStun` | StringValue | (unset) | |
+
+`StatusService` only owns the markers; it does not ragdoll, blind the screen, or play sounds itself — `EffectsService.server.luau` still reacts to these same markers exactly as before (unchanged this milestone; M3-06 replaces its client-facing half).
+
+The Effects folder itself still isn't created by `StatusService`: it looks for `character.Effects` once at `Register`, and if it isn't there yet, resolves it in the background (`WaitForChild`, then creates it itself only if it's still missing after a timeout) so `Register`/`Apply` never yield a caller. A bridge write before that resolves just silently skips — internal state and the client attributes above always work regardless of whether the Effects folder (or `EffectsService.server.luau`) exists.
+
+**Other markers still handled the old way** (unchanged, not part of this rebuild): `BigFreezeInput`/`FreezeInput`/`ActionFreezeInput` (input locks, `EffectsService` + `InputHandler.client.luau`), `Reading`/`OnMission` (MissionHandler), `MutedStep`/`Hungry`/`CombatTagged`/`FireBurn`/`Bleed` (checked for, but nothing creates them except `Hungry` via the disabled Fear&Hunger script).
+
+**Files:** `Shared/Data/Combat.luau` (move sets, block/dash/run/knockout/stagger numbers — data only, no logic), `Server/Services/StatusService.luau`.
+**Depends on:** `PlayerService.Ready`/`Players.PlayerRemoving` (player registration only; NPC registration is M3-04's job).
+**Depended on by:** M3-02's `MovementService` (subscribes to `Changed` to clear `Run` on a stun/knock), M3-03's `CombatService` (the only service that decides *when* to Apply/Remove a status), `EffectsService.server.luau` (still reacts to the bridge markers, unchanged).
+**Not yet touched this milestone:** `Services/EffectsService.server.luau` and `Services/DamageHandler.luau` (M3-03 replaces both).
 
 ---
 
