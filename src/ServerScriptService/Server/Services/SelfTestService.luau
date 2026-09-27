@@ -28,6 +28,9 @@ local HealthService = require(script.Parent.HealthService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
+local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
+local NpcService = require(script.Parent.NpcService)
+local NpcTrees = require(script.Parent.NpcService.Trees)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
@@ -946,6 +949,127 @@ local function testCombatService(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3-04: BehaviorTree node semantics (Selector short-circuit, Sequence
+-- failure, Running propagation, Cooldown), pure and self-contained - no
+-- Roblox instances needed, just counters and canned statuses.
+local function testBehaviorTree(results: { Check })
+	local function counted(status: BehaviorTree.Status): (BehaviorTree.Node, () -> number)
+		local calls = 0
+		local node: BehaviorTree.Node = BehaviorTree.Action(function(_bb: any): BehaviorTree.Status
+			calls += 1
+			return status
+		end)
+		return node, function()
+			return calls
+		end
+	end
+
+	do
+		local failing, failingCalls = counted("Failure")
+		local succeeding, succeedingCalls = counted("Success")
+		local untouched, untouchedCalls = counted("Success")
+		local selector = BehaviorTree.Selector({ failing, succeeding, untouched })
+
+		local status = selector.Tick({})
+		expect(results, "BehaviorTree: Selector returns the first non-Failure status", status == "Success")
+		expect(results, "BehaviorTree: Selector ticked the failing child", failingCalls() == 1)
+		expect(results, "BehaviorTree: Selector ticked the succeeding child", succeedingCalls() == 1)
+		expect(results, "BehaviorTree: Selector short-circuits before the untouched child", untouchedCalls() == 0)
+	end
+
+	do
+		local succeeding, succeedingCalls = counted("Success")
+		local failing, failingCalls = counted("Failure")
+		local untouched, untouchedCalls = counted("Success")
+		local sequence = BehaviorTree.Sequence({ succeeding, failing, untouched })
+
+		local status = sequence.Tick({})
+		expect(results, "BehaviorTree: Sequence returns the first non-Success status", status == "Failure")
+		expect(results, "BehaviorTree: Sequence ticked the succeeding child", succeedingCalls() == 1)
+		expect(results, "BehaviorTree: Sequence ticked the failing child", failingCalls() == 1)
+		expect(results, "BehaviorTree: Sequence short-circuits before the untouched child", untouchedCalls() == 0)
+	end
+
+	do
+		local running = counted("Running")
+		local selector = BehaviorTree.Selector({ running })
+		expect(results, "BehaviorTree: Selector propagates Running", selector.Tick({}) == "Running")
+
+		local sequence = BehaviorTree.Sequence({ running })
+		expect(results, "BehaviorTree: Sequence propagates Running", sequence.Tick({}) == "Running")
+	end
+
+	do
+		local succeeding, succeedingCalls = counted("Success")
+		local gated = BehaviorTree.Cooldown(0.15, succeeding)
+
+		expect(results, "BehaviorTree: Cooldown ticks its child the first time", gated.Tick({}) == "Success")
+		expect(results, "BehaviorTree: Cooldown blocks a second tick immediately after", gated.Tick({}) == "Failure")
+		expect(results, "BehaviorTree: Cooldown doesn't tick the child while gated", succeedingCalls() == 1)
+
+		task.wait(0.2)
+		expect(results, "BehaviorTree: Cooldown allows the child again once it elapses", gated.Tick({}) == "Success")
+		expect(results, "BehaviorTree: Cooldown ticked the child a second time once ready", succeedingCalls() == 2)
+	end
+end
+
+-- M3-04: the Target tree's give-up transition, driven with a fake
+-- blackboard (a plain table, not even a real AiController) and fake
+-- Model/Humanoid/HumanoidRootPart instances - StatusService.Has on an
+-- unregistered character is just false, so "IsKnocked" never gets in the
+-- way here.
+local function testNpcService(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestNpcService"
+	scratch.Parent = ServerStorage
+
+	local function buildFakeNpc(name: string, position: Vector3): (Model, Humanoid, BasePart)
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.CFrame = CFrame.new(position)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model, humanoid, hrp
+	end
+
+	do
+		local attacker, attackerHumanoid, attackerRoot = buildFakeNpc("SelfTestNpcAttacker", Vector3.new(0, 0, 0))
+		local farTarget = buildFakeNpc("SelfTestNpcFarTarget", Vector3.new(1000, 0, 0))
+
+		local blackboard: { target: Model?, [string]: any } = {
+			character = attacker,
+			humanoid = attackerHumanoid,
+			rootPart = attackerRoot,
+			npcType = "Target",
+			home = Vector3.new(0, 0, 0),
+			target = farTarget :: Model?,
+			wanderGoal = nil,
+			path = nil,
+			waypoints = nil,
+			waypointIndex = 1,
+			pathComputedAt = nil,
+		}
+
+		local tree = NpcTrees.BuildTarget()
+		tree.Tick(blackboard)
+
+		expect(results, "NpcService: the Target tree gives up on a target beyond GiveUpRadius", blackboard.target == nil)
+	end
+
+	do
+		expect(results, "NpcService: ResolveNpcType defaults to Dummy", NpcService.ResolveNpcType(Instance.new("Model")) == "Dummy")
+	end
+
+	scratch:Destroy()
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -969,6 +1093,8 @@ function SelfTestService:Start()
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)
+		testBehaviorTree(collected)
+		testNpcService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

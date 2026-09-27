@@ -368,12 +368,30 @@ Moved verbatim out of `Interactions/InteractionsHandler.server.luau` into its ow
 
 ---
 
-## 15. NPCs
+## 15. NPCs — rebuilt M3-04 (TRIAGE #20, fixes AUDIT M19)
 
-**What it does.** Two training dummies at `Workspace.NPC.DUMMY` chase a target with pathfinding within 40 studs and give up beyond that. InteractionsDesign and EffectsService give NPCs the same speed and effects handling as players.
-**Files:** `RS/Modules/NPController.luau`, plus `Workspace.NPC.DUMMY.NPCFetch` and `Health` (Studio-only).
+**What it does.** Behavior-tree NPCs (Bryan, 2026-09-27: "Man was bad. Use behavior trees if at all possible. NPCs should be treated like normal players but with obvious AI controllers"), not ported from the old `NPController`/`NPCFetch` design at all — only its numbers (chase/give-up/attack range) carried over. `NpcService` finds NPC models (children of `Workspace.NPC`, or anything tagged `"NPC"` via `CollectionService`) with a `Humanoid`, reads an `NpcType` attribute or StringValue (`"Dummy"` or `"Target"`, defaulting to `"Dummy"`), and registers each one with `StatusService`, `MovementService` and `CombatService` **exactly the way a player's character does on `PlayerService.Ready`** — an NPC takes hits, blocks, staggers, gets knocked and recovers through the identical code path, keyed by its character Model, never a Player.
 
-The two `NPCFetch` copies have the same code but different settings. `npcType = "Dummy"` only plays walk and run animations and flinches when hit. `npcType = "Target"` also wanders, chases the nearest player within 30 studs (using NPController), and punches within 4 studs through `DamageHandler.damage` (3 damage). `Health` is Roblox's stock regen script. **⚠** Once the Target dummy loses its target or gets knocked out, it never starts again.
+**`Shared/BehaviorTree.luau`.** A small, generic BT: `Selector` (first non-`Failure` child wins), `Sequence` (first non-`Success` child wins), `Condition(fn)`, `Action(fn)` (the only node a tree author can return `"Running"` from directly), `Inverter`, `Wait(seconds)`, `Cooldown(seconds, child)`. Every factory returns a fresh `Node` (a table holding one `Tick` function) with its own closure state, so `NpcService/Trees.luau`'s `BuildDummy()`/`BuildTarget()` build one tree **per NPC** — a `Cooldown`'s timer never leaks between two NPCs sharing the same tree shape.
+
+**Trees (`NpcService/Trees.luau`):**
+- **Dummy** — `Selector( Sequence(IsKnocked, Wait), Sequence(WasHit, Flinch), Idle )`. Matches the old behavior exactly: no chasing, no wandering, just a flinch reaction and standing still otherwise.
+- **Target** — `Selector( Sequence(IsKnocked, Wait), Sequence(HasTarget, Selector( Sequence(InReach, Cooldown(AttackCooldown, Attack)), Sequence(TargetWithin(GiveUpRadius), ChaseStep), GiveUp )), AcquireTarget, Wander )`. `Attack` calls `CombatService.Attack(character)` directly (the same entry point `Attack()` uses for a player); `ChaseStep` uses `PathfindingService`, re-planning at most every 2 seconds (a small path cache) and falling back to a direct `Humanoid:MoveTo` if pathing fails; `AcquireTarget` picks the nearest living, non-`Knocked` player within `ChaseRadius`; `GiveUp` clears the target and path state; `Wander` roams a random point within `WanderRadius` of wherever the NPC started. **Fixes AUDIT M19**: giving up never leaves a permanent flag — the very next tick's `AcquireTarget`/`Wander` can pick a new target right away, and losing the character model entirely (below) gets a fresh `AiController` with no memory of the old chase at all, not a start "gave up forever."
+
+**`NpcService/AiController.luau`.** Holds one NPC's blackboard (character, humanoid, root part, npc type, current target, path/waypoint cache, wander goal) and its tree; `Tick()` just runs the tree once. One shared loop in `NpcService` ticks every registered NPC's `AiController` at `Config.Npc.TickSeconds` (0.2 s) — not a thread per NPC, same reasoning as `StatusService`'s own shared expiry loop.
+
+**Respawn.** At setup, each NPC model is cloned once into `ServerStorage.NpcTemplates` (keyed by its own `Name`) before anything else touches it — the dummy's own art is never modified, only read. If the live model is ever destroyed (a mission, a test, `.npc reset`), `NpcService` re-clones the template at the same spot and registers the fresh copy exactly like a new NPC — a clean restart, not a revive of old state.
+
+**Config:** `Config.Npc` in `Shared/Config.luau` — `TickSeconds = 0.2`, `ChaseRadius = 30`, `GiveUpRadius = 40`, `AttackRange = 4`, `AttackCooldown = 1.4`, `WanderRadius = 12`, `MaxHealth = { Dummy = 100, Target = 100 }` (NPCs get health from here, not the player rank ladder).
+
+**⚠ Animations not wired.** The old `NPCFetch`/`Health` scripts (Studio-only, already deleted by Bryan, never in this repo) are the only place the walk/run/flinch animation asset IDs ever lived — there's no source to port them from. `Trees.luau`'s `playAnimationIfPresent` best-effort-plays an `Animation` instance by name (`"Walk"`/`"Run"`/`"Flinch"`) if the NPC model happens to have one, silently skipping otherwise; **Bryan/the playtester needs to check in Studio** whether the dummy models have those, and add them (or tell the lead the actual names/ids to wire) if not — movement, chasing, attacking and reacting to hits all work regardless, this only affects what animation plays while doing it.
+
+**Dev commands (section 16):** `.npc list`, `.npc reset`, `.npc type <name> Dummy|Target`.
+
+**Files:** `Shared/BehaviorTree.luau`, `Server/Services/NpcService/init.luau`, `Server/Services/NpcService/AiController.luau`, `Server/Services/NpcService/Trees.luau`.
+**Removed (TRIAGE #20):** `RS/Modules/NPController.luau` (nothing required it once the old Studio-only `NPCFetch`/`Health` scripts that used it were already gone).
+**Depends on:** `StatusService`, `MovementService`, `CombatService` (all keyed by character Model, NPC-safe by M3-01's own design rule), `Shared/Data/Combat` (Fist move set, via `CombatService`).
+**Depended on by:** nothing yet; a future mission/bounty system could read `StatusService.Has(npc, "Knocked")` the same way it would for a player.
 
 ---
 
@@ -409,6 +427,9 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 | `.combat log on\|off` | logs every hit decision (swing/hit/blocked/parried/broken/knocked) to Output (`CombatService`) |
 | `.knock [player]` | forces a knockout (`StatusService.Apply(..., "Knocked", ...)`) |
 | `.stun <s> [player]` | forces a `Stun` for `s` seconds |
+| `.npc list` | lists every registered NPC, its type and current health |
+| `.npc reset` | destroys every live NPC (each respawns fresh from its `ServerStorage.NpcTemplates` copy) |
+| `.npc type <name> Dummy\|Target` | changes an NPC's type at runtime and rebuilds its `AiController` |
 
 Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 

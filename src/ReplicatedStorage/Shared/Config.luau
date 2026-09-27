@@ -123,6 +123,20 @@ Config.Scene = {
 	CoreDistance = 15,
 }
 
+-- M3-04: NpcService/AiController (TRIAGE #20). NPCs are combatants exactly
+-- like players (Bryan, 2026-09-27): MaxHealth comes from here, by
+-- NpcType, instead of the player rank ladder.
+Config.Npc = {
+	-- How often the shared AiController loop ticks every NPC's tree.
+	TickSeconds = 0.2,
+	ChaseRadius = 30,
+	GiveUpRadius = 40,
+	AttackRange = 4,
+	AttackCooldown = 1.4,
+	WanderRadius = 12,
+	MaxHealth = { Dummy = 100, Target = 100 },
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
@@ -137,6 +151,8 @@ table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
+table.freeze(Config.Npc.MaxHealth)
+table.freeze(Config.Npc)
 table.freeze(Config)
 
 return Config
