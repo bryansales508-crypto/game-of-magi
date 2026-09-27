@@ -102,7 +102,7 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
 | M3-01 | Shared combat data + StatusService (markers, durations, attributes, `Effects` bridge) | server-builder | reviewed twice, PASS (server branch; merges at the gate) | Self-test passes; old readers of `character.Effects` still work |
-| M3-02 | MovementService (speed stack, run, dash with server cooldown, low-health slow, IntFold bridge) | server-builder | fixing review (docs/reviews/M3-02.md); merge gate below | Dash from spawn incl. diagonals; second dash within cooldown rejected; hurt slows immediately |
+| M3-02 | MovementService (speed stack, run, dash with server cooldown, low-health slow, IntFold bridge) | server-builder | reviewed and fixed (server branch; merges at the gate) | Dash from spawn incl. diagonals; second dash within cooldown rejected; hurt slows immediately |
 | M3-03 | CombatService (server hit checks, combo chain, block/parry/break, knockout, NPC API, removals, footsteps kept alive) | server-builder | built, in Opus review | A client can't hit out of range or spam; blocker immune while block holds; 3-hit fist chain |
 | M3-04 | NpcService + Shared/BehaviorTree + AiController (Dummy, Target trees) | server-builder | queued | Target chases within 30, gives up at 40, punches within 4, restarts; NPCs take hits like players |
 | M3-05 | CombatController (client input -> intentions; animations on server events) | client-builder | reviewed PASS (client branch, merges with M3-06) | Same feel; no stacked listeners; no client-side hit reports |
