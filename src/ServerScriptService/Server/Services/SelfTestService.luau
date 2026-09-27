@@ -19,6 +19,7 @@ local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
+local HealthService = require(script.Parent.HealthService)
 
 local log = Log.new("SelfTest")
 
@@ -479,6 +480,20 @@ local function testAgeService(results: { Check })
 	end
 end
 
+-- M2-03: HealthService's pure helpers.
+local function testHealthService(results: { Check })
+	do
+		expect(results, "HealthService: MaxHealthFor height 1.0 / rank 1", HealthService.MaxHealthFor(1.0, 1) == 53)
+		expect(results, "HealthService: MaxHealthFor height 1.3 / rank 4", math.abs(HealthService.MaxHealthFor(1.3, 4) - 88.9) < 1e-9)
+	end
+
+	do
+		expect(results, "HealthService: RegenAmount Idle over 5s", HealthService.RegenAmount("Idle", 5) == 10)
+		expect(results, "HealthService: RegenAmount Combat over 5s (no regen in combat)", HealthService.RegenAmount("Combat", 5) == 0)
+		expect(results, "HealthService: RegenAmount Knocked over 5s", HealthService.RegenAmount("Knocked", 5) == 5)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -498,6 +513,7 @@ function SelfTestService:Start()
 		testData(collected)
 		testCharacterService(collected)
 		testAgeService(collected)
+		testHealthService(collected)
 		return collected
 	end)
 

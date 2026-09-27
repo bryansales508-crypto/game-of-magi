@@ -65,6 +65,24 @@ Config.Aging = {
 	Tick = 10,
 }
 
+-- M2-03: max health and block (DESIGN.md section 3a "Rank raises max
+-- health", TRIAGE #14). Numbers kept from the old scripts where they
+-- weren't broken; see HealthService's own comments for what changed.
+Config.Health = {
+	Base = 50, -- old StarterHealth
+	HeightBonus = 3, -- per Height ratio unit; same multiplier the old Race==2 formula used
+	-- Indexed by Ranks.rankFor's rank index (1 = Street Rat .. 7 = King/Queen).
+	RankBonus = { 0, 10, 20, 35, 50, 70, 100 },
+	RegenPerSecond = { Idle = 2, Combat = 0, Knocked = 1 },
+	MaxBlock = 100,
+	BlockRegenPerSecond = 10,
+	-- Health/block still above 10% while Knocked ticks the revive
+	-- countdown down once a second (unchanged from the old Health script).
+	KnockedReviveThreshold = 0.1,
+	-- How often the shared regen loop ticks, in real seconds.
+	Tick = 1,
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
@@ -74,6 +92,9 @@ for _, point in Config.Aging.DeathChance do
 end
 table.freeze(Config.Aging.DeathChance)
 table.freeze(Config.Aging)
+table.freeze(Config.Health.RankBonus)
+table.freeze(Config.Health.RegenPerSecond)
+table.freeze(Config.Health)
 table.freeze(Config)
 
 return Config
