@@ -46,7 +46,7 @@ Write `docs/TRIAGE.md`: one line per system with a recommendation (**keep**, **f
 ### Phase 5: Build
 The same loop as always: plan → build (server and client builders in parallel) → review → test → commit (`git commit -m "<task ID>: <summary>"`) → stop at each milestone gate for Bryan's approval. If the same bug fails three fix attempts, stop and ask Bryan.
 
-**Cloud workflow** (builders and reviewer run on Claude cloud machines, on cheaper models; the lead and playtester stay local):
+**Cloud workflow** (builders and reviewer run on Claude cloud machines, on cheaper models; the lead and playtester stay local). **Dispatch with the `RemoteTrigger` tool as one-off routines** (create, then run; check with `list_runs` / `get_run_log`). Do **not** use the Agent tool's `isolation: "remote"`: it silently runs locally.
 1. The lead pushes `main` to `origin`, then dispatches each builder in the cloud with a task ID, the **exact files it owns**, and a branch name `m<N>/<TASK-ID>-<slug>` (for example `m1/M1-03-dataservice`). Two builders never own the same file at the same time.
 2. The builder works only on its branch, commits with `<TASK-ID>: <summary>`, pushes the branch, and reports. It never merges and never pushes `main`.
 3. The reviewer (cloud) reviews `git diff main...<branch>` and gives a verdict of PASS or CHANGES NEEDED.
