@@ -83,11 +83,13 @@ Config.Health = {
 	RegenPerSecond = { Idle = 2, Combat = 0, Knocked = 1 },
 	MaxBlock = 100,
 	BlockRegenPerSecond = 10,
-	-- Health/block still above 10% while Knocked ticks the revive
-	-- countdown down once a second (unchanged from the old Health script).
-	KnockedReviveThreshold = 0.1,
 	-- How often the shared regen loop ticks, in real seconds.
 	Tick = 1,
+	-- M3-03 (REVIEW-M3-03 M2): CombatService.SetTier(player, "Combat") on
+	-- any hit dealt or taken; it falls back to "Idle" once this many
+	-- seconds pass with no further combat activity (and no longer than
+	-- that - "Knocked" always wins over both while it's active).
+	CombatTierSeconds = 6,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.

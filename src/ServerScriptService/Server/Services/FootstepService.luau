@@ -129,13 +129,16 @@ local function onFootstep(player: Player, step: Step, _idle: boolean?): ...any
 	end
 
 	local floorMaterial = humanoid.FloorMaterial
-	local floorResult: RaycastResult? = nil
 
 	if floorMaterial == Enum.Material.Air and step ~= "Jump" then
-		-- Only a Jump step bothers raycasting while airborne (matches the
-		-- old code: a regular walk step in the air is just skipped).
+		-- Only a Jump step bothers raycasting while airborne for the SOUND
+		-- decision (matches the old code: a regular walk step in the air
+		-- does nothing at all, sound or footprint).
 		return
 	end
+
+	local characters = Workspace:FindFirstChild("Characters")
+	local excludeCharacters = if characters then { characters } else {}
 
 	if step == "Jump" or floorMaterial == Enum.Material.Air then
 		local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -144,13 +147,12 @@ local function onFootstep(player: Player, step: Step, _idle: boolean?): ...any
 		end
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
-		local characters = Workspace:FindFirstChild("Characters")
-		params.FilterDescendantsInstances = if characters then { characters } else {}
-		floorResult = Workspace:Raycast((hrp :: BasePart).Position, Vector3.new(0, -1000, 0), params)
-		if floorResult == nil then
+		params.FilterDescendantsInstances = excludeCharacters
+		local hrpResult = Workspace:Raycast((hrp :: BasePart).Position, Vector3.new(0, -1000, 0), params)
+		if hrpResult == nil then
 			return
 		end
-		floorMaterial = floorResult.Material
+		floorMaterial = hrpResult.Material
 	end
 
 	local name = materialName(floorMaterial)
@@ -162,8 +164,23 @@ local function onFootstep(player: Player, step: Step, _idle: boolean?): ...any
 		playSurfaceSound(torso, character, step, "Carpet")
 	end
 
-	if (name == "Sand" or name == "Mud") and floorResult then
-		placeFootprint(character, step, floorResult)
+	-- REVIEW-M3-03 M6: a SEPARATE raycast from the Torso, every step call
+	-- (not only on a jump) - the old surfaceCall always did this one on
+	-- its own, regardless of what floor material the sound above used, so
+	-- footprints on sand/mud showed up on ordinary grounded steps too, not
+	-- just jumps.
+	if not torso:IsA("BasePart") then
+		return
+	end
+	local footParams = RaycastParams.new()
+	footParams.FilterType = Enum.RaycastFilterType.Exclude
+	footParams.FilterDescendantsInstances = excludeCharacters
+	local footResult = Workspace:Raycast((torso :: BasePart).Position, Vector3.new(0, -1000, 0), footParams)
+	if footResult then
+		local footName = materialName(footResult.Material)
+		if footName == "Sand" or footName == "Mud" then
+			placeFootprint(character, step, footResult)
+		end
 	end
 end
 

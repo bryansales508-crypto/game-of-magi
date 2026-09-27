@@ -13,6 +13,7 @@ local Workspace = game:GetService("Workspace")
 
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local PlayerService = require(script.Parent.PlayerService)
 local StatusService = require(script.Parent.StatusService)
@@ -26,6 +27,9 @@ local log = Log.new("CombatService")
 -- separately, via Humanoid.Health).
 local BLOCKS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true }
 local BLOCKS_BLOCK_START: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, BlockBroken = true }
+-- Statuses that force Block off outright the instant they turn on
+-- (REVIEW-M3-03 M3) - onStatusChanged below reacts to all three.
+local ENDS_BLOCK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
 
 -- Statuses that also freeze/slow movement while active - a single named
 -- MovementService modifier per status, set/cleared alongside StatusService
@@ -42,13 +46,29 @@ local MOVEMENT_MULT_FOR: { [string]: number } = {
 -- A short knockback impulse, same duration the old DamageHandler used
 -- (`Debris:AddItem(force, .25)`).
 local KNOCKBACK_DURATION = 0.25
+-- REVIEW-M3-03 L3: the same run-speed MovementService itself uses, for the
+-- attacker-teleport sanity check below (kept as a local constant rather
+-- than importing MovementService's own private one - both are just this
+-- same formula).
+local RUN_SPEED = 16 * Combat.Run.speedMult
 
 type Entry = {
 	owner: Player?,
 	weaponSet: string,
 	comboStep: number,
+	lastMoveWasFinisher: boolean,
 	lastHitAt: number?,
+	lastCombatAt: number?,
 	parryCooldownUntil: number?,
+	-- The window between a swing and its own hit-check resolving (H2: you
+	-- can't start blocking while your own swing is still in flight).
+	pendingHitUntil: number?,
+	-- A block meter for a target with no real Player (HealthService's is
+	-- Player-only) - REVIEW-M3-03 L8: without this, an NPC's block could
+	-- never break at all (meterHeld defaulted to always true).
+	blockMeter: number,
+	ancestryConn: RBXScriptConnection?,
+	diedConn: RBXScriptConnection?,
 }
 
 local registered: { [Model]: Entry } = {}
@@ -108,27 +128,85 @@ local function resolveCombatant(part: BasePart): Model?
 	return nil
 end
 
--- ==================== movement/status coupling ====================
+-- ==================== movement/status/health coupling ====================
 
-local function onStatusChanged(character: Model, status: string, active: boolean)
-	local mult = MOVEMENT_MULT_FOR[status]
-	if mult == nil then
+-- REVIEW-M3-03 M2: HealthService.SetTier(player, "Combat") on any hit
+-- dealt or taken, falling back to "Idle" after Config.Health.
+-- CombatTierSeconds of no further combat activity - "Knocked" always wins
+-- while it's active (see reconcileTier). Only meaningful for a real
+-- Player; HealthService's tiers don't exist for an NPC.
+local function reconcileTier(character: Model)
+	local player = Players:GetPlayerFromCharacter(character)
+	if player == nil then
 		return
 	end
-	if active then
-		MovementService.SetModifier(character, status, mult)
+	if StatusService.Has(character, "Knocked") then
+		HealthService.SetTier(player, "Knocked")
+		return
+	end
+	local entry = registered[character]
+	local lastCombatAt = entry and entry.lastCombatAt
+	if lastCombatAt and Workspace:GetServerTimeNow() - lastCombatAt < Config.Health.CombatTierSeconds then
+		HealthService.SetTier(player, "Combat")
 	else
-		MovementService.ClearModifier(character, status)
+		HealthService.SetTier(player, "Idle")
+	end
+end
+
+local function markCombatActivity(character: Model)
+	local entry = registered[character]
+	local now = Workspace:GetServerTimeNow()
+	if entry then
+		entry.lastCombatAt = now
+	end
+	reconcileTier(character)
+	task.delay(Config.Health.CombatTierSeconds, function()
+		reconcileTier(character)
+	end)
+end
+
+-- REVIEW-M3-03 M3: one place owns what happens when a status turns on or
+-- off, regardless of which code path caused it (a direct StatusService
+-- call, a dev command, the shared expiry loop...).
+local function onStatusChanged(character: Model, status: string, active: boolean)
+	local mult = MOVEMENT_MULT_FOR[status]
+	if mult ~= nil then
+		if active then
+			MovementService.SetModifier(character, status, mult)
+		else
+			MovementService.ClearModifier(character, status)
+		end
 	end
 
-	if status == "Knocked" and not active then
-		-- Recovered, whether by the getUpSeconds timer or an early
-		-- Remove (a dev command, say): come back up at the fixed floor,
-		-- never however much health TakeDamage would otherwise have left.
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid and humanoid.Health > 0 then
-			humanoid.Health = math.max(humanoid.Health, Combat.Knockout.healthOnGetUp * humanoid.MaxHealth)
-			Remotes.Server.FireAll("CombatEvent", "Recovered", { target = character })
+	if status == "Block" then
+		if active then
+			MovementService.SetModifier(character, "Block", Combat.Block.blockSpeedMult)
+		else
+			MovementService.ClearModifier(character, "Block")
+		end
+		local player = Players:GetPlayerFromCharacter(character)
+		if player then
+			HealthService.SetBlocking(player, active)
+		end
+	elseif active and ENDS_BLOCK[status] then
+		-- Re-fires this same function with ("Block", false), which is what
+		-- actually clears the speed modifier/HealthService flag above -
+		-- one place owns that cleanup no matter which status ended it.
+		StatusService.Remove(character, "Block")
+	end
+
+	if status == "Knocked" then
+		reconcileTier(character)
+		if not active then
+			-- Recovered, whether by the getUpSeconds timer or an early
+			-- Remove (a dev command, say): come back up at the fixed
+			-- floor, never however much health TakeDamage would otherwise
+			-- have left.
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				humanoid.Health = math.max(humanoid.Health, Combat.Knockout.healthOnGetUp * humanoid.MaxHealth)
+				Remotes.Server.FireAll("CombatEvent", "Recovered", { target = character })
+			end
 		end
 	end
 end
@@ -187,15 +265,35 @@ local function applyBlockedHit(attacker: Model, target: Model)
 	local parrying = blockInfo ~= nil and type(blockInfo.data) == "table" and (blockInfo.data :: any).value == 1
 	local entry = registered[target]
 	local cooldownActive = entry ~= nil and entry.parryCooldownUntil ~= nil and Workspace:GetServerTimeNow() < entry.parryCooldownUntil
+	local wouldParry = parrying and not cooldownActive
 
-	-- Held (not a parry): drains the block meter; HealthService owns that
-	-- number and its own MaxBlock cap (AUDIT M2: nothing here ever adds
-	-- block back on a parry, so there's no cap to overshoot any more). A
-	-- target with no real Player behind it (pre-M3-04, no NPC is ever a
-	-- real combat target yet) has no meter to drain, so its block just
-	-- always holds.
-	local targetPlayer = Players:GetPlayerFromCharacter(target)
-	local meterHeld = if targetPlayer then HealthService.SpendBlock(targetPlayer, Combat.Block.drainPerHit) else true
+	-- REVIEW-M3-03 M1: a parry is resolved BEFORE the block meter is ever
+	-- touched - it costs no block HP at all, not even a refunded drain.
+	local meterHeld: boolean
+	if wouldParry then
+		meterHeld = true -- unused by ResolveBlock's Parried branch; never spent below.
+	else
+		local targetPlayer = Players:GetPlayerFromCharacter(target)
+		if targetPlayer then
+			-- HealthService owns this number (and its own MaxBlock cap -
+			-- AUDIT M2: nothing here ever adds block back on a parry, so
+			-- there's no cap to overshoot any more).
+			meterHeld = HealthService.SpendBlock(targetPlayer, Combat.Block.drainPerHit)
+		else
+			-- REVIEW-M3-03 L8: a target with no real Player (an NPC) still
+			-- needs a real meter, or its block could never break.
+			local npcEntry = registered[target]
+			if npcEntry then
+				local held = npcEntry.blockMeter >= Combat.Block.drainPerHit
+				if held then
+					npcEntry.blockMeter -= Combat.Block.drainPerHit
+				end
+				meterHeld = held
+			else
+				meterHeld = true
+			end
+		end
+	end
 
 	local outcome = CombatService.ResolveBlock(parrying, cooldownActive, meterHeld)
 
@@ -214,8 +312,10 @@ local function applyBlockedHit(attacker: Model, target: Model)
 			log:Info(string.format("%s blocked %s's hit", target.Name, attacker.Name))
 		end
 	else
+		-- Just Remove: onStatusChanged (above) clears the speed modifier
+		-- and HealthService's blocking flag on ANY path that ends Block
+		-- (REVIEW-M3-03 M3), so there's nothing else to do here for that.
 		StatusService.Remove(target, "Block")
-		MovementService.ClearModifier(target, "Block")
 		StatusService.Apply(target, "TrueStun", Combat.Block.breakStun)
 		StatusService.Apply(target, "BlockBroken", Combat.Block.breakStun)
 		Remotes.Server.FireAll("CombatEvent", "BlockBroken", { target = target })
@@ -237,6 +337,14 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 	if targetHumanoid.Health <= 0 then
 		return
 	end
+	-- REVIEW-M3-03 H1: a target already down doesn't take another hit or
+	-- get re-knocked - wait for Recovered first.
+	if StatusService.Has(target, "Knocked") then
+		return
+	end
+
+	markCombatActivity(attacker)
+	markCombatActivity(target)
 
 	if StatusService.Has(target, "Block") and not StatusService.Has(target, "BlockBroken") then
 		local facing = CombatService.IsFacingAttacker(
@@ -248,9 +356,9 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 			applyBlockedHit(attacker, target)
 			return
 		end
-		-- A back hit bypasses (and ends) the block entirely.
+		-- A back hit bypasses (and ends) the block entirely; onStatusChanged
+		-- clears the speed modifier/HealthService flag (REVIEW-M3-03 M3).
 		StatusService.Remove(target, "Block")
-		MovementService.ClearModifier(target, "Block")
 	end
 
 	local by = attackerLabel(attacker)
@@ -275,8 +383,9 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 	if targetPlayer then
 		HealthService.TakeDamage(targetPlayer, move.damage, by)
 	else
-		-- Pre-M3-04: no NPC is ever a real combat target yet (NpcService
-		-- registers them with HealthService itself once it exists).
+		-- An NPC (M3-04) has no Player behind it, so HealthService's
+		-- Player-keyed TakeDamage doesn't apply - its Humanoid is the one
+		-- source of truth for its own health.
 		targetHumanoid.Health = wouldBeHealth
 	end
 
@@ -296,20 +405,48 @@ end
 
 -- ==================== hit-check ====================
 
+-- Clear line of sight from the attacker's HRP to the target's HRP (REVIEW-
+-- M3-03 L1): excludes every registered combatant (so a crowd doesn't block
+-- its own members) rather than just the two involved, since a shapecast
+-- from a torso can otherwise clip a third character standing in between.
+local function hasLineOfSight(attackerPos: Vector3, targetPos: Vector3, attacker: Model, target: Model): boolean
+	local exclude: { Instance } = { attacker, target }
+	for character in registered do
+		if character ~= attacker and character ~= target then
+			table.insert(exclude, character)
+		end
+	end
+
+	local params = RaycastParams.new()
+	params.FilterDescendantsInstances = exclude
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	local direction = targetPos - attackerPos
+	local result = Workspace:Raycast(attackerPos, direction, params)
+	return result == nil
+end
+
 -- A single generous sphere covering the move's reach, centred half its
 -- range in front of the attacker's torso: a simple, well-supported
 -- approximation of a forward capsule swing that doesn't depend on the
 -- third-party ShapecastHitbox module's (unverified) server-side behavior.
--- GetPartBoundsInRadius returns parts nearest-first, so the first
--- resolved combatant found really is the first one struck. Exported (not
--- just local) so the self-test can exercise the geometry directly with
--- fake models - in range, out of range, and behind the attacker.
+-- Exported (not just local) so the self-test can exercise the geometry
+-- directly with fake models - in range, out of range, and behind the
+-- attacker. REVIEW-M3-03 M5: only a registered combatant can be hit at
+-- all, and among every candidate the sphere finds, the CLOSEST one to the
+-- attacker's own HRP wins (not just whichever GetPartBoundsInRadius
+-- happened to list first). L2: also requires the candidate be roughly in
+-- front of the attacker's own facing, not just within the sphere's reach
+-- (the sphere's back edge can bulge slightly behind the attacker for a
+-- wide-radius/short-range move).
 function CombatService.FindTarget(attacker: Model, move: Combat.Move): Model?
 	local torso = attacker:FindFirstChild("HumanoidRootPart")
 	if torso == nil or not torso:IsA("BasePart") then
 		return nil
 	end
-	local origin = (torso :: BasePart).Position + (torso :: BasePart).CFrame.LookVector * (move.range / 2)
+	local attackerPos = (torso :: BasePart).Position
+	local attackerLook = (torso :: BasePart).CFrame.LookVector
+	local origin = attackerPos + attackerLook * (move.range / 2)
 	local searchRadius = move.range / 2 + move.radius
 
 	local overlapParams = OverlapParams.new()
@@ -324,22 +461,80 @@ function CombatService.FindTarget(attacker: Model, move: Combat.Move): Model?
 		return nil
 	end
 
+	local seen: { [Model]: boolean } = {}
+	local closest: Model? = nil
+	local closestDistance = math.huge
+
 	for _, part in parts :: { BasePart } do
 		local target = resolveCombatant(part)
-		if target and target ~= attacker then
-			return target
+		if target and target ~= attacker and not seen[target] and registered[target] ~= nil then
+			seen[target] = true
+			local targetHrp = target:FindFirstChild("HumanoidRootPart")
+			if targetHrp and targetHrp:IsA("BasePart") then
+				local targetPos = (targetHrp :: BasePart).Position
+				if (targetPos - attackerPos):Dot(attackerLook) > 0 then
+					local d = (targetPos - attackerPos).Magnitude
+					if d < closestDistance then
+						closest = target
+						closestDistance = d
+					end
+				end
+			end
 		end
 	end
-	return nil
+
+	if closest == nil then
+		return nil
+	end
+	local closestHrp = (closest :: Model):FindFirstChild("HumanoidRootPart")
+	if closestHrp and closestHrp:IsA("BasePart") and not hasLineOfSight(attackerPos, (closestHrp :: BasePart).Position, attacker, closest :: Model) then
+		-- Blocked by a wall (L1): not a hit, even though it's the closest
+		-- candidate geometrically.
+		return nil
+	end
+	return closest
 end
 
-local function runHitCheck(attacker: Model, move: Combat.Move, moveIndex: number)
-	if registered[attacker] == nil or attacker.Parent == nil then
+-- REVIEW-M3-03 L3: rejects a hit if the attacker moved further than a
+-- legitimate combatant could have between the swing and its own hit-check
+-- (a dash mid-swing, plus ordinary run speed for the remaining time) -
+-- catches a speed-hacked/teleported attacker landing a hit its swing
+-- position could never actually have reached.
+local function didNotTeleport(swingPosition: Vector3, currentPosition: Vector3, move: Combat.Move): boolean
+	local maxMoved = RUN_SPEED * move.hitTime + Combat.Dash.distance
+	return (currentPosition - swingPosition).Magnitude <= maxMoved
+end
+
+local function runHitCheck(attacker: Model, move: Combat.Move, moveIndex: number, swingPosition: Vector3)
+	local entry = registered[attacker]
+	if entry == nil or attacker.Parent == nil then
 		return
 	end
-	if StatusService.Has(attacker, "Stun") or StatusService.Has(attacker, "TrueStun") or StatusService.Has(attacker, "Knocked") then
-		-- Interrupted mid-swing: the Swing already played, it just
-		-- doesn't connect.
+	-- REVIEW-M3-03 L4: measured from when the move's hit-check actually
+	-- resolves (matches Combat.luau's own comboWindow comment - "how long
+	-- after THIS move lands"), not from when Attack() was first called.
+	entry.lastHitAt = Workspace:GetServerTimeNow()
+	-- REVIEW-M3-03 L5/H2: dead, stunned/knocked, or now blocking (you can't
+	-- swing and hold a block at the same time) all interrupt mid-swing -
+	-- the Swing already played, it just doesn't connect.
+	local humanoid = attacker:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then
+		return
+	end
+	if
+		StatusService.Has(attacker, "Stun")
+		or StatusService.Has(attacker, "TrueStun")
+		or StatusService.Has(attacker, "Knocked")
+		or StatusService.Has(attacker, "Block")
+	then
+		return
+	end
+
+	local torso = attacker:FindFirstChild("HumanoidRootPart")
+	if torso == nil or not torso:IsA("BasePart") or not didNotTeleport(swingPosition, (torso :: BasePart).Position, move) then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's %s rejected: moved too far since the swing", attacker.Name, move.name))
+		end
 		return
 	end
 
@@ -377,27 +572,41 @@ function CombatService.Attack(character: Model)
 		return
 	end
 
-	local previousMove = Combat.move(entry.weaponSet, entry.comboStep)
-	local comboWindow = if previousMove then previousMove.comboWindow else 0
-	entry.comboStep = CombatService.NextComboStep(entry.comboStep, comboWindow, entry.lastHitAt, now)
+	-- REVIEW-M3-03 L4: a finisher always restarts the chain outright,
+	-- regardless of comboWindow timing; otherwise it continues only if the
+	-- PREVIOUS move's own hit-check (runHitCheck's entry.lastHitAt, not
+	-- this call's timing) landed within that move's comboWindow.
+	if entry.lastMoveWasFinisher then
+		entry.comboStep = 1
+	else
+		local previousMove = Combat.move(entry.weaponSet, entry.comboStep)
+		local comboWindow = if previousMove then previousMove.comboWindow else 0
+		entry.comboStep = CombatService.NextComboStep(entry.comboStep, comboWindow, entry.lastHitAt, now)
+	end
 
 	local move = Combat.move(entry.weaponSet, entry.comboStep)
 	if move == nil then
 		return
 	end
+	entry.lastMoveWasFinisher = move.finisher == true
 
-	entry.lastHitAt = now
 	character:SetAttribute("ComboStep", entry.comboStep)
 	character:SetAttribute("NextAttackAt", now + move.windup + move.recovery)
+	-- H2: Block(true) is rejected while this swing's own hit-check is
+	-- still pending.
+	entry.pendingHitUntil = now + move.hitTime
 
 	local moveIndex = entry.comboStep
+	local torso = character:FindFirstChild("HumanoidRootPart")
+	local swingPosition = if torso and torso:IsA("BasePart") then (torso :: BasePart).Position else Vector3.zero
+
 	Remotes.Server.FireAll("CombatEvent", "Swing", { character = character, setName = entry.weaponSet, moveIndex = moveIndex })
 	if combatLogEnabled then
 		log:Info(string.format("%s swings %s (%s)", character.Name, move.name, entry.weaponSet))
 	end
 
 	task.delay(move.hitTime, function()
-		runHitCheck(character, move, moveIndex)
+		runHitCheck(character, move, moveIndex, swingPosition)
 	end)
 end
 
@@ -421,14 +630,19 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 		if StatusService.Has(character, "Block") then
 			return
 		end
+		-- REVIEW-M3-03 H2: can't start blocking while your own swing's
+		-- hit-check is still in flight.
+		if entry.pendingHitUntil and Workspace:GetServerTimeNow() < entry.pendingHitUntil then
+			return
+		end
+		-- onStatusChanged applies the speed modifier/HealthService.SetBlocking
+		-- (REVIEW-M3-03 M3) once this Changed(true) fires.
 		StatusService.Apply(character, "Block", nil, { value = 1 })
-		MovementService.SetModifier(character, "Block", Combat.Block.blockSpeedMult)
 	else
 		if not StatusService.Has(character, "Block") then
 			return
 		end
 		StatusService.Remove(character, "Block")
-		MovementService.ClearModifier(character, "Block")
 	end
 end
 
@@ -441,20 +655,59 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		return
 	end
 
-	registered[character] = {
+	local entry: Entry = {
 		owner = owner,
 		weaponSet = weaponSet or "Fist",
 		comboStep = 1,
+		lastMoveWasFinisher = false,
+		blockMeter = Config.Health.MaxBlock,
 	}
+	registered[character] = entry
+
 	pcall(function()
 		character:SetAttribute("WeaponSet", weaponSet or "Fist")
 		character:SetAttribute("ComboStep", 1)
 		character:SetAttribute("NextAttackAt", 0)
 	end)
+
+	-- REVIEW-M3-03 M4: unregistered on death or on leaving the game
+	-- entirely, the same two triggers StatusService uses.
+	local okAncestry, ancestryConn = pcall(function()
+		return character.AncestryChanged:Connect(function(_child, parent)
+			if parent == nil then
+				CombatService.Unregister(character)
+			end
+		end)
+	end)
+	if okAncestry then
+		entry.ancestryConn = ancestryConn
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local okDied, diedConn = pcall(function()
+			return humanoid.Died:Connect(function()
+				CombatService.Unregister(character)
+			end)
+		end)
+		if okDied then
+			entry.diedConn = diedConn
+		end
+	end
 end
 
 function CombatService.Unregister(character: Model)
+	local entry = registered[character]
+	if entry == nil then
+		return
+	end
 	registered[character] = nil
+	if entry.ancestryConn then
+		entry.ancestryConn:Disconnect()
+	end
+	if entry.diedConn then
+		entry.diedConn:Disconnect()
+	end
 end
 
 -- ==================== dev commands ====================

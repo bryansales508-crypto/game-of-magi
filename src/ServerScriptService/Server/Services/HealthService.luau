@@ -2,10 +2,12 @@
 -- Max health, health/block regen and the Rank/Epithet/Alignment display
 -- attributes (TRIAGE #14, DESIGN.md section 3a "Rank raises max health").
 -- Replaces the old StarterCharacterScripts/Health.server.luau and
--- BlockHealthRegen.server.luau; keeps the "revive from Knocked" countdown
--- those scripts also did (DamageHandler still creates the Knocked marker
--- and damages the Humanoid directly - that's M3's rebuild, not this one -
--- so this service must not fight it: no health clamping loop besides regen).
+-- BlockHealthRegen.server.luau. The old "revive from Knocked" countdown
+-- those scripts also did (decrementing character.Effects.Knocked.Value
+-- once a second) is gone (REVIEW-M3-03 L6): M3-03's CombatService/
+-- StatusService are the sole authority on when a knockout ends now, so a
+-- second, independent timer here was a real conflict, not just a
+-- documented overlap - no health clamping loop besides regen.
 --
 -- Health/Block/MaxBlock/RegenTier aren't part of the save (SaveSchema has
 -- no Health section): Humanoid.Health/MaxHealth is the one source of
@@ -30,9 +32,7 @@ local log = Log.new("HealthService")
 type Data = SaveSchema.Data
 export type Tier = "Idle" | "Combat" | "Knocked"
 
-local KNOCKED_NAME = "Knocked"
 local APPEARENCE_WAIT_TIMEOUT = 30
-local EFFECTS_WAIT_TIMEOUT = 10
 
 local HealthService = {}
 
@@ -138,43 +138,6 @@ local function setupCharacter(player: Player, character: Model, data: Data)
 	player:SetAttribute("RegenTier", tierState[player] or "Idle")
 end
 
--- Ported from the old Health.server.luau: while Knocked and above the
--- revive threshold, count the marker down once a second; destroy it at 0
--- (how a knocked-out player gets back up). DamageHandler still creates
--- this marker and sets Health to 1 when it does.
-local function reviveLoop(character: Model, knockedValue: IntValue)
-	task.spawn(function()
-		while knockedValue.Parent do
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if humanoid and humanoid.MaxHealth > 0 and humanoid.Health > humanoid.MaxHealth * Config.Health.KnockedReviveThreshold then
-				knockedValue.Value -= 1
-				if knockedValue.Value <= 0 then
-					knockedValue:Destroy()
-				end
-			end
-			task.wait(1)
-		end
-	end)
-end
-
-local function watchKnocked(character: Model)
-	local effects = character:WaitForChild("Effects", EFFECTS_WAIT_TIMEOUT)
-	if effects == nil then
-		return
-	end
-
-	for _, child in effects:GetChildren() do
-		if child.Name == KNOCKED_NAME and child:IsA("IntValue") then
-			reviveLoop(character, child)
-		end
-	end
-	effects.ChildAdded:Connect(function(child: Instance)
-		if child.Name == KNOCKED_NAME and child:IsA("IntValue") then
-			reviveLoop(character, child)
-		end
-	end)
-end
-
 -- ==================== dev commands ====================
 -- Registered via DevService.Register (not a direct require of HealthService
 -- from DevService), same reasoning as AgeService's .birthday/.heart: Roblox
@@ -236,7 +199,6 @@ function HealthService:Start()
 	PlayerService.Ready:Connect(function(player: Player, character: Model)
 		initCharacterState(player)
 		active[player] = true
-		watchKnocked(character)
 
 		local data = DataService.Get(player)
 		if data then

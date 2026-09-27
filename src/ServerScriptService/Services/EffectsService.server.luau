@@ -1,71 +1,40 @@
 --Services
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local db = game:GetService("Debris")
-local rs = game:GetService("RunService")
 
 local ragdollMod = require(ReplicatedStorage.Modules.Ragdoll)
-local speedMod = require(ReplicatedStorage.Modules.SpeedHandler)
-
---Variables
-local GUIFolder = game.ReplicatedFirst.GUI
-local GUITable = {}
-for _,v in GUIFolder:GetChildren() do
-	local vGUI = GUIFolder:FindFirstChild(v.Name)
-	if vGUI then
-		GUITable[v.Name] = v
-	end
-
-	if vGUI:IsA("Folder") then
-		for _,p in vGUI:GetChildren() do
-			local pGUI = vGUI:FindFirstChild(p.Name)
-			if pGUI then
-				GUITable[p.Name] = p
-			end
-		end
-	end
-end
 
 -- Remotes
 local RemoteFold = game.ReplicatedStorage.Remotes
-
 local ragdollEvent = RemoteFold.RagdollEvent
-local hitEvent = RemoteFold.Hit
 
---Effects List
-
--- MutedStep: Handled in InteractionHandler
--- Reading: Handled in MissionHandler
--- MissionVal: Handled in MissionHandler
--- BigFreeze: Handled in InputHandler
--- ActionFreeze: Handled in InputHandler
--- Stun: Handled in DamageService --TODO: Maybe something to indicate? IDK yet.
--- Block: Handled in InteractionHandler/InteractionDesign
-
+-- REVIEW-M3-03 L7: trimmed to only what the client EffectsController
+-- (already built, M3-06) does NOT do. That's just two things now: creating
+-- character.Effects (still the only thing that does, for a player - M3-01's
+-- StatusService only ever waits for it), and the actual server-side
+-- ragdoll physics on Knocked (client visuals can't move a Humanoid's
+-- physics state; the ragdollEvent fire below is only for syncing the
+-- client's own "slumping" animation/camera reaction to it). Un-ragdolling
+-- on Recovered isn't separate code: StatusService.Remove(character,
+-- "Knocked") destroys this bridge's "Knocked" marker, whose ChildRemoved
+-- destroys "Ragdoll" below it, whose own ChildRemoved calls
+-- ragdollFunc(..., true) - the same chain, run backwards.
+--
+-- Removed: hitFunc (hit sound/particle), blockbrokenFunc (block-break
+-- sound/particle - the "TrueStun" marker it also used to create was
+-- already removed in M3-03), truestunFunc (CombatService.onStatusChanged
+-- already zeroes the "TrueStun" MovementService modifier directly), and
+-- the Blind GUI / BigFreezeInput the old knockedFunc put up for a
+-- player - all of that is the client EffectsController's job now.
 
 local function knockedFunc(chara, NPC, remove)
 	if not remove then
 		local ragdoll = Instance.new("IntValue") -- creating a rag doll instance
 		ragdoll.Name = "Ragdoll"
 		ragdoll.Parent = chara.Effects
-
-		if not NPC then 
-			local SleepyTime = GUITable["Blind"]:Clone() -- blinding player
-			SleepyTime.Parent = game.Players:GetPlayerFromCharacter(chara).PlayerGui
-
-			local frzInt = Instance.new("StringValue") -- creating a freeze input instance
-			frzInt.Name = "BigFreezeInput"
-			frzInt.Parent = chara.Effects
-		end
-	else 
-		chara.Effects:FindFirstChild("Ragdoll"):Destroy() -- removing rag doll
-
-		if not NPC then
-			if game.Players:GetPlayerFromCharacter(chara).PlayerGui:FindFirstChild("Blind") then
-				game.Players:GetPlayerFromCharacter(chara).PlayerGui:FindFirstChild("Blind"):Destroy() -- removing blind
-			end
-			if chara.Effects:FindFirstChild("BigFreezeInput") then
-				chara.Effects:FindFirstChild("BigFreezeInput"):Destroy() -- removing freeze input
-			end
+	else
+		local existing = chara.Effects:FindFirstChild("Ragdoll")
+		if existing then
+			existing:Destroy() -- removing rag doll
 		end
 	end
 end
@@ -91,64 +60,8 @@ local function ragdollFunc(chara, NPC, remove)
 		end
 	end
 end
-
-local function hitFunc(chara, NPC, remove)
-	if not remove then
-		local sTable = {}
-		if not chara.Effects:FindFirstChild("Block") then -- not blocking
-			for _,v in chara.Torso:GetChildren() do
-				if v:IsA("Sound") and v.Name:find("LightHitSound") then
-					table.insert(sTable, v)
-				end
-			end
-
-			local s = sTable[math.random(1,4)]
-			s:Play() -- sound play
-			chara.Torso.HitParticle:Emit(1) -- particle hit
-
-			if not NPC then
-				hitEvent:FireClient(game.Players:GetPlayerFromCharacter(chara))
-			end
-		else -- blocking
-			for _,v in chara.Torso:GetChildren() do
-				if v:IsA("Sound") and v.Name:find("BlockSound") then
-					table.insert(sTable, v)
-				end
-			end
-
-			local s = sTable[math.random(1,2)]
-			s:Play() -- sound play
-			
-			chara.Torso.BlockParticle.Color = ColorSequence.new(Color3.fromRGB(14,0,217), Color3.fromRGB(0,170,255)) -- normal block color
-			if chara.Effects.Block.Value == 1 then chara.Torso.BlockParticle.Color = ColorSequence.new(Color3.fromRGB(127, 106, 29), Color3.fromRGB(255, 228, 146)) end -- parry block golden
-			chara.Torso.BlockParticle:Emit(1) -- particle block
-		end
-	end
-end
-
-local function truestunFunc(chara, NPC, remove)
-	if not remove then
-		speedMod.SpeedHandle(chara, 0, "TrueStun") -- remove speed
-	else
-		speedMod.SpeedHandleRemove(chara, "TrueStun") -- speed update
-	end
-end
-
--- M3-03: this used to also create/destroy the "TrueStun" marker itself.
--- CombatService now applies TrueStun through StatusService directly
--- (StatusService.Apply(target, "TrueStun", Combat.Block.breakStun)) in the
--- exact same block-break moment that adds this BlockBroken marker, so
--- doing it here too just made a second, orphaned "TrueStun" Instance
--- sitting next to StatusService's own one. This is presentation only now.
-local function blockbrokenFunc(chara, NPC, remove)
-	if not remove then
-		chara.Torso:FindFirstChild("BlockBroken"):Play() -- sound
-		chara.Torso:FindFirstChild("BlockBreakParticle"):Emit(15) -- particle
-		chara.Head.HairAttachment.Confusion:Emit(5)
-	end
-end
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
--- Setting up 
+-- Setting up
 
 
 game.Players.PlayerAdded:Connect(function(player)
@@ -161,21 +74,11 @@ game.Players.PlayerAdded:Connect(function(player)
 		effectsFolder.Name = "Effects"
 		effectsFolder.Parent = character
 
-		local hum = character:WaitForChild("Humanoid")
-		local IntFold = character:WaitForChild("IntFold")
-
-		local RegIn = character:WaitForChild("RegionInfo")
 		effectsFolder.ChildAdded:Connect(function(child) -- effect added
 			if child.Name == "Knocked" then -- Knocked
 				knockedFunc(character, false, false)
 			elseif child.Name == "Ragdoll" then -- Ragdoll
 				ragdollFunc(character, false, false)
-			elseif child.Name == "Hit" then -- Hit
-				hitFunc(character, false, false)
-			elseif child.Name == "BlockBroken" then -- BlockBroken
-				blockbrokenFunc(character, false, false)
-			elseif child.Name == "TrueStun" then -- TrueStun
-				truestunFunc(character, false, false)
 			end
 		end)
 
@@ -184,14 +87,10 @@ game.Players.PlayerAdded:Connect(function(player)
 				knockedFunc(character, false, true)
 			elseif child.Name == "Ragdoll" then -- Ragdoll
 				ragdollFunc(character, false, true)
-			elseif child.Name == "BlockBroken" then -- BlockBroken
-				blockbrokenFunc(character, false, true)
-			elseif child.Name == "TrueStun" then -- TrueStun
-				truestunFunc(character, false, true)
 			end
 		end)
 	end)
-end)   
+end)
 
 -- NPCEffects
 
@@ -203,8 +102,6 @@ local function npcEffects(NPC)
 			knockedFunc(NPC, true, false)
 		elseif child.Name == "Ragdoll" then -- Ragdoll
 			ragdollFunc(NPC, true, false)
-		elseif child.Name == "Hit" then -- Hit
-			hitFunc(NPC, true, false)
 		end
 	end)
 

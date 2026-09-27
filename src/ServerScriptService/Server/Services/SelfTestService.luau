@@ -887,6 +887,11 @@ local function testCombatService(results: { Check })
 		local outOfRange = buildFakeCombatant("SelfTestOutOfRange", Vector3.new(500, 5, 50), Vector3.new(500, 5, 51))
 		local behind = buildFakeCombatant("SelfTestBehind", Vector3.new(500, 5, -3), Vector3.new(500, 5, -4))
 
+		-- REVIEW-M3-03 M5: only a registered combatant can be hit.
+		CombatService.Register(inRange, nil, "Fist")
+		CombatService.Register(outOfRange, nil, "Fist")
+		CombatService.Register(behind, nil, "Fist")
+
 		expect(results, "CombatService: FindTarget finds a combatant in range", CombatService.FindTarget(attacker, move) == inRange)
 
 		inRange:Destroy()
@@ -896,8 +901,26 @@ local function testCombatService(results: { Check })
 			CombatService.FindTarget(attacker, move) == nil
 		)
 
+		CombatService.Unregister(inRange)
+		CombatService.Unregister(outOfRange)
+		CombatService.Unregister(behind)
 		outOfRange:Destroy()
 		behind:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestUnregisteredAttacker", Vector3.new(700, 5, 0), Vector3.new(700, 5, 1))
+		local move = Combat.move("Fist", 1) :: Combat.Move
+		local unregisteredTarget = buildFakeCombatant("SelfTestUnregisteredTarget", Vector3.new(700, 5, 3), Vector3.new(700, 5, 4))
+
+		expect(
+			results,
+			"CombatService: FindTarget (M5) never hits an unregistered combatant",
+			CombatService.FindTarget(attacker, move) == nil
+		)
+
+		unregisteredTarget:Destroy()
 		attacker:Destroy()
 	end
 
@@ -944,6 +967,62 @@ local function testCombatService(results: { Check })
 		StatusService.Unregister(character)
 		CombatService.Unregister(character)
 		character:Destroy()
+	end
+
+	-- REVIEW-M3-03 L8: the full parry-window -> cooldown -> held -> broken
+	-- sequence, against a fake (no-Player) blocker - which only works at
+	-- all because L8 also gave a target with no real Player its own block
+	-- meter (previously meterHeld always defaulted to true for one).
+	do
+		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
+		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(blocker)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(blocker, nil, "Fist")
+
+		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
+		local jab = Combat.move("Fist", 1) :: Combat.Move
+
+		StatusService.Apply(blocker, "Block", nil, { value = 1 })
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1)
+		expect(
+			results,
+			"CombatService: a parry stuns the attacker and costs no block HP (M1)",
+			StatusService.Has(attacker, "Stun") and blockerHumanoid.Health == 100
+		)
+
+		StatusService.Remove(attacker, "Stun")
+		CombatService.ApplyHit(attacker, blocker, jab, 1)
+		expect(
+			results,
+			"CombatService: a second hit right after a parry can't parry again (AUDIT H5 cooldown) and drains the meter instead",
+			not StatusService.Has(attacker, "Stun") and StatusService.Has(blocker, "Block") and blockerHumanoid.Health == 100
+		)
+
+		task.wait(Combat.Block.parryCooldown + Combat.Block.parryWindow + 0.1)
+		local blockInfoAfter = StatusService.Get(blocker, "Block")
+		expect(
+			results,
+			"CombatService: once the cooldown and parry window elapse, a hit just holds the block",
+			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
+		)
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 100 -> 65
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 65 -> 30
+		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 30 < 35: breaks
+		expect(results, "CombatService: the block breaks once a no-Player target's meter runs out (L8)", not StatusService.Has(blocker, "Block"))
+		expect(results, "CombatService: a broken block applies TrueStun", StatusService.Has(blocker, "TrueStun"))
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(blocker)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(blocker)
+		attacker:Destroy()
+		blocker:Destroy()
 	end
 
 	scratch:Destroy()
