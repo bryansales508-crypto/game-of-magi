@@ -5,9 +5,12 @@
 
 local Controllers = script.Parent.Controllers
 
+-- Returns are typed as variadic (not `()`) so pcall(controller.Init, controller)
+-- below type-checks as (boolean, ...any) instead of just (boolean); a real
+-- Init/Start still isn't expected to return anything meaningful.
 type ControllerModule = {
-	Init: ((self: any) -> ())?,
-	Start: ((self: any) -> ())?,
+	Init: ((self: any) -> ...any)?,
+	Start: ((self: any) -> ...any)?,
 }
 
 local moduleScripts: { ModuleScript } = {}
