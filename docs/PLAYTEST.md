@@ -67,3 +67,52 @@ Repeatable checks the playtester runs after each milestone. Every scenario says 
 ### M1-K Leave and rejoin under load (two players)
 - **Setup:** Test → Start with 2 players (local server). Both join, one leaves during the loading screen.
 - **Pass:** no errors for the leaver, the other player reaches Ready, and the server logs the session end.
+
+---
+
+## M2 A life
+
+Setup as before. New dev commands used here: `.birthday`, `.heart [fatal]`, `.hp <n>`, `.tier <Idle|Combat|Knocked>`, `.age <n>`, `.magoi <n>`, `.rukh <gold> <black>`, `.epithet <text>`, `.fresh`. Attributes on the Player (`Age`, `Rank`, `Epithet`, `Alignment`, `Health`, `MaxHealth`, `Block`, `Lives`, `Gender`) can be read with `inspect_instance` on `Players.<name>` instead of screenshots.
+
+### M2-A Creation screen through the remote
+- **Setup:** `.fresh`. The Gender screen appears (same look: brown background, gold boxes, M/F buttons, three skin boxes, ENTER greyed until both are picked).
+- **Do:** pick Feminine and White skin, Enter.
+- **Pass:** the screen closes, the character has the White skin and a female first name (`FirstName` attribute), `Gender` attribute = 2, no errors. Repeat with Masculine + Black: `Gender` = 1 and a male name.
+
+### M2-B Server rejects bad creation calls
+- **Setup:** after M2-A, with `execute_luau` on the client: `game.ReplicatedStorage.Net.CreateCharacter:FireServer(1, 1)` (Gender already set) and `FireServer(7, 1)`.
+- **Pass:** nothing changes (`Gender`, `SkinTone` attributes unchanged); Output shows `[Remotes]` or `[Character]` warnings, no errors.
+
+### M2-C Look unchanged after respawn
+- **Setup:** reset the character (`LoadCharacter()` on the server).
+- **Look (one screenshot):** same face, skin, hair colour, starter rags, hats as before the reset.
+- **Pass:** identical look; `AppearenceLoaded` is true on the new character; no errors.
+
+### M2-D Birthday, growth and grey hair
+- **Setup:** `.age 13`, then `.birthday` five times. Then `.age 60`, `.birthday` once; then `.age 69`, `.birthday`.
+- **Pass:** `Age` attribute increments; the character grows between 13 and 18 (height changes visible in `.state` `HeightStuds` or the menu); at 61 the hair is clearly greyer than at 18 (screenshot once at 70); no errors on any birthday.
+
+### M2-E Heart attack, non-fatal
+- **Setup:** `.heart`.
+- **Pass:** a heartbeat sound and a red pulse for about a second, then it passes; the character can move; no message; no errors.
+
+### M2-F Heart attack, fatal, and the return to the Rukh
+- **Setup:** `.state` (note `Lives`), then `.heart fatal`.
+- **Pass:** heavier beats, the screen darkens, the line "Your heart gave out." shows, then the scene: golden glowing character, frozen input, camera shot, walk into the Rukh core, white fade. Then a fresh spawn at Qarzin: age 13, 20 copper, new name, creation screen shown, `Lives` = old + 1. Camera back to normal, input works. No errors, no stuck camera. If `ReplicatedFirst.AfterLife` exists the scene uses it (say which version played).
+
+### M2-G Offline aging
+- **Setup:** `.age 30`, `.save`, Stop. On the server side with `execute_luau` before playing again nothing can be done, so instead: Play, then `.state` and read `Age`; compare to the expected `30 + 2 * (days since last save)`, which is 30 for a same-day rejoin.
+- **Pass:** age unchanged on a same-day rejoin; Output shows the `[Age]` offline line with 0 years. (The 2-years-per-day rule is covered by the self-test.)
+
+### M2-H Health from height and rank, regen tiers, block
+- **Setup:** `.age 13` then `.state` (MaxHealth A); `.age 30` + `.birthday` (MaxHealth B, higher); `.magoi 1500` (rank Renowned) then `.state` (MaxHealth C, higher). `.hp 10`, `.tier Idle`, wait 5 s, `.state`; `.tier Combat`, `.hp 10`, wait 5 s, `.state`.
+- **Pass:** A < B < C; Idle regen raised health by about 10 in 5 s; Combat regen left it at 10; the HUD health bar follows; the block bar refills within ~10 s after blocking (hold F if the old input still works, otherwise skip and say so).
+
+### M2-I Menu shows the new fields
+- **Setup:** `.magoi 700`, `.rukh 8 1`, `.epithet "The Dune Walker"`, press M.
+- **Look (one screenshot):** the card shows the name, "THE DUNE WALKER" as the title, the stat line unclipped (`MIDLANDER ❖ THE 30TH YEAR SINCE BIRTH ❖ 5'9`), a second line `GOLD RUKH ❖ LIFE n`, and the character preview in the diamond (not black). Apparel button opens and closes the four frames with the sounds.
+- **Pass:** all fields right, no clipping, preview visible, no errors. `.epithet ""` then M again: title falls back to the rank title ("ADVENTURER").
+
+### M2-J Two players share one collision group
+- **Setup:** Test → 2 players. Both join and finish creation.
+- **Pass:** both can walk through clothing racks as before; Output shows the collision group created once; no errors for either player; the second player's creation screen works.
