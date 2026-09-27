@@ -89,8 +89,12 @@ TARGETS=(
 
 echo
 echo "== selene =="
+selene_raw="$(mktemp)"
 selene_exit=0
-selene "${TARGETS[@]}" || selene_exit=$?
+selene "${TARGETS[@]}" > "$selene_raw" 2>&1 || selene_exit=$?
+cat "$selene_raw"
+selene_errors="$(grep -c '^error\[' "$selene_raw" || true)"
+rm -f "$selene_raw"
 
 echo
 echo "== luau-lsp analyze =="
@@ -98,6 +102,7 @@ echo "== luau-lsp analyze =="
 # for its sourcemap (instance) path; dedupe lines so a single real error
 # isn't misread as two.
 luau_lsp_raw="$(mktemp)"
+luau_lsp_deduped="$(mktemp)"
 luau_lsp_exit=0
 luau-lsp analyze \
 	--sourcemap="$SOURCEMAP" \
@@ -111,14 +116,21 @@ awk -v repo="$(pwd)/" '{
 	gsub(repo, "", line)
 	gsub(/ \[[^]]*\]/, "", line)
 	if (!seen[line]++) print line
-}' "$luau_lsp_raw"
-rm -f "$luau_lsp_raw"
+}' "$luau_lsp_raw" > "$luau_lsp_deduped"
+cat "$luau_lsp_deduped"
+# luau-lsp analyze prints nothing but one line per diagnostic (no header,
+# no summary), so a line count is an error count.
+luau_lsp_errors="$(grep -c '.' "$luau_lsp_deduped" || true)"
+rm -f "$luau_lsp_raw" "$luau_lsp_deduped"
 
 echo
+log "selene: $selene_errors error(s) (exit=$selene_exit)"
+log "luau-lsp: $luau_lsp_errors error(s) (exit=$luau_lsp_exit)"
+
 if [ "$selene_exit" -eq 0 ] && [ "$luau_lsp_exit" -eq 0 ]; then
-	log "PASS: selene exit=$selene_exit, luau-lsp exit=$luau_lsp_exit"
+	log "PASS"
 	exit 0
 else
-	log "FAIL: selene exit=$selene_exit, luau-lsp exit=$luau_lsp_exit"
+	log "FAIL"
 	exit 1
 fi

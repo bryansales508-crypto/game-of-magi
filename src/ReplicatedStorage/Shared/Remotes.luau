@@ -322,22 +322,42 @@ local function getClientInstance(name: string): Instance
 end
 
 function Remotes.Client.Fire(name: string, ...: any)
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Event" then
+		log:Error(string.format("Fire(%s): not a declared Event remote", name))
+		return
+	end
 	local instance = getClientInstance(name) :: RemoteEvent
 	instance:FireServer(...)
 end
 
 function Remotes.Client.On(name: string, handler: (...any) -> ())
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Event" then
+		log:Error(string.format("On(%s): not a declared Event remote", name))
+		return
+	end
 	local instance = getClientInstance(name) :: RemoteEvent
 	instance.OnClientEvent:Connect(handler)
 end
 
 local DEFAULT_INVOKE_TIMEOUT = 10
 
--- Returns (true, ...result) on a normal reply, or (false, reason) on a
--- server-side error or timeout, so callers can tell a failure from a real
--- nil result. Uses the calling thread's own coroutine (no poll loop, no
--- leaked thread waiting on a result nobody will read).
+-- Returns (true, ...result) on a normal reply. A server-side handler error
+-- is caught by Remotes.Server's own pcall (and logged there via Log:Error);
+-- it never reaches the client as a thrown error, so it arrives here as
+-- (true, nil), not (false, reason). (false, reason) means the call itself
+-- never got a reply: an unknown/undeclared remote, InvokeServer erroring
+-- client-side (e.g. a bad argument type), or a timeout. Uses the calling
+-- thread's own coroutine (no poll loop, no leaked thread waiting on a
+-- result nobody will read).
 function Remotes.Client.Invoke(name: string, ...: any): (boolean, ...any)
+	local def = Remotes.Definitions[name]
+	if not def or def.kind ~= "Function" then
+		log:Error(string.format("Invoke(%s): not a declared Function remote", name))
+		return false, "unknown remote"
+	end
+
 	local instance = getClientInstance(name) :: RemoteFunction
 	local args = table.pack(...)
 	local caller = coroutine.running()
@@ -351,7 +371,14 @@ function Remotes.Client.Invoke(name: string, ...: any): (boolean, ...any)
 		task.spawn(caller, false, "timeout")
 	end)
 
-	task.spawn(function()
+	-- task.defer (not task.spawn) guarantees this never runs until the
+	-- caller below has actually reached coroutine.yield(). task.spawn would
+	-- run this immediately, inline, on the calling thread; if InvokeServer
+	-- then errored synchronously (before yielding), it would try to resume
+	-- `caller` while `caller` is still running this very statement, not yet
+	-- suspended, and the caller would then hang in coroutine.yield() forever
+	-- with no one left to resume it.
+	task.defer(function()
 		local results = table.pack(pcall(function()
 			return instance:InvokeServer(table.unpack(args, 1, args.n))
 		end))
