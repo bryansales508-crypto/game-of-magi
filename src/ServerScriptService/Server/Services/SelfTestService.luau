@@ -16,6 +16,10 @@ local DevService = require(script.Parent.DevService)
 local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
+local CharacterService = require(script.Parent.CharacterService)
+local AgeService = require(script.Parent.AgeService)
+local AgeHandler = require(script.Parent.AgeService.AgeHandler)
+local HealthService = require(script.Parent.HealthService)
 
 local log = Log.new("SelfTest")
 
@@ -356,6 +360,150 @@ local function testData(results: { Check })
 	end
 end
 
+-- M2-01: CharacterService's pure helpers, exercised with a fake save table
+-- (no Player, no DataService, no Remotes involved).
+local function fakeCharacterData(): SaveSchema.Data
+	return {
+		Version = 1,
+		Character = {
+			FirstName = "",
+			Gender = 0,
+			Race = 2,
+			Kingdom = 1,
+			SkinTone = 0,
+			HairColor = { R = 0.5, G = 0.5, B = 0.5 },
+			EyeColor = 1,
+			FaceBase = 1,
+			MouthShape = 1,
+			Height = 10,
+			GrowthProfile = "",
+		},
+		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+		Bounty = 0,
+		Economy = { Copper = 20, Silver = 0, Gold = 0 },
+		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
+		Family = {},
+		Magic = {},
+		Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+	}
+end
+
+local function testCharacterService(results: { Check })
+	do
+		expect(results, "CharacterService: SkinTone 1 maps to Black", CharacterService.SkinTemplateName(1, 3) == "Black")
+		expect(results, "CharacterService: SkinTone 2 maps to Brown", CharacterService.SkinTemplateName(2, 3) == "Brown")
+		expect(results, "CharacterService: SkinTone 3 maps to White", CharacterService.SkinTemplateName(3, 3) == "White")
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 1 lightens White to LightTan",
+			CharacterService.SkinTemplateName(3, 1) == "LightTan"
+		)
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 2 lightens Black to Tan",
+			CharacterService.SkinTemplateName(1, 2) == "Tan"
+		)
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 2 lightens Brown to LightTan",
+			CharacterService.SkinTemplateName(2, 2) == "LightTan"
+		)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local applied = CharacterService.ApplyCreateCharacter(data, 1, 2)
+		expect(results, "CharacterService: a good CreateCharacter call is applied", applied and data.Character.Gender == 1 and data.Character.SkinTone == 2)
+		expect(results, "CharacterService: ApplyCreateCharacter rolls a FirstName", data.Character.FirstName ~= "")
+	end
+
+	do
+		local data = fakeCharacterData()
+		local rejected = CharacterService.ApplyCreateCharacter(data, 3, 1)
+		expect(results, "CharacterService: an out-of-range gender is rejected", not rejected and data.Character.Gender == 0)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local rejected = CharacterService.ApplyCreateCharacter(data, 1, 9)
+		expect(results, "CharacterService: an out-of-range skin is rejected", not rejected and data.Character.SkinTone == 0)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local first = CharacterService.ApplyCreateCharacter(data, 1, 1)
+		local firstName = data.Character.FirstName
+		local second = CharacterService.ApplyCreateCharacter(data, 2, 3)
+		expect(
+			results,
+			"CharacterService: a second CreateCharacter call is ignored once Gender is set",
+			first and not second and data.Character.Gender == 1 and data.Character.FirstName == firstName
+		)
+	end
+end
+
+-- M2-02: AgeService's pure helpers and AgeHandler's pack/unpack round-trip.
+local function testAgeService(results: { Check })
+	do
+		expect(results, "AgeService: 10 days away at 13 -> 33", AgeService.OfflineAgingYears(13, 10) == 20)
+		expect(results, "AgeService: 30 days away at 50 -> 59 (capped)", AgeService.OfflineAgingYears(50, 30) == 9)
+		expect(results, "AgeService: 0 days away adds nothing", AgeService.OfflineAgingYears(13, 0) == 0)
+	end
+
+	do
+		local chance = AgeService.DeathChance(62)
+		expect(results, "AgeService: DeathChance interpolates 62 -> 0.07", math.abs(chance - 0.07) < 1e-9)
+		expect(results, "AgeService: DeathChance below the first point clamps to it", AgeService.DeathChance(0) == Config.Aging.DeathChance[1][2])
+		expect(
+			results,
+			"AgeService: DeathChance at/after the last point clamps to it",
+			AgeService.DeathChance(200) == Config.Aging.DeathChance[#Config.Aging.DeathChance][2]
+		)
+	end
+
+	do
+		expect(results, "AgeService: GreyFactor(44) is 0 (before GreyStart)", AgeService.GreyFactor(44) == 0)
+		expect(results, "AgeService: GreyFactor(57.5) is 0.5 (midpoint)", AgeService.GreyFactor(57.5) == 0.5)
+		expect(results, "AgeService: GreyFactor(70) is 1 (at GreyEnd)", AgeService.GreyFactor(70) == 1)
+	end
+
+	do
+		local profileStr, height = AgeHandler.start(13, 2, 1)
+		local profile = AgeHandler.unpack(profileStr)
+		expect(results, "AgeHandler: unpack succeeds on a freshly-packed profile", profile ~= nil)
+		if profile then
+			local roundTripHeight = AgeHandler.heightAt(profile, 13)
+			expect(results, "AgeHandler: unpack round-trip reproduces the starting height", math.abs(roundTripHeight - height) < 0.01)
+		end
+		expect(results, "AgeHandler: unpack rejects a non-v1/garbage string", AgeHandler.unpack("garbage") == nil)
+	end
+end
+
+-- M2-03: HealthService's pure helpers.
+local function testHealthService(results: { Check })
+	do
+		expect(results, "HealthService: MaxHealthFor height 1.0 / rank 1", HealthService.MaxHealthFor(1.0, 1) == 53)
+		expect(results, "HealthService: MaxHealthFor height 1.3 / rank 4", math.abs(HealthService.MaxHealthFor(1.3, 4) - 88.9) < 1e-9)
+		-- REVIEW-M2-03 finding 1: the shared regen loop recomputes MaxHealth
+		-- from the current height/rank every tick (not only at spawn), so a
+		-- live AgeService birthday resize actually moves it. This confirms
+		-- the formula it recomputes from really is height-sensitive at a
+		-- fixed rank, same as a birthday would change under it.
+		expect(
+			results,
+			"HealthService: MaxHealthFor tracks a live height change at a fixed rank",
+			HealthService.MaxHealthFor(1.0, 1) ~= HealthService.MaxHealthFor(1.3, 1)
+		)
+	end
+
+	do
+		expect(results, "HealthService: RegenAmount Idle over 5s", HealthService.RegenAmount("Idle", 5) == 10)
+		expect(results, "HealthService: RegenAmount Combat over 5s (no regen in combat)", HealthService.RegenAmount("Combat", 5) == 0)
+		expect(results, "HealthService: RegenAmount Knocked over 5s", HealthService.RegenAmount("Knocked", 5) == 5)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -373,6 +521,9 @@ function SelfTestService:Start()
 		testPlayerService(collected)
 		testDevService(collected)
 		testData(collected)
+		testCharacterService(collected)
+		testAgeService(collected)
+		testHealthService(collected)
 		return collected
 	end)
 

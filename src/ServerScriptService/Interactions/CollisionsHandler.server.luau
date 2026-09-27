@@ -17,7 +17,9 @@ for _,v in game.Workspace.MAP:GetDescendants() do
 end
 
 local clothingRackGroup = "ClothingRackGroup"
-ps:RegisterCollisionGroup(clothingRackGroup)
+if not ps:IsCollisionGroupRegistered(clothingRackGroup) then
+	ps:RegisterCollisionGroup(clothingRackGroup)
+end
 
 for _,v in game.Workspace:GetDescendants() do 
 	if v.Name == "ClothingRack" then

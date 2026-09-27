@@ -29,7 +29,7 @@ Meta      = { Created, LastSeen, Lives }
 ```
 Missing keys on an existing save are filled in by `Profile:Reconcile()` before `SaveSchema.Migrate` runs, so a migration can assume its own version's shape already exists.
 
-**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use).
+**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use), `.NewLife(player)` (M2-02: like `Wipe`, but keeps `Meta.Lives` — incremented — and `Meta.Created`; used by `AgeService`'s old-age death).
 
 **If loading fails or the player leaves mid-load:** the player is kicked with "Your save couldn't be loaded. Please rejoin in a moment." A session stolen by another server, or the DataStore going down mid-session, kicks the player the same way (ProfileStore's `OnSessionEnd`).
 
@@ -83,35 +83,61 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 ---
 
-## 3. Character creation and appearance
+## 3. Character creation and appearance — rebuilt M2-01
 
-**What it does.** Every spawn, the server strips the Roblox avatar down and rebuilds it from saved stats: skin tone (by `SkinTone` + `Kingdom`), a "FalseHead" with face decals (face base, eyes, mouth, eyebrows from `RF.Assets`), hair recolored to `HairColor`, a combat hitbox part, collision groups, sounds, particles, footstep sounds and music tracks copied onto the torso. It then puts on the saved shirt and pants, giving new players a random ragged starter outfit. If `Gender` is 0, it shows the gender picker GUI (`RF.GUI.Gender`) and waits until a gender is chosen. It also rolls the first height/growth profile (section 4).
+**What it does.** `CharacterService` runs on `PlayerService.Ready` (after the join pipeline and `DataService` load are both done). Every attribute below is set immediately, even before a gender exists (**F1**: a brand-new player's `Gender` attribute must actually read `0`, not stay unset, or M2-04's `CreationController` never opens the creation screen it's waiting to show). If the save's `Character.Gender` is still 0 (a brand-new life, or right after a death — `DataService.NewLife` resets `Gender` too), it then waits for the `CreateCharacter` remote before building anything; the client shows the Gender/skin screen itself whenever it sees the `Gender` attribute at 0 (M2-04 owns that screen; the old Studio-only `RF.GUI.Gender.Decisions` server script — AUDIT H4 — is never shown by the server anymore). Once a gender exists, it rolls the first growth profile if this is a new life (**F2**: `Character.Height == 10`, the "not rolled yet" sentinel — `AgeHandler.start(age, race, gender)`, ported from the old AppearanceController's "first time height" block, which needs gender for its 0.9x female growth factor; `AgeService` no longer rolls this eagerly on load, since that ran before gender was known and always took the male curve — its `resizeCharacter` fallback still catches a missing profile defensively). Then it strips the default Roblox avatar and rebuilds the same look the old `AppearanceController` did: skin tone (by `SkinTone` + `Kingdom`, template picked **by name**), a `FalseHead` with face decals (face base, eyes, mouth, eyebrows from `RF.Assets`), hair recoloured to `HairColor`, a combat hitbox part, one shared collision group, sounds/particles/footstep sounds/music copied onto the torso, the saved shirt/pants and hats (or a fresh random starter rag outfit for a new life), a `player.SuccessRate` Folder if it doesn't already exist (**F4**: created once per player, not once per spawn like the old script — `RewardHandler`/`MissionHandler` index it directly and error without it), and the custom run/walk/jump/idle/fall animations (old `SSS/Animations.server.luau`, now folded in; stops any already-playing tracks after the id swap, **F9**, so a stale track can't keep playing). `AppearenceLoaded` (same name/spelling) is still set on the character at the end, since most other scripts (old and new) wait on it. Resizing to the growth profile still happens in `AgeService`, on spawn and on birthdays (section 4).
 
-`FaceControl` (a copy is placed in each character's FalseHead) animates the face: mouth flaps while the player chats, random blinking, and "hurt" or "knocked out" faces when `Hit` or `Ragdoll` effects appear.
+`FaceControl` (`CharacterService/FaceControl`) is now a plain module the service calls once per character (off its own thread, **F3**, only after `AppearenceLoaded` flips true — `EffectsService` doesn't create `character.Effects` any earlier, so starting it sooner used to stall every spawn for its old fixed 10s wait) instead of a script cloned into the FalseHead; same behaviour and timings — mouth flaps while the player chats, random blinking, "hurt"/"knocked out" faces on `Hit`/`Ragdoll` effects. Its `player.Chatted` and `Effects` connections are now tracked and disconnected together on `character.Destroying` (**F5**), instead of piling up across respawns; its `WateryEyes`/`TalkCount` Values are cloned from the templates moved alongside it rather than built fresh (**F10**).
 
-`SSS/Animations` swaps in custom run, walk, jump, idle and fall animations on the character's `Animate` script.
+**Remote:** `CreateCharacter` (client → server, `gender: 1|2`, `skin: 1|2|3`, rate 3/10s). Ignored unless the save's `Character.Gender == 0`. Stores `Gender`/`SkinTone`, rolls a **gender-matched** first name from `Assets.FirstNames.sindria.male`/`.female` (AUDIT L3 — the old roll always used the male list, before gender was even chosen), and refreshes the legacy `Stats` mirror. The client sees it worked once the `Gender` attribute goes non-zero.
+
+**Player attributes kept current:** `Gender`, `SkinTone`, `Kingdom`, `FirstName`, `HeightStuds` (`Character.Height` × a nominal 5-stud default rig height — display only, not HeightHandler's own scale), `Lives`, `Age` (AgeService also keeps this current on every birthday; see section 4).
+
+Applied (not saved) hair colour lerps toward grey from `Config.Aging.GreyStart` to `GreyEnd` — `AgeService.ApplyHairColor` (REVIEW-M2-02 R3: the one shared implementation, called from here on every build **and** from `AgeService.onBirthday`, so hair actually greys in on the birthday it's due rather than only the next respawn) — visible aging, section 4. No wrinkle decal exists yet (`-- ART TASK (Bryan)` comment where it's called).
+
+**Audit fixes carried in:**
+- **H4** — the gender/skin picker is a client screen plus one server-validated remote, not a server script reading GUI clicks.
+- **L2** (`RF/Assets/init.luau`, `eyecolor`) — the magician eye-colour branch used `Race ~= 4 or Race ~= 5`, which is always true, so it could never run; fixed to `Race == 4 or Race == 5`. Race is fixed to Human (2) for the rest of this renovation (DESIGN.md section 4), so this branch is currently unreachable in play either way — the fix is correctness, not a live change.
+- **L3** — first name now rolls from the gender the player actually chose, not the male list rolled before gender exists (`SaveSchema.NewLife`'s roll is a placeholder `CreateCharacter` always overwrites).
+- **L6** — the `ToolGrip` Motor6D never had a `Part0`, so it never moved anything. Wired (`Part0 = Torso`, its own parent) rather than deleted: the not-yet-rebuilt `PhysicalHandler.client.luau` still reaches for `Torso.ToolGrip.Part1`.
+- **M8** — one collision group (`PlayerLimbs`), registered once at `CharacterService:Init()` (**F6**: along with `ClothingRackGroup` too, if it isn't already — `CollisionsHandler` normally only registers that one later, after the map loads, which used to make the very first `SetCollidable` call fail silently inside a `pcall`; that call runs with no `pcall` now) instead of one per player per spawn that was never removed (Roblox caps collision groups at 32).
+- **P4** — the skin template is now picked strictly **by name** (1 Black, 2 Brown, 3 White, with the same Kingdom overrides as before). REVIEW-M2-01 read each `.rbxm` template's actual `BodyColors` and confirmed all five match their name, darkest to lightest: Black (75,54,36), Tan (98,70,47), Brown (158,112,76), LightTan (206,157,116), White (255,203,161).
+
+**Also fixed in review (REVIEW-M2-01):** **F7** a second `CreateCharacter` while `Gender ~= 0` now logs a throttled warning (30s cooldown per player) instead of nothing. **F8** the wait for `CreateCharacter` also gives up if this character is replaced by a respawn, not only if the player leaves. **F11** a stale comment claimed the Kingdom overrides "lighten" the skin; Kingdom 1's White→LightTan actually swaps to a more tan colour (wording only, no behaviour change).
 
 **Files:**
-- `SSS/Character/AppearanceController/init.server.luau`. Its children `Black`, `Brown`, `White`, `Tan`, `LightTan` (BodyColors), `FalseHead`, `NormMeshie` and `FaceControl` are templates.
-- `SSS/Character/AppearanceController/FaceControl/init.server.luau`
-- `SSS/Animations.server.luau`
-- `RF/Assets/init.luau`: the big data module. Face decal tables, first and last names, clothing and outfit lists, hat and cloak lists, and item-code lookup. Its 34 children are the actual Accessory models for hats and cloaks.
-- Gender picker: `RF.GUI.Gender.Decisions` (inside `Gender.rbxm`, Studio-only). A **server** Script in the picker GUI: you choose Masculine/Feminine and a skin box (Black, Brown, White), then Enter. It sets `Stats.Gender` (1 male, 2 female) and `Stats.SkinTone` (1 Black, 2 Brown, 3 White). **⚠** Normally a server script can't see a player's GUI clicks, so this may never finish for a new player. Phase 3 will test it.
+- `SSS/Server/Services/CharacterService/` (`init.luau` the service; `Black`/`Brown`/`White`/`Tan`/`LightTan`/`FalseHead`/`NormMeshie` template assets as before; `FaceControl/` a nested module + its two `WateryEyes`/`TalkCount` Value templates, now actually used — F10).
+- `RF/Assets/init.luau`: unchanged data module (face decal tables, first/last names, clothing/outfit/hat/cloak lists, item-code lookup), except the L2 fix above.
+- `SSS/Character/ItemHandler.luau`: unchanged, still required by `CharacterService`. `AgeHandler.luau`/`HeightHandler.luau` moved under `AgeService` in M2-02 (section 4); `CharacterService` requires `AgeService.AgeHandler` directly for the F2 roll and `AgeService.ApplyHairColor` for hair colour (R3).
 
-**Depends on:** Saving (Stats, OnCharacter), `ItemHandler`, `AgeHandler`, `HeightHandler`, `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox`, `MainScreen` remote.
-**Depended on by:** nearly every character script waits on `AppearenceLoaded`.
+**Removed (TRIAGE #3):** `SSS/Character/AppearanceController/init.server.luau`, `SSS/Character/AppearanceController/FaceControl/init.server.luau`, `SSS/Animations.server.luau`.
+
+**Depends on:** `DataService`, `PlayerService.Ready`, `LegacyBridge` (refreshes `Stats`/`OnCharacter` after writing `Gender`/`SkinTone`/`FirstName`/`Gear`/`GrowthProfile`/`Height` directly to the save), `ItemHandler`, `AgeService` (`AgeHandler` for the first growth roll, `ApplyHairColor` for hair colour), `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox` (none of the last three are synced by Rojo — Studio-only asset folders).
+**Depended on by:** nearly every character script still waits on `AppearenceLoaded` (unchanged name); the legacy bridge keeps `Stats.Gender`/`Stats.SkinTone` mirrored for anything not yet rebuilt; `RewardHandler`/`MissionHandler` need `player.SuccessRate`; `AgeService`'s own spawn-resize waits for `AppearenceLoaded` before resizing/re-fitting hats.
 
 ---
 
-## 4. Aging and growth
+## 4. Aging, visible aging and death — rebuilt M2-02
 
-**What it does.** Characters start at 13 and age with real time. Every 10 seconds the server banks elapsed seconds into `ProgToAge` and turns each `SECONDS_PER_YEAR` into a birthday. That constant is **30 seconds** right now, marked `--debug`; the comment says it's meant to be 5 minutes. Growth stops changing at 18. On a birthday (or a fresh spawn) the body is resized: height follows a per-player S-curve growth spurt, and build goes from skinny at 13 toward a random adult build. Hats and cloaks are removed and re-put-on so they fit the new size.
+**What it does.** `AgeService` runs one shared server loop (`Config.Aging.Tick`, 10s) for every loaded player instead of one thread per player. Each tick it banks real elapsed seconds — times `DevService.GetTimeScale()` — into `Age.ProgToAge`, and turns each `Config.Aging.SecondsPerYear` (60s in Studio, 1800s live — DESIGN's 30 min/year) into a birthday. On a birthday: `Age.Years += 1`, the body is resized (height/build follow the per-life S-curve growth profile, hats/cloaks removed and re-equipped to fit — same as before), and the `Age` attribute updates immediately. Resizing also happens on every spawn (not just birthdays), once `AppearenceLoaded` is true (waits for `CharacterService` to finish first, same ordering the old `AgeController` used).
 
-**Growth profile format (versioned):** `"v1|startHeight|adultHeight|spurtAge|fatEnd"`, rolled once and stored in `Stats.GrowthProfile`. `AgeHandler.unpack` rejects anything that isn't `v1`, and the controller re-rolls if the profile is invalid.
+**Offline aging (DESIGN.md section 3).** On `DataService.Loaded` (once per session), `AgeService.OfflineAgingYears` ages the player up to `Config.Aging.OfflineYearsPerDay` (2) per real day away, capped at `Config.Aging.OfflineAgeCap` (59) — **never fatal**. `Age.TimePassed` (the last aging tick, real `os.time()`) is what this and the online loop both measure from. Fractional leftover days are dropped, not carried over (REVIEW-M2-02 R6, intended: banking them into `ProgToAge` would count them at the much faster *online* rate instead).
 
-**Files:** `SSS/Character/AgeController.server.luau` (the loop), `SSS/Character/AgeHandler.luau` (growth math and the profile format), `SSS/Character/HeightHandler.luau` (resizes body parts, joints, attachments and accessories; also holds the per-cloak fit offsets).
-**Depends on:** Stats (`Age`, `Height`, `GrowthProfile`, `TimePassed`, `ProgToAge`), `ItemHandler`, `OnCharacter.Hats`.
-**Depended on by:** Appearance, Items, MissionHandler (requires HeightHandler; the resize calls are commented out), Health (Height adds max health).
+**Visible aging.** Applied hair colour (not the saved `HairColor`) lerps toward grey from `Config.Aging.GreyStart` (45) to `GreyEnd` (70) — `AgeService.ApplyHairColor`, called from both `CharacterService`'s build and every birthday (**R3**: it used to only apply on a respawn, so hair didn't actually grey in on the birthday it was due). No wrinkle decal exists in `RF.Assets` yet (flagged `-- ART TASK (Bryan)` where it's called).
+
+**Death (DESIGN.md section 3a "Aging and death"; Bryan's heart-attack styling in `docs/M2-PLAN.md`).** From `Config.Aging.DeathStart` (60), every online birthday fires the `HeartAttack` remote (`age`, `fatal`) — the client (M2-05) always shows a short heartbeat/red-pulse moment, heavier and lasting if `fatal`. `fatal` is rolled from `Config.Aging.DeathChance`, linearly interpolated between its `{age, chance}` points (`AgeService.DeathChance`). A fatal roll sets the `Dying` attribute and freezes the humanoid (`WalkSpeed`/`JumpPower`/`JumpHeight` 0; **R10**: a character that spawns mid-scene, e.g. from a reset, is frozen the same way). `DataService.NewLife` (like `Wipe`, but keeps `Meta.Lives` — incremented — and `Meta.Created`) then runs **immediately**, before the scene wait (**R2**: running it only after used to let a player who left during the wait keep their old 60+ life instead — the save is now always the fresh life no matter when they come back). The service then waits for the client's `RukhSceneDone` remote (or `Config.Aging.SceneTimeout`, a flat 30s — **R7**: not time-scaled, since the client's scene takes about the same wall-clock time regardless of aging speed) before calling `Player:LoadCharacter()` and marking the player active again (**R1**: this used to never happen, so a fresh life stopped aging entirely until the player rejoined). `AgeService.ForceBirthday`/`ForceHeartAttack` (and `onBirthday` itself) now refuse while `Dying` (**R4**), so a repeated or badly-timed `.heart fatal` can't start a second death sequence.
+
+**Growth profile format (versioned, unchanged):** `"v1|startHeight|adultHeight|spurtAge|fatEnd"`, rolled once per life and stored in `Character.GrowthProfile`. The actual first roll lives in `CharacterService` now (REVIEW-M2-01 F2), once gender is known — `AgeHandler.start` needs it for the 0.9x female growth factor, and rolling any earlier (this service used to do it on `DataService.Loaded`, before a new player has chosen a gender) always took the male curve. `AgeService.rollFirstGrowth` still exists and is still used by `resizeCharacter`'s own fallback if a profile is ever missing/invalid (same defensive fallback the old `sizeCharacter` had), and after `DataService.NewLife` a death also goes through `CharacterService`'s roll again, since `NewLife` resets `Character.Gender` to 0 too. `AgeHandler.unpack` rejects anything that isn't `v1`.
+
+**Audit fixes:** **M10** (runaway age, no old-age death) — this section is the fix: age is now bounded (offline capped at 59) and old-age death is built. **L5** (`HeightHandler.resize`) — hair accessory parts, their `AccessoryWeld` joint and any attachments inside the hair Handle used to scale by the full body ratio like a torso part; they now all follow the head's (smaller, `HEAD_RESPONSE`-scaled) ratio instead (**R8** completed the joint/attachment half; the parts themselves were already fixed), so hair doesn't stretch or sit offset on a tall/short adult. **R9**: the `Mesh` child scale check now accepts any `DataModelMesh` (`BlockMesh`, `FileMesh`, `CylinderMesh`, not only `SpecialMesh`), matching what the old code scaled.
+
+**Dev commands (section 16):** `.birthday [player]`, `.heart [fatal] [player]`.
+
+**Files:** `SSS/Server/Services/AgeService/` (`init.luau` the service; `AgeHandler.luau` growth maths and the profile format, ported to `--!strict`, same numbers; `HeightHandler.luau` resizes body parts, joints, attachments and accessories — also holds the per-cloak fit offsets — ported to `--!strict` with the L5 fix).
+**Removed (TRIAGE #4):** `SSS/Character/AgeController.server.luau`.
+**Repointed:** `SSS/Character/ItemHandler.luau` and `SSS/MISC/MissionHandler/init.server.luau` required the old `Character.HeightHandler`/`Character.AgeHandler` paths; both now require the new `Server.Services.AgeService.HeightHandler`/`.AgeHandler`.
+**Depends on:** `DataService` (`Age`, `Character.Height`/`GrowthProfile`, `NewLife`), `PlayerService.Ready`, `LegacyBridge`, `DevService.GetTimeScale`, `ItemHandler`, `Gear.Hats`.
+**Depended on by:** `CharacterService` (requires `AgeHandler` directly for its own first growth roll, and `GreyFactor` for hair colour), Items, Health (Height adds max health, M2-03).
 
 ---
 
@@ -216,15 +242,13 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
   - `Knocked` → ragdoll, blind screen and input freeze
   - `Hit` → sound and particles
   - `BlockBroken` → TrueStun
-- `SCS/Health` (a server Script inside the character) sets max health from race, MaxMagoi and height, and regenerates health. It also counts `Knocked` down while health is above 10% and removes it at 0, which is how you get back up.
-- `SCS/BlockHealthRegen` regenerates block HP.
+- `HealthService` (rebuilt M2-03, TRIAGE #14 — see its own write-up below) sets max health and regenerates health/block; it also still counts `Knocked` down while health is above 10% and removes it at 0 (how you get back up), moved over from the old `Health` script.
 
 **Weapon:** 10 seconds after every spawn, the server equips the **Royal Dagger** on everyone (`WeaponHandler.equip`, called from InteractionsDesign).
 
 **Files:**
 - Client: `SCS/Scripts/PhysicalHandler.client.luau`
-- Server: `SSS/Interactions/InteractionsHandler.server.luau`, `SSS/Interactions/InteractionsDesign.server.luau`, `SSS/Services/DamageHandler.luau`, `SSS/Services/EffectsService.server.luau`
-- Character scripts: `SCS/Health.server.luau`, `SCS/BlockHealthRegen.server.luau`
+- Server: `SSS/Interactions/InteractionsHandler.server.luau`, `SSS/Interactions/InteractionsDesign.server.luau`, `SSS/Services/DamageHandler.luau`, `SSS/Services/EffectsService.server.luau`, `SSS/Server/Services/HealthService.luau` (M2-03, see below; replaces the old `SCS/Health.server.luau` and `SCS/BlockHealthRegen.server.luau`)
 - Shared modules: `RS/Modules/Combat/WeaponHandler.luau`, `RS/Modules/Ragdoll`
 - `RF/ShapecastHitbox` (third-party, TeamSwordphin v0.2.5)
 
@@ -235,6 +259,23 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 - `GetDamage` (server bindable)
 
 **⚠** The server takes the client's word for what was hit, with no distance or cooldown check, so a modified client could hit anyone on the map.
+
+**Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). The same loop also refreshes the `Rank`/`Epithet`/`Alignment` attributes from `Progress` every tick (simplest correct option; no separate change signal). The old `Knocked`-revival countdown (decrement once a second while health is above `Config.Health.KnockedReviveThreshold`, destroy at 0 — how a knocked-out player gets back up) moved over unchanged; `DamageHandler` still creates that marker and still damages the Humanoid directly, both untouched until M3.
+
+**FIX M11:** the old `Health.server.luau` had `HealthDetermine("Height", ...)` as its own branch, but `Height.Changed` called `HealthDetermine("MaxHealth", ...)` instead, so growing taller never added health. The new formula always recomputes `MaxHealth` from scratch instead of tracking deltas, so there's no branch to wire to the wrong name.
+
+**Numbers changed from the old scripts:** the old max-health formula was race-branched (`50 + 100 + 10×Height` for Race 1, `50 + MaxMagoi/2 + 3×Height` for Race 2, ...) — since Race is fixed to Human for this renovation and Magoi now drives *rank* (DESIGN.md section 3a) rather than health directly, the Magoi/2 term is replaced by `Config.Health.RankBonus[rankIndex]` (`{0, 10, 20, 35, 50, 70, 100}`, one entry per rank). `Base` (50) and `HeightBonus` (3, Race 2's old multiplier) are kept. Health regen's old `Rate = 1/250` (times whatever the tier's wait interval happened to be, which is the L8 bug) is replaced by flat `Config.Health.RegenPerSecond = {Idle=2, Combat=0, Knocked=1}` health/second. Block's old `Rate = 1/750` (≈12.5 minutes to refill) is replaced by flat `Config.Health.BlockRegenPerSecond = 10`.
+
+**API for M3 combat:** `HealthService.TakeDamage(player, amount, source?)`, `.SetTier(player, tier)`, `.SpendBlock(player, amount): boolean`, `.IsBlocking(player)` / `.SetBlocking(player, bool)`. None of these are wired to the current combat scripts yet — that's M3's job.
+
+**⚠ Known gap until M3:** the old `IntFold.BlockInt`/`MaxBlockHpInt` Values (created by `InteractionsDesign.server.luau`'s character setup, read by the not-yet-removed `StarterGui/HUD/BlockHandler.client.luau`) are **not** bridged to the new `Block`/`MaxBlock` attributes — `HealthService`'s block state is a clean, independent system, and the old combat block-break logic still writes `IntFold.BlockInt` directly. Since `BlockHealthRegen.server.luau` is removed, nothing regenerates `IntFold.BlockInt` any more; the old block HP bar will read as frozen until M3 rewires combat to `HealthService`, or M2-04 finishes removing `BlockHandler.client.luau` (already on the M2 plan's removal list).
+
+**Dev commands (section 16):** `.hp <n> [player]`, `.tier <Idle|Combat|Knocked> [player]`.
+
+**Files:** `SSS/Server/Services/HealthService.luau`.
+**Removed (TRIAGE #14):** `SCS/Health.server.luau`, `SCS/BlockHealthRegen.server.luau`.
+**Depends on:** `DataService` (`Character.Height`, `Progress.Magoi`/`GoldRukh`/`BlackRukh`/`Epithet`, `Character.Gender`), `PlayerService.Ready`, `Shared/Data/Ranks`, `Shared/Data/Alignment`, `DevService.Register`/`.ResolvePlayer`.
+**Depended on by:** the HUD (`Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` attributes, plus `Humanoid.Health`/`MaxHealth` directly) and the menu (`Rank`/`Epithet`/`Alignment` attributes); M3 combat will call the API above.
 
 **Not in use:** `RS/Modules/Combat/LightCombat.luau` and `BasicSwordCombat.luau` are an older server-side combat design. Nothing requires them, and they would error if something did: they require `SSS.Services.DamageService`, which doesn't exist.
 
@@ -303,7 +344,7 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 
 ## 16. Dev commands — rebuilt M1-05
 
-**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen.
+**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen. Another service can add its own commands via `DevService.Register`/`.ResolvePlayer` (M2-02's `.birthday`/`.heart` from `AgeService`, M2-03's `.hp`/`.tier` from `HealthService`) instead of `DevService` requiring that service back, since Roblox errors on a cyclic `ModuleScript` require.
 
 **Permission.** A player is a dev if their UserId is in `Config.Dev.Admins` (`27938432`, Bryan — the same UserId the old handler checked), **or** `Config.Debug.Enabled` is true (Studio: everyone testing there is a dev). Checked on the server before anything else runs. A non-dev gets no reply at all (so they can't tell a real command from an unknown one) and one `Log:Warn` per player per minute, not per command.
 
@@ -325,6 +366,10 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 | `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
 | `.fresh [player]` | `DataService.Wipe`, then reloads the character (kick-free) |
 | `.save [player]` | saves now |
+| `.birthday [player]` | forces one birthday tick right now (`AgeService.ForceBirthday`) |
+| `.heart [fatal] [player]` | fires a heart attack right now (`AgeService.ForceHeartAttack`); put `fatal` first to make it lethal |
+| `.hp <n> [player]` | sets current health (`HealthService`) |
+| `.tier <Idle\|Combat\|Knocked> [player]` | sets the regen tier (`HealthService.SetTier`) |
 
 Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 

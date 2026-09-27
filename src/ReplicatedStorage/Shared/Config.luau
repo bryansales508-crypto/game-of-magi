@@ -33,10 +33,70 @@ Config.Dev = {
 	Admins = { 27938432 },
 }
 
+-- M2-02: aging (DESIGN.md section 3, "Aging while offline"/"Aging and
+-- death"). AgeService multiplies the online tick's banked seconds by
+-- DevService.GetTimeScale() (a runtime override of Config.Debug.TimeScale,
+-- since Config is frozen); offline aging is always real time, never
+-- scaled. SceneTimeout is real time too (REVIEW-M2-02 R7): the client's
+-- scene takes about the same wall-clock time to play regardless of aging
+-- speed, so scaling it down at a high timescale used to cut it off mid-play.
+Config.Aging = {
+	SecondsPerYear = if Config.IsStudio then 60 else 1800,
+	OfflineYearsPerDay = 2,
+	OfflineAgeCap = 59,
+	AdultAge = 18,
+	-- Hair visibly greys from GreyStart to GreyEnd (CharacterService.applyHairColor).
+	GreyStart = 45,
+	GreyEnd = 70,
+	-- From DeathStart, every online birthday carries a heart-attack moment;
+	-- DeathChance is the odds it's fatal, linearly interpolated between points.
+	DeathStart = 60,
+	DeathChance = {
+		{ 60, 0.05 },
+		{ 65, 0.10 },
+		{ 70, 0.20 },
+		{ 75, 0.35 },
+		{ 80, 0.50 },
+		{ 90, 0.80 },
+		{ 100, 1.0 },
+	},
+	-- How long the server waits for RukhSceneDone before starting the new
+	-- life anyway.
+	SceneTimeout = 30,
+	-- How often the online aging loop ticks, in real seconds.
+	Tick = 10,
+}
+
+-- M2-03: max health and block (DESIGN.md section 3a "Rank raises max
+-- health", TRIAGE #14). Numbers kept from the old scripts where they
+-- weren't broken; see HealthService's own comments for what changed.
+Config.Health = {
+	Base = 50, -- old StarterHealth
+	HeightBonus = 3, -- per Height ratio unit; same multiplier the old Race==2 formula used
+	-- Indexed by Ranks.rankFor's rank index (1 = Street Rat .. 7 = King/Queen).
+	RankBonus = { 0, 10, 20, 35, 50, 70, 100 },
+	RegenPerSecond = { Idle = 2, Combat = 0, Knocked = 1 },
+	MaxBlock = 100,
+	BlockRegenPerSecond = 10,
+	-- Health/block still above 10% while Knocked ticks the revive
+	-- countdown down once a second (unchanged from the old Health script).
+	KnockedReviveThreshold = 0.1,
+	-- How often the shared regen loop ticks, in real seconds.
+	Tick = 1,
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
 table.freeze(Config.Dev)
+for _, point in Config.Aging.DeathChance do
+	table.freeze(point)
+end
+table.freeze(Config.Aging.DeathChance)
+table.freeze(Config.Aging)
+table.freeze(Config.Health.RankBonus)
+table.freeze(Config.Health.RegenPerSecond)
+table.freeze(Config.Health)
 table.freeze(Config)
 
 return Config

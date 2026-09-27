@@ -142,6 +142,11 @@ local function resolvePlayer(caller: Player, nameArg: string?): (Player?, string
 	return nil, string.format("ambiguous player %q: %s", nameArg, table.concat(names, ", "))
 end
 
+-- Exposed so another service's own dev commands (registered via
+-- DevService.Register below) can resolve a trailing player-name argument
+-- the same way every built-in command does.
+DevService.ResolvePlayer = resolvePlayer
+
 -- Numeric commands (.coins, .age, .rukh, .bounty, .magoi) put an optional
 -- player name in the LAST slot; since every value before it is a number,
 -- a non-numeric trailing token is unambiguously the player name.
@@ -162,6 +167,14 @@ end
 
 local function register(name: string, help: string, run: (Player, { string }) -> string)
 	Commands[name] = { help = help, run = run }
+end
+
+-- Exposed so another service can add its own dev commands (e.g. AgeService's
+-- .birthday/.heart) without DevService having to require that service back
+-- (Roblox errors on a cyclic ModuleScript require, and several services
+-- already require DevService for GetTimeScale/permission checks).
+function DevService.Register(name: string, help: string, run: (Player, { string }) -> string)
+	register(name, help, run)
 end
 
 local function helpText(): string
