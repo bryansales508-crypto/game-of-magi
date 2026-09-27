@@ -39,6 +39,9 @@ local readyCharacter: { [Player]: Model } = {}
 
 local PlayerService = {}
 PlayerService.Ready = readyBindable.Event :: RBXScriptSignal
+-- Shared with DevService's .tp (REVIEW-M1-05S #3), so both places that
+-- place a character at a spawn part use the same margin.
+PlayerService.SPAWN_RAISE_STUDS = SPAWN_RAISE_STUDS
 
 -- Pure: no Player needed, so SelfTestService can exercise every transition
 -- directly. This is the ONLY place the state machine's rules live; setState

@@ -20,7 +20,6 @@ local log = Log.new("DevService")
 
 local NON_DEV_WARN_COOLDOWN = 60
 local WATCH_PERIOD = 1
-local SPAWN_RAISE_STUDS = 3
 
 type CommandSpec = {
 	help: string,
@@ -217,7 +216,10 @@ local function buildSnapshot(target: Player): { [string]: any }
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
 
-	local position = { x = 0, y = 0, z = 0 }
+	-- "n/a" (not {0,0,0}) when there's no character/HumanoidRootPart, so the
+	-- overlay can tell "no character yet" apart from actually being at the
+	-- map's origin (REVIEW-M1-05S #2).
+	local position: any = "n/a"
 	if hrp and hrp:IsA("BasePart") then
 		local p = hrp.Position
 		position = { x = p.X, y = p.Y, z = p.Z }
@@ -499,7 +501,7 @@ register("tp", "<city> - teleport your character to a spawn", function(caller, a
 	if character == nil then
 		return string.format("%s has no character to teleport", caller.Name)
 	end
-	character:PivotTo(spawnPart.CFrame + Vector3.new(0, spawnPart.Size.Y / 2 + SPAWN_RAISE_STUDS, 0))
+	character:PivotTo(spawnPart.CFrame + Vector3.new(0, spawnPart.Size.Y / 2 + PlayerService.SPAWN_RAISE_STUDS, 0))
 	return string.format("Teleported %s to %s", caller.Name, spawnPart.Name)
 end)
 

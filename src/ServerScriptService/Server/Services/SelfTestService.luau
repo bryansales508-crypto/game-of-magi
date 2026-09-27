@@ -287,6 +287,19 @@ local function testDevService(results: { Check })
 
 	local notACommand = DevService.Dispatch(fakePlayer, "just chatting")
 	expect(results, "DevService: a non-command chat line gets no reply", notACommand == nil)
+
+	-- IsDev is always true in Studio (Config.Debug.Enabled short-circuits
+	-- it), so a real non-dev Dispatch call can't happen here; stub IsDev
+	-- itself for one assertion instead (REVIEW-M1-05S #1), then restore it
+	-- so the checks above (and every other service) keep seeing the real
+	-- permission check.
+	local realIsDev = DevService.IsDev
+	DevService.IsDev = function(_player: Player): boolean
+		return false
+	end
+	local ok, nonDevReply = pcall(DevService.Dispatch, fakePlayer, ".cmd")
+	DevService.IsDev = realIsDev
+	expect(results, "DevService: Dispatch gives a non-dev no reply", ok and nonDevReply == nil)
 end
 
 local SelfTestService = {}
