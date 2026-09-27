@@ -11,6 +11,15 @@
 --   CreateCharacter(gender: 1|2, skin: 1|2|3) -- client -> server.
 --   Player:GetAttribute("Gender") starts at 0 (or nil for a moment at
 --   join) and becomes non-zero once the server accepts the pick.
+--
+-- FIX BUG-24: nil means "we don't know yet" (the attribute hasn't
+-- replicated), never "not chosen" -- only an explicit 0 means that. Doing
+-- nothing on nil and waiting for the next GetAttributeChangedSignal fire
+-- is what stops a returning player (whose Gender arrives as their real,
+-- already-chosen value) from ever seeing the screen flash on. If the
+-- screen is somehow still up when Gender turns out to be non-zero (a
+-- pick already recorded), it's torn down without ever firing
+-- CreateCharacter -- destroyScreen only removes the GUI.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -156,9 +165,15 @@ end
 
 local function onGenderChanged()
 	local gender = player:GetAttribute("Gender")
-	if gender == 0 then
+	if gender == nil then
+		-- BUG-24: nil is "unknown", not "not chosen" -- do nothing and
+		-- wait for the next attribute change instead of guessing.
+		log:Debug("Gender unknown (nil); waiting for the server")
+	elseif gender == 0 then
+		log:Debug("Gender is 0 (not chosen); showing the creation screen")
 		buildScreen()
-	elseif typeof(gender) == "number" and gender ~= 0 then
+	else
+		log:Debug(string.format("Gender is %s (already chosen); hiding the creation screen", tostring(gender)))
 		destroyScreen()
 	end
 end
