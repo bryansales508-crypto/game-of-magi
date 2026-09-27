@@ -23,15 +23,25 @@
 --   Cloned onto every character's Torso/Head already, by CharacterService
 --   (M2-01) -- this file only finds and plays/emits them:
 --     LightHitSound1-3, LightHitSoundFin, MissSound1-3, BlockSound1-2,
---     BlockBroken, Parry (Sound); HitParticle, Sparks1-2, BlockParticle,
+--     BlockBroken, Parry (Sound); HitParticle, BlockParticle,
 --     BlockBreakParticle (ParticleEmitter, under Torso's CenterHook
 --     attachment); Confusion (ParticleEmitter, under Head.HairAttachment).
+--     Sparks1-2 are a PARRY particle only (old InteractionsDesign.server.
+--     luau:96-97, `:Emit(10)` on a successful parry), not a plain Hit --
+--     the old game never emitted them on an ordinary hit.
 --   Cloned fresh per use here (not pre-attached by CharacterService):
 --     ReplicatedFirst.VFX.HitEffects.ParryCircle
 --     ReplicatedFirst.VFX.MiscEffects.DashTrail
---   Stagger animations, old PhysicalHandler.client.luau ids (Action4):
---     rbxassetid://15430342283, 15430496352, 15430593084 (picked with no
---     immediate repeat -- AUDIT L11's "no repeat doesn't work" fix)
+--   Stagger animations (Hit reaction and the Stunned pose below), old
+--   PhysicalHandler.client.luau ids (Action4): rbxassetid://15430342283,
+--   15430496352, 15430593084 (picked with no immediate repeat -- AUDIT
+--   L11's "no repeat doesn't work" fix).
+--   Block-hit flinch (BlockStagger1Track, old default priority/speed):
+--   rbxassetid://15430386843, played on a Blocked reaction -- the old
+--   game's "Hit while your Block marker is still up" case, which the new
+--   CombatService turns into its own Blocked event instead of a Hit.
+--   Block-break animation (BlockBreakTrack, old default priority/speed):
+--   rbxassetid://86794346470329, played on a BlockBroken reaction.
 --   Knockout screen: ReplicatedFirst.GUI.MiscGUI.Blind
 --
 -- Ragdoll (ReplicatedStorage.Modules.Ragdoll) is NOT called from here.
@@ -87,12 +97,19 @@ local STAGGER_IDS = {
 	"rbxassetid://15430593084",
 }
 local STAGGER_SPEED = 0.8
+local BLOCK_STAGGER_ID = "rbxassetid://15430386843"
+local BLOCK_BREAK_ID = "rbxassetid://86794346470329"
+local STUNNED_POLL_SECONDS = 0.15
 
 -- ==================== per-character caches (weak keys: no manual cleanup needed) ====================
 
+type BlockReactionTracks = { blockStagger: AnimationTrack, blockBreak: AnimationTrack }
+
 local lastRandomIndex = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { [string]: number } }
 local staggerTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { AnimationTrack } }
+local blockReactionTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BlockReactionTracks }
 local pendingSwingGeneration = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: number }
+local stunnedWatcherRunning = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: boolean }
 
 local function pickIndex(character: Instance, key: string, count: number): number
 	local perCharacter = lastRandomIndex[character]
@@ -173,6 +190,34 @@ local function playStagger(character: Instance)
 	track:AdjustSpeed(STAGGER_SPEED)
 end
 
+-- ==================== block-hit flinch / block-break (Blocked, BlockBroken reactions) ====================
+
+local function getBlockReactionTracks(character: Instance): BlockReactionTracks?
+	local existing = blockReactionTracksByCharacter[character]
+	if existing then
+		return existing
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		return nil
+	end
+
+	local function load(id: string): AnimationTrack
+		local animation = Instance.new("Animation")
+		animation.AnimationId = id
+		-- Old PhysicalHandler never set a Priority for either of these,
+		-- so both keep Roblox's default (unlike the Action2/3/4 tracks
+		-- elsewhere in this file, which explicitly reused the old ones).
+		return animator:LoadAnimation(animation)
+	end
+
+	local tracks = { blockStagger = load(BLOCK_STAGGER_ID), blockBreak = load(BLOCK_BREAK_ID) }
+	blockReactionTracksByCharacter[character] = tracks
+	return tracks
+end
+
 -- ==================== hit-stop (Parried reaction) ====================
 
 local function applyHitStop(character: Instance, duration: number)
@@ -189,6 +234,73 @@ local function applyHitStop(character: Instance, duration: number)
 				track:AdjustSpeed(originalSpeed)
 			end
 		end)
+	end
+end
+
+-- ==================== stunned pose (spec item 5) ====================
+-- While `Stunned` is true and nothing else (a swing, block or dash) is
+-- currently animating the character, hold one of the same stagger poses
+-- used for the Hit reaction above; stop the moment Stunned clears or
+-- something higher-priority takes over. Polled rather than event-driven
+-- so the watcher is fully bounded to the stunned window: nothing is left
+-- listening once Stunned goes false, unlike hooking every future
+-- AnimationTrack's Stopped signal for the rest of the character's life.
+
+local function isCombatAnimationPlaying(animator: Animator, ignoreTrack: AnimationTrack?): boolean
+	for _, track in animator:GetPlayingAnimationTracks() do
+		if track ~= ignoreTrack and track.Priority.Value >= Enum.AnimationPriority.Action.Value then
+			return true
+		end
+	end
+	return false
+end
+
+local function watchStunnedPose(character: Instance)
+	if stunnedWatcherRunning[character] then
+		return
+	end
+	stunnedWatcherRunning[character] = true
+
+	task.spawn(function()
+		local activeTrack: AnimationTrack? = nil
+		while character.Parent and character:GetAttribute("Stunned") == true do
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+			local tracks = if animator then getStaggerTracks(character) else nil
+			if animator and tracks then
+				if isCombatAnimationPlaying(animator, activeTrack) then
+					if activeTrack then
+						activeTrack.Looped = false
+						activeTrack:Stop()
+						activeTrack = nil
+					end
+				elseif not activeTrack then
+					local track = tracks[pickIndex(character, "stunnedPose", #tracks)]
+					track.Looped = true
+					track:AdjustSpeed(STAGGER_SPEED)
+					track:Play()
+					activeTrack = track
+				end
+			end
+			task.wait(STUNNED_POLL_SECONDS)
+		end
+
+		if activeTrack then
+			activeTrack.Looped = false
+			activeTrack:Stop()
+		end
+		stunnedWatcherRunning[character] = nil
+	end)
+end
+
+local function wireStunnedWatcher(character: Instance)
+	character:GetAttributeChangedSignal("Stunned"):Connect(function()
+		if character:GetAttribute("Stunned") == true then
+			watchStunnedPose(character)
+		end
+	end)
+	if character:GetAttribute("Stunned") == true then
+		watchStunnedPose(character)
 	end
 end
 
@@ -297,6 +409,14 @@ end
 local function onCharacterAdded(character: Model)
 	teardownCharacter()
 	currentCharacter = character
+	wireStunnedWatcher(character)
+end
+
+-- Other players' Stunned pose: same watcher, but these characters never
+-- go through teardownCharacter/currentCharacter (that's local-player-only
+-- knockout state), so this is the only wiring they need.
+local function onOtherCharacterAdded(character: Model)
+	wireStunnedWatcher(character)
 end
 
 -- ==================== CombatEvent reactions ====================
@@ -329,8 +449,6 @@ local function onHit(data: any)
 		playSound(target, "LightHitSound" .. pickIndex(target, "hit", HIT_SOUND_COUNT))
 	end
 	emitParticle(target, "HitParticle", 1)
-	emitParticle(target, "Sparks1", 1)
-	emitParticle(target, "Sparks2", 1)
 	playStagger(target)
 end
 
@@ -341,12 +459,19 @@ local function onBlocked(data: any)
 	end
 	playSound(target, "BlockSound" .. pickIndex(target, "block", BLOCK_SOUND_COUNT))
 	emitParticle(target, "BlockParticle", 1)
+
+	local tracks = getBlockReactionTracks(target)
+	if tracks then
+		tracks.blockStagger:Play()
+	end
 end
 
 local function onParried(data: any)
 	local target = data.target
 	if typeof(target) == "Instance" then
 		playSound(target, "Parry")
+		emitParticle(target, "Sparks1", 10)
+		emitParticle(target, "Sparks2", 10)
 		local torso = target:FindFirstChild("Torso")
 		if torso then
 			burstParticle(HitEffects:WaitForChild("ParryCircle"), torso, 1, 1)
@@ -367,6 +492,11 @@ local function onBlockBroken(data: any)
 	playSound(target, "BlockBroken")
 	emitParticle(target, "BlockBreakParticle", 15)
 	emitParticle(target, "Confusion", 5)
+
+	local tracks = getBlockReactionTracks(target)
+	if tracks then
+		tracks.blockBreak:Play()
+	end
 end
 
 local function onKnocked(data: any)
@@ -460,6 +590,20 @@ function EffectsController:Start()
 	if player.Character then
 		onCharacterAdded(player.Character)
 	end
+
+	local function wireOtherPlayer(otherPlayer: Player)
+		if otherPlayer == player then
+			return
+		end
+		otherPlayer.CharacterAdded:Connect(onOtherCharacterAdded)
+		if otherPlayer.Character then
+			onOtherCharacterAdded(otherPlayer.Character)
+		end
+	end
+	for _, otherPlayer in Players:GetPlayers() do
+		wireOtherPlayer(otherPlayer)
+	end
+	Players.PlayerAdded:Connect(wireOtherPlayer)
 
 	log:Info("ready")
 end
