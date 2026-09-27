@@ -212,101 +212,126 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 
 ---
 
-## 8. Movement and speed
+## 8. Movement and speed — rebuilt M3-02 (TRIAGE #9, fixes AUDIT H10/M4/M5/M6/D2)
 
-**What it does.** Walk speed is 16 and run speed 28. The race- and height-based speeds are commented out. Double-tapping W runs, which zooms the camera out and plays the run animation. Anything that changes speed (running, blocking, dashing, being hit, heavy cargo, parried, stunned) adds a named child to `character.IntFold.MovementSpeed`. The server recomputes WalkSpeed from the smallest multiplier present, and `0` means frozen. Low health also slows you, down to half run speed and a quarter walk speed.
+**What it does.** `MovementService` is now the one owner of `Humanoid.WalkSpeed`, keyed by the combatant's **character Model**, never by Player (NPCs move exactly like players; M3-04's `NpcService` registers them the same way `PlayerService.Ready` registers players).
 
-**Files:**
-- `RS/Modules/SpeedHandler.luau`: add or remove a speed modifier.
-- `SSS/Interactions/InteractionsDesign.server.luau`: creates `IntFold`, recomputes speed, and has a separate copy of the logic for NPCs.
-- `SSS/Interactions/InteractionsHandler.server.luau`: the `Running` and `Dash` remotes.
-- `SCS/Scripts/PhysicalHandler.client.luau`: run and dash input.
+**Speed stack.** `SetModifier(character, name, mult)` / `ClearModifier(character, name)` keep a named-multiplier table per combatant. The effective multiplier is the **smallest active one** (`0` freezes, matching the old "smallest wins" idea) — with none active, `1.0`. WalkSpeed is written **immediately** on every change (AUDIT M6: the old code updated its base speeds but only re-applied WalkSpeed when something else happened to touch it). Base walk is 16; running is `Combat.Run.speedMult × 16` (28, unchanged) — `Run` isn't folded into the same min-pool as everything else, because it picks which *baseline* (16 or 28) the stack multiplies, not a multiplier of that baseline itself: "half of run speed" and "a quarter of walk speed" (see Low health below) are two different final speeds for the same kind of low multiplier, which a single flat `min()` can't express. Named modifiers other systems use: `Run`, `Block`, `Stun`, `TrueStun`, `Knocked`, `Hit`, `LowHealth`, `HeavyCargo` (missions, via the bridge below).
 
-**Remotes (client → server):**
-- `Running(bool)`
-- `CombatRemotes.Dash("Dash" | "Release" | "RunningHit")`
+**Run.** `Run(true)` is ignored while `Stun`/`TrueStun`/`Knocked`/`Block` is active (checked against `StatusService.Has`); the server also clears `Run` itself the instant one of those statuses turns on (subscribed via `StatusService.Changed`), so a client can't keep running through a stun by just not sending `Run(false)`.
+
+**Dash.** A server cooldown (`Combat.Dash.cooldown`, AUDIT M4 — old code had none and let dashes stack); rejected while `Stun`/`TrueStun`/`Knocked` (not `Block`: dashing out of a block is fine). No first-punch requirement (**fixes H10** — the old client gated Dash on an attack animation's `Speed` reaching 0) and no cardinal-only restriction (**fixes H10's diagonal half**: the old code built animation names like `"DW"` that never existed; the server just takes any non-zero `(x, z)` in the character's own local space, normalises it itself, and pushes a `LinearVelocity` for `Combat.Dash.distance` studs over `Combat.Dash.duration` seconds along that world direction). Sets the `NextDashAt` attribute (`workspace:GetServerTimeNow()`-based, for a client cooldown UI) and emits `CombatEvent("Dash", {character, x, z})`.
+
+**Low health.** Subscribed directly to the combatant's own `Humanoid.HealthChanged`/`MaxHealth` changes (not `HealthService`'s Player attributes — those are just a mirror of the same Humanoid, and reading the Humanoid directly works for NPCs too, which have no Player). Below full health, a `LowHealth` modifier is applied and kept current: down to half of run speed or a quarter of walk speed at 0 health (old SYSTEMS 8 numbers, `MovementService.LowHealthMult`), scaling linearly with the health ratio in between; at full health it's removed entirely, not just decayed to 1.0.
+
+**Bridge (kept until M5/M6 per the M3 plan).** `character.IntFold.MovementSpeed` keeps one child per active modifier (old code and `PhysicalHandler.client.luau`'s attack-cancel-on-dash both watch `ChildAdded`/`ChildRemoved` there by name), and `IntFold["Running?"]` mirrors the run flag (M3-03's `FootstepService` reads it verbatim for step-sound volume). Unlike `StatusService`'s `Effects` folder, `MovementService` creates `IntFold`/`IntFold.MovementSpeed`/`IntFold["Running?"]` itself if they're missing — `InteractionsDesign.server.luau` used to, and M3-03 deletes that file. `RS/Modules/SpeedHandler.luau` (the old add/remove-a-modifier module) is now a compatibility **shim**: its two remaining real callers, `MissionHandler`'s heavy-cargo slow and `EffectsService.server.luau`'s TrueStun freeze, keep calling it exactly as before, and it forwards into `MovementService.SetModifier`/`ClearModifier`. `Running.model.json` and `CombatRemotes/Dash.model.json` (the old remotes) are deleted — approved TRIAGE #9; `InteractionsHandler.server.luau`'s own `Running`/`Dash` handlers (and its footstep code, which M3-03 moves into `FootstepService`) go with M3-03's deletions, not this one.
+
+**Remotes (client → server, declared in `Shared/Remotes.luau`):** `Run(on: boolean)` (4/s), `Dash(x: number, z: number)` (2/s, each clamped to `[-1, 1]`; the server normalises the resulting vector). **Server → client:** `CombatEvent(kind: string, data: table)` — `Run`/`Dash` kinds from this service, more kinds from M3-03's `CombatService`.
+
+**Attributes:** `SpeedMult` (number, the current effective multiplier), `Running` (bool), `NextDashAt` (server clock).
+
+**Files:** `Server/Services/MovementService.luau`, `Shared/Remotes.luau` (Run/Dash/CombatEvent added), `Modules/SpeedHandler.luau` (now a shim, see above).
+**Depends on:** `PlayerService.Ready`/`Players.PlayerRemoving` (player registration), `StatusService` (gates Run/Dash, clears Run on a status), `Shared/Data/Combat` (Run/Dash numbers).
+**Depended on by:** `MissionHandler` (heavy cargo, via the `SpeedHandler` shim), `EffectsService.server.luau` (TrueStun, via the same shim), `PhysicalHandler.client.luau`'s dash-cancel (via the `IntFold.MovementSpeed` bridge), M3-03's `CombatService`/`FootstepService`, M3-04's `NpcService`.
+**Update (M3-02 review fix):** `Interactions/InteractionsDesign.server.luau` and `Interactions/InteractionsHandler.server.luau` are now both deleted (M3-03) — confirmed no other script creates `IntFold`/`IntFold.MovementSpeed` (`MovementService.luau` is the only remaining creator) or writes `Humanoid.WalkSpeed` for a combatant. Two unrelated, pre-existing scripts still set `WalkSpeed` directly for their own one-shot purposes — `AgeService`'s death-sequence freeze and the client-side `RukhController`'s afterlife-scene lock — but only during a death/afterlife cutscene that ends in the character being destroyed and respawned, not a competing continuous movement system; flagged as a known, low-risk pre-M3 interaction, not touched here. Also fixed: the transient `Dash` bridge child (below) is now routed through `SetModifier`/`ClearModifier` properly, so it actually clears itself after the dash instead of lingering forever (REVIEW-M3-02 #3).
 
 ---
 
-## 9. Combat
+## 9. Combat — rebuilt M3-03 (TRIAGE #10, fixes AUDIT C2/H5/H6/M1/M2/M3-P2)
 
-**What it does.** Client-driven melee.
+**What it does.** `CombatService` is the server-authoritative combat core, keyed by the combatant's **character Model**, never by Player — NPCs will attack and block through the exact same `CombatService.Attack`/`SetBlocking` entry points once M3-04 registers them. The client only ever sends an intention; the server decides everything (**fixes C2**, "the server believes whatever the client says it hit").
 
-**Client** (`PhysicalHandler`):
-- **M1:** a click plays a swing animation. At the animation's `Hit` marker, the client runs a shapecast hitbox from the fist or dagger and tells the server what it hit. Fist has a 2-hit combo; Royal Dagger has 3.
-- **F:** holds block. The first 0.25 s of a block is a parry window.
-- **Q + a direction key:** dashes.
-- **Right-click or jump during a swing:** cancels it.
+**Attack.** `Attack()` (client → server, 6/s): rejected if dead, `Stun`/`TrueStun`/`Knocked`/`Block` is active, or before the `NextAttackAt` attribute (**fixes H6**: stun and cooldowns are now enforced, and each click can only ever register once — no fast-click multiplying). A **finisher always restarts the combo chain outright** on the next swing, regardless of timing; otherwise the combo step advances if the *previous move's own hit-check* landed within that move's `comboWindow` (measured from when the hit-check actually resolved, not from when `Attack()` was called — `Combat.luau`'s own comment: "how long after THIS move lands"), else it resets to 1 (`CombatService.NextComboStep`). A `Swing` event fires immediately; `NextAttackAt` is set to `now + windup + recovery` right away (server clock, `workspace:GetServerTimeNow()`), and the attacker's position at that moment is remembered.
 
-**Server:**
-- `InteractionsHandler` receives `CombatRemotes.Hit(nil, partHit)` and calls `DamageHandler.damage` with a fixed packet: 5 damage, knockback, a brief slow, 1 s stun.
-- `DamageHandler` applies the effects:
-  - adds `Stun` and `Hit` markers
-  - slows the target and knocks them back; every 5th hit knocks back 10× harder
-  - takes health
-  - at 0 health, instead of dying, the target is **Knocked**: health is set to 1, and the name of the attacker is stored under the Knocked marker
-  - blocking from the front routes to `InteractionsDesign` via the `GetDamage` bindable. That drains "block HP" (35), breaks the block at 0 (3 s TrueStun), or on a parry stuns the attacker and plays the parry effects.
-- `EffectsService` reacts to markers in `character.Effects`:
-  - `Knocked` → ragdoll, blind screen and input freeze
-  - `Hit` → sound and particles
-  - `BlockBroken` → TrueStun
-- `HealthService` (rebuilt M2-03, TRIAGE #14 — see its own write-up below) sets max health and regenerates health/block; it also still counts `Knocked` down while health is above 10% and removes it at 0 (how you get back up), moved over from the old `Health` script.
+At `hitTime` seconds later, the hit-check only runs if the attacker is still alive, not stunned/knocked/true-stunned, and **not now blocking** (you can't swing and hold a block at once) — and rejects the hit outright if the attacker moved further than a legitimate combatant could have (`runSpeed × hitTime + Combat.Dash.distance`) since the swing started, catching a teleport/speed-hack landing a hit its own swing position could never have reached. The hit-check itself: a single generous sphere centred half the move's `range` in front of the attacker's `HumanoidRootPart` (`Workspace:GetPartBoundsInRadius`) — a simple, well-supported stand-in for a forward capsule swing that doesn't depend on the third-party `ShapecastHitbox` module's (unverified) server-side behavior. Among every candidate the sphere finds, only a **registered combatant**, roughly in front of the attacker's own facing (not just the target's), and with a **clear line of sight** (an HRP-to-HRP raycast, excluding every registered combatant, so a hit can't pass through a wall — or through a crowd blocking its own members) counts; the **closest** one wins, not just whichever the sphere query happened to list first. A hit part resolves up to the nearest ancestor Model with a Humanoid, so hitting a weapon, backpack or delivery pack still finds the character wearing it (**fixes M3/P2**).
 
-**Weapon:** 10 seconds after every spawn, the server equips the **Royal Dagger** on everyone (`WeaponHandler.equip`, called from InteractionsDesign).
+**Applying a hit.** A target already `Knocked` takes no further hit at all (no re-knock, no damage while down — wait for `Recovered` first). Otherwise, if the target is `Block`ing and facing the attacker (`CombatService.IsFacingAttacker`, the same attacker→target/look-vector dot-product convention the old code used): a parry (the `Block` status's `value == 1` window, which `StatusService` itself flips to 0 after `Combat.Block.parryWindow`) is resolved **before the block meter is ever touched** — it costs no block HP at all — and stuns the attacker for half `Block.breakStun`, starting a `Combat.Block.parryCooldown` on the blocker so the next hit can't be parried again for free (**fixes H5**). Only once a hit *isn't* a fresh parry does anything drain the meter (`HealthService.SpendBlock` for a real Player; a target with no Player — an NPC — has its own meter in `CombatService`'s own registration, or its block could never break at all); `CombatService.ResolveBlock` turns those three plain booleans (parrying, on cooldown, meter still held) into Parried/Blocked/BlockBroken. **A blocker takes no damage, stun, slow or knockback while the block holds, full stop (fixes M1).** Once the meter's empty the block ends, `TrueStun` and `BlockBroken` apply for `Block.breakStun`, and — unlike the old code — nothing ever adds block back on a parry any more, so there's no cap left to overshoot (**fixes M2** by removing the mechanic that could overfill it). A hit from behind bypasses (and ends) the block instead. Otherwise: the resulting health is computed **before** touching `Humanoid.Health` at all — if it would reach 0, `Health` is set straight to 1 and the target is `Knocked` for `Combat.Knockout.getUpSeconds` instead, because Roblox fires `Humanoid.Died` itself the instant `Health` actually reaches 0 (there's no setting it back to 1 afterward). Otherwise `HealthService.TakeDamage` applies the damage, `Hit`/`Stun` statuses apply (`Stagger.hitStun` / the move's own `stun`), and a brief knockback impulse pushes the target away from the attacker (a self-hit's zero-length direction is checked and skipped instead of producing a NaN velocity, the old bug behind part of C2). Every hit dealt or taken also marks both fighters' `HealthService` regen tier `"Combat"` (falling back to `"Idle"` after `Config.Health.CombatTierSeconds` of no further activity — `"Knocked"` always wins while active).
+
+**Block.** `Block(on: boolean)` (client → server, 4/s): starting a block is rejected while `Stun`/`TrueStun`/`Knocked`/`BlockBroken` is active, already blocking, or **while your own swing's hit-check is still pending** (you can't block mid-swing either). One place, `CombatService`'s own `StatusService.Changed` subscriber, owns everything that happens when `Block` turns on or off **no matter which code path caused it** (a dev command, the shared expiry loop, anything): the `Combat.Block.blockSpeedMult` `MovementService` modifier and `HealthService.SetBlocking` both follow the status, not a scattered set of call sites. That same subscriber also removes `Block` outright the instant `Stun`/`TrueStun`/`Knocked` turns on (**fixes M3**), and applies `Stun`/`TrueStun`/`Knocked`/`Hit`'s own `MovementService` modifiers (0 for the first three, 0.5 for `Hit`) — one place decides when a status starts or ends, matching M3-01's own design note.
+
+**Knockout and recovery.** `StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, {by = attackerName})`; ragdoll comes from `EffectsService` reacting to the bridged `Knocked` marker, unchanged (see below). Recovery (however `Knocked` ends — the getUpSeconds timer or an early dev-command removal) sets health to `Combat.Knockout.healthOnGetUp × MaxHealth` and fires `Recovered`; `HealthService`'s own independent "revive" countdown is gone (see the Health section below).
+
+**Weapon:** everyone is `"Fist"` (the `WeaponSet` attribute); the old 10-second auto-equipped Royal Dagger was already removed in M1 and its `WeaponHandler.luau` module (nothing required it any more) is deleted along with this task's other removals. Bought weapons (M5) will set a different `WeaponSet`.
 
 **Files:**
-- Client: `SCS/Scripts/PhysicalHandler.client.luau`
-- Server: `SSS/Interactions/InteractionsHandler.server.luau`, `SSS/Interactions/InteractionsDesign.server.luau`, `SSS/Services/DamageHandler.luau`, `SSS/Services/EffectsService.server.luau`, `SSS/Server/Services/HealthService.luau` (M2-03, see below; replaces the old `SCS/Health.server.luau` and `SCS/BlockHealthRegen.server.luau`)
-- Shared modules: `RS/Modules/Combat/WeaponHandler.luau`, `RS/Modules/Ragdoll`
-- `RF/ShapecastHitbox` (third-party, TeamSwordphin v0.2.5)
+- Server: `Server/Services/CombatService.luau`, `Server/Services/FootstepService.luau` (see below).
+- Shared: `Shared/Data/Combat.luau` (M3-01), `Shared/Config.luau` (`Config.Health.CombatTierSeconds` added), `Shared/Remotes.luau` (`Attack`, `Block` added).
+- Kept, trimmed to only what the client `EffectsController` (M3-06) does **not** already do: `Services/EffectsService.server.luau` now just creates `character.Effects` and runs the actual server-side ragdoll physics on `Knocked` (un-ragdolling on `Recovered` isn't separate code — it's the same marker chain run backwards: `StatusService.Remove(..., "Knocked")` destroys the bridge `Knocked` marker, whose `ChildRemoved` destroys `Ragdoll`, whose own `ChildRemoved` un-ragdolls). Its hit/block-break sounds and particles, the Blind GUI, and the redundant `TrueStun` speed-zero (`CombatService`'s own `StatusService.Changed` subscriber already does that directly) are all gone — that file is now just the folder plus ragdoll, nothing else. Also: `Modules/Ragdoll`, `RF/ShapecastHitbox` (unused by the new hit-check, not removed - other systems may still reference it).
 
-**Remotes:**
-- `CombatRemotes.Hit` (client → server): `("Highlight")` to flash your cancel highlight, or `(nil, partHit)` for a hit.
-- `Blocking(bool)` (client → server)
-- `RagdollEvent(bool)`, `Remotes.Hit()`, `CombatRemotes.Parry()` (server → client, for animations and screen effects)
-- `GetDamage` (server bindable)
+**Remotes:** `Attack()` (6/s), `Block(on: boolean)` (4/s) — declared in `Shared/Remotes.luau`. Server → client: `CombatEvent(kind, data)` with kinds `Swing`, `Hit`, `Blocked`, `Parried`, `BlockBroken`, `Knocked`, `Recovered` (plus M3-02's `Run`/`Dash`). Character attributes: `ComboStep`, `NextAttackAt`, `WeaponSet`, plus `Blocking`/`Stunned`/`Knocked`/`TrueStunned` from `StatusService`.
 
-**⚠** The server takes the client's word for what was hit, with no distance or cooldown check, so a modified client could hit anyone on the map.
+**Dev commands (section 16):** `.combat log on|off` (logs every hit decision), `.knock [player]`, `.stun <s> [player]`.
 
-**Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). The same loop also refreshes the `Rank`/`Epithet`/`Alignment` attributes from `Progress` every tick (simplest correct option; no separate change signal). The old `Knocked`-revival countdown (decrement once a second while health is above `Config.Health.KnockedReviveThreshold`, destroy at 0 — how a knocked-out player gets back up) moved over unchanged; `DamageHandler` still creates that marker and still damages the Humanoid directly, both untouched until M3.
+**Removed (approved TRIAGE #10/#13):** `Interactions/InteractionsHandler.server.luau`, `Interactions/InteractionsDesign.server.luau`, `Services/DamageHandler.luau`, `Modules/Combat/WeaponHandler.luau` (unused since M1's dagger-autoequip removal), the remote model files `Blocking`, `CombatRemotes/Hit`, `CombatRemotes/Parry`, `GetDamage` (all only ever read by the deleted files or by `PhysicalHandler.client.luau`, see below). **Kept, not removed:** the top-level `Hit` and `RagdollEvent` remote model files — `EffectsService.server.luau` (staying until M3-06) still fires `RagdollEvent` directly for ragdoll sync (its `Hit` remote fire was removed along with `hitFunc` — nothing server-side uses the top-level `Hit` remote any more, but it's left in place since `PhysicalHandler.client.luau` still references it directly and that file's fate is M3-05's call, not this task's).
+
+**⚠ `PhysicalHandler.client.luau` is fully broken right now, not just its combat parts.** It's one script that top-level-indexes every old combat/movement remote in sequence; M3-02 already removed `Remotes.Running` (its very first lookup, line 13), so the whole script has errored at load — including its footstep-sending and dagger-equip code — since that commit, not just from this task's own remote removals (`Blocking`, `CombatRemotes.Hit`, `CombatRemotes.Parry`). This was missed in M3-02's own report. Nothing else on the server depends on this file, but until M3-05 replaces it with `CombatController`, a player's client sends no footstep events, no attack/block/dash/run input, and no parry/ragdoll reactions at all - `FootstepService` and `CombatService` are both fully correct and waiting, just unfed. Flagging for Bryan/the lead rather than fixing here: M3-05 is a separate (client-builder) task.
+
+**Footsteps (section 12) moved into `FootstepService.luau`** unchanged (same sounds, same sand/mud footprints, same `MiscRemotes.Footstep` remote) since the combat file it used to live inside is gone; see section 12.
+
+**Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). The same loop also refreshes the `Rank`/`Epithet`/`Alignment` attributes from `Progress` every tick (simplest correct option; no separate change signal). The old `Knocked`-revival countdown (decrement once a second while health is above a threshold, destroy at 0) that moved over unchanged in M2-03 is **gone as of M3-03** (REVIEW-M3-03 L6): `CombatService`/`StatusService` are the sole authority on when a knockout ends now (`Combat.Knockout.getUpSeconds`, `Recovered`), and an independent second timer here was a real conflict, not just a documented overlap — `Config.Health.KnockedReviveThreshold` is removed with it.
 
 **FIX M11:** the old `Health.server.luau` had `HealthDetermine("Height", ...)` as its own branch, but `Height.Changed` called `HealthDetermine("MaxHealth", ...)` instead, so growing taller never added health. The new formula always recomputes `MaxHealth` from scratch instead of tracking deltas, so there's no branch to wire to the wrong name.
 
 **Numbers changed from the old scripts:** the old max-health formula was race-branched (`50 + 100 + 10×Height` for Race 1, `50 + MaxMagoi/2 + 3×Height` for Race 2, ...) — since Race is fixed to Human for this renovation and Magoi now drives *rank* (DESIGN.md section 3a) rather than health directly, the Magoi/2 term is replaced by `Config.Health.RankBonus[rankIndex]` (`{0, 10, 20, 35, 50, 70, 100}`, one entry per rank). `Base` (50) and `HeightBonus` (3, Race 2's old multiplier) are kept. Health regen's old `Rate = 1/250` (times whatever the tier's wait interval happened to be, which is the L8 bug) is replaced by flat `Config.Health.RegenPerSecond = {Idle=2, Combat=0, Knocked=1}` health/second. Block's old `Rate = 1/750` (≈12.5 minutes to refill) is replaced by flat `Config.Health.BlockRegenPerSecond = 10`.
 
-**API for M3 combat:** `HealthService.TakeDamage(player, amount, source?)`, `.SetTier(player, tier)`, `.SpendBlock(player, amount): boolean`, `.IsBlocking(player)` / `.SetBlocking(player, bool)`. None of these are wired to the current combat scripts yet — that's M3's job.
+**API used by M3-03/M3-04's CombatService — now a `Combatant` (`Player | Model`), not just a Player (REVIEW-M3-04 H1):** `HealthService.TakeDamage(combatant, amount, source?)`, `.SpendBlock(combatant, amount): boolean`, `.SetTier(combatant, tier)`, `.SetBlocking(combatant, bool)`, `.IsBlocking(combatant)`. `CombatService.healthCombatant(character)` resolves which identity is real for a given character Model (`Players:GetPlayerFromCharacter(character) or character`), so a Player and an NPC are never mixed for the same combatant. `.SetTier` is called on every hit dealt or taken (`"Combat"`, falling back to `"Idle"` after `Config.Health.CombatTierSeconds`) and whenever `Knocked` starts/ends (`"Knocked"`, then back to `"Combat"`/`"Idle"` on recovery) — for an NPC too, not just a Player. `.SetBlocking` follows the `Block` status directly (one `StatusService.Changed` subscriber in `CombatService`, not scattered call sites); `Blocking` itself is still fully `StatusService`'s `Block` status (`Has(character, "Block")`), `HealthService.IsBlocking` is unused by combat (nothing needs the boolean from this side, only the meter).
 
-**⚠ Known gap until M3:** the old `IntFold.BlockInt`/`MaxBlockHpInt` Values (created by `InteractionsDesign.server.luau`'s character setup, read by the not-yet-removed `StarterGui/HUD/BlockHandler.client.luau`) are **not** bridged to the new `Block`/`MaxBlock` attributes — `HealthService`'s block state is a clean, independent system, and the old combat block-break logic still writes `IntFold.BlockInt` directly. Since `BlockHealthRegen.server.luau` is removed, nothing regenerates `IntFold.BlockInt` any more; the old block HP bar will read as frozen until M3 rewires combat to `HealthService`, or M2-04 finishes removing `BlockHandler.client.luau` (already on the M2 plan's removal list).
+**Gap closed by M3-03:** the old `IntFold.BlockInt`/`MaxBlockHpInt` Values are still not bridged to the new `Block`/`MaxBlock` attributes (nothing recreates `IntFold.BlockInt` any more — `InteractionsDesign.server.luau`, which used to, is deleted). The old block HP bar (`StarterGui/HUD/BlockHandler.client.luau`) stays frozen until M2-04's removal of that file actually lands, or something ports it to the `Block`/`MaxBlock` attributes.
+
+**NPC registration (REVIEW-M3-04 H1).** `HealthService.Register(character: Model, opts: {maxHealth: number}?)` / `.Unregister(character)` is the parallel entry point `NpcService.setupNpc` calls — same shared state (`active`/`tierState`/`blockingState`/`blockAmount`), same regen loop, same attribute names, just written onto the NPC's own character Model instead of a Player, and `MaxHealth` given directly (`Config.Npc.MaxHealth[npcType]`) instead of computed from height/rank. The Player path (`PlayerService.Ready` → `setupCharacter`) is untouched. Every public function (`TakeDamage`/`SetTier`/`SpendBlock`/`IsBlocking`/`SetBlocking`) takes either — an NPC takes damage, spends its block meter and gets regen'd through the **exact same code**, not a parallel implementation.
 
 **Dev commands (section 16):** `.hp <n> [player]`, `.tier <Idle|Combat|Knocked> [player]`.
 
 **Files:** `SSS/Server/Services/HealthService.luau`.
 **Removed (TRIAGE #14):** `SCS/Health.server.luau`, `SCS/BlockHealthRegen.server.luau`.
 **Depends on:** `DataService` (`Character.Height`, `Progress.Magoi`/`GoldRukh`/`BlackRukh`/`Epithet`, `Character.Gender`), `PlayerService.Ready`, `Shared/Data/Ranks`, `Shared/Data/Alignment`, `DevService.Register`/`.ResolvePlayer`.
-**Depended on by:** the HUD (`Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` attributes, plus `Humanoid.Health`/`MaxHealth` directly) and the menu (`Rank`/`Epithet`/`Alignment` attributes); M3 combat will call the API above.
+**Depended on by:** the HUD (`Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` attributes, plus `Humanoid.Health`/`MaxHealth` directly) and the menu (`Rank`/`Epithet`/`Alignment` attributes) for a player; an NPC's own character attributes for whatever reads those later. M3-03's `CombatService` calls the API above for both; M3-04's `NpcService` calls `.Register`/`.Unregister`.
 
 **Not in use:** `RS/Modules/Combat/LightCombat.luau` and `BasicSwordCombat.luau` are an older server-side combat design. Nothing requires them, and they would error if something did: they require `SSS.Services.DamageService`, which doesn't exist.
 
 ---
 
-## 10. Effects (status markers)
+## 10. Status effects — rebuilt M3-01 (TRIAGE #13, fixes AUDIT M18)
 
-**What it does.** A shared convention rather than one script. Status is shown by putting a named Value in `character.Effects`, and other scripts react when it's added or removed.
+**What it does.** `StatusService` is now the one owner of every combat status: `Hit`, `Stun`, `Knocked`, `Ragdoll`, `Block`, `BlockBroken`, `TrueStun`. It's keyed by the combatant's **character Model**, never by Player — NPCs are combatants exactly like players (Bryan, 2026-09-27), so nothing in this service may assume a Player exists. A player is registered automatically when `PlayerService.Ready` fires; M3-04's `NpcService` registers NPCs the same way.
 
-| Marker | Added by | Effect |
-|---|---|---|
-| `Hit` | DamageHandler | stagger animation, hit sound and particle, hurt face; cancels your swing or block |
-| `Stun` | DamageHandler, parry | blocks attacking |
-| `Knocked` | DamageHandler | ragdoll, blind screen, input freeze; removed by Health regen |
-| `Ragdoll` | EffectsService | physics ragdoll, knocked-out face |
-| `Block` | Blocking remote | blocking; value 1 = parry window |
-| `BlockBroken` | InteractionsDesign | adds `TrueStun` for 3 s |
-| `TrueStun` | EffectsService | speed 0, no jumping |
-| `BigFreezeInput` / `FreezeInput` / `ActionFreezeInput` | EffectsService | client input lock (`InputHandler`) |
-| `Reading`, `OnMission` | MissionHandler | mission state |
-| `MutedStep`, `Hungry`, `CombatTagged`, `FireBurn`, `Bleed` | checked for, but nothing creates them now, except `Hungry`, which only the disabled Fear&Hunger script creates |
+**API:**
+- `StatusService.Register(character, owner: Player?)` / `.Unregister(character)` — set up or tear down a combatant's status table. Safe to call more than once; `Unregister` on an unregistered or already-gone character is a no-op, never an error (AUDIT M18).
+- `StatusService.Apply(character, status, duration?, data?)` — applies a status. With a `duration` (seconds), it auto-expires on one shared loop (0.1 s tick, not a `task.delay` per status: no leaked threads on respawn). Without one, it stays until `Remove` is called explicitly (e.g. `Block`, which CombatService removes on `Block(false)`). Re-applying an already-active status refreshes its duration and `data` (and the bridge marker below) without re-firing `Changed`, since the active/inactive state itself didn't change.
+- `StatusService.Remove(character, status)` — clears it early. No-op if it isn't active or the character is already gone.
+- `StatusService.Has(character, status): boolean`, `.Get(character, status): StatusInfo?` (`{ expiresAt: number?, duration: number?, data: any? }`).
+- `StatusService.Changed` (`RBXScriptSignal`, fires `(character, status, active)`) — only on an actual active/inactive transition, not on a refresh.
 
-**Files:** `SSS/Services/EffectsService.server.luau`, `SCS/Scripts/InputHandler.client.luau` (input freezes, and posting ForcedChat lines to chat).
+**Character attributes** (client-readable, same cheap-replication pattern as `HealthService`'s player attributes): `Stunned` ← `Stun`, `Knocked` ← `Knocked`, `Blocking` ← `Block`, `TrueStunned` ← `TrueStun`. `Hit` and `BlockBroken` don't get an attribute (nothing client-side reads them directly yet).
+
+**Bridge to the old markers (kept until M3-03/M3-06 replace their readers).** Every `Apply`/`Remove` also creates/destroys the matching Value under `character.Effects`, with the same Name/ClassName/Value semantics the old `DamageHandler`/`InteractionsDesign`/`EffectsService` used, so old readers (missions, regions, and `EffectsService.server.luau`'s own ragdoll/blind-screen/sound/TrueStun reactions, still unmodified and still running) keep working:
+
+| Marker | Class | Value | Notes |
+|---|---|---|---|
+| `Hit` | StringValue | `data.kind` or `"Fist"` | old code always wrote `"Fist"` regardless of weapon |
+| `Stun` | StringValue | (unset) | |
+| `Knocked` | IntValue | `math.ceil(duration)` | a child StringValue named after the attacker (`data.by`) if given, same as the old "personKnocker" pattern. `HealthService`'s old independent revive countdown is gone (M3-03, REVIEW-M3-03 L6) — `StatusService`/`CombatService` are the sole authority on when a knockout ends |
+| `Ragdoll` | IntValue | (unset) | |
+| `Block` | IntValue | `data.value` or `1` | `StatusService` itself flips it 1→0 on the shared loop, `Combat.Block.parryWindow` seconds after Apply — a caller (CombatService, M3-03) never has to re-Apply just to end the parry window (REVIEW-M3-01 L4) |
+| `BlockBroken` | IntValue | (unset) | |
+| `TrueStun` | StringValue | (unset) | |
+
+`Hit`'s marker is destroyed and recreated on **every** Apply, even while one is already active (REVIEW-M3-01 M1): several old readers (`EffectsService`'s sound/particle, `FaceControl`'s hurt face, `PhysicalHandler`'s stagger, the FragilePackage mission) key off `ChildAdded`, and reusing one instance across a quick second hit (two attackers, a player and an NPC) would go silent after the first.
+
+`StatusService` only owns the markers; it does not ragdoll, blind the screen, or play sounds itself — `EffectsService.server.luau` still reacts to these same markers exactly as before (unchanged this milestone; M3-06 replaces its client-facing half).
+
+**The bridge is two-way (REVIEW-M3-01 M2).** `StatusService` watches `Effects.ChildRemoved`: if a bridged marker disappears and it wasn't StatusService's own doing, it calls `Remove` on that status too, so `Has`/the attribute never go stale relative to the marker some other script just deleted. (As of M3-03, the scripts that used to independently destroy these markers — `HealthService`'s old revive countdown on `Knocked`, `InteractionsDesign`'s parry/block-break paths on `Block` — are gone; `EffectsService`'s trimmed-down `knockedFunc` still destroys its own `Ragdoll` marker when `Knocked` is removed, which is exactly this two-way bridge at work, not a conflict.)
+
+**The Effects folder itself (REVIEW-M3-01 H1).** For a **player** (`owner ~= nil`), `StatusService` only ever *waits* for `EffectsService.server.luau` to create `character.Effects` (which can take several seconds after `PlayerService.Ready` — it waits on `AppearenceLoaded` on its own schedule) and never creates one itself; it gives up only when the character leaves. Creating one early would leave `EffectsService` to add a *second* "Effects" folder later, orphaning whichever one its own ragdoll/sound/`TrueStun` hooks ended up connected to. For an **NPC** (`owner == nil`, nothing else ever creates one), it waits a bounded 5 s and creates the folder itself if it's still missing. Either way this never yields `Register`/`Apply`'s caller — resolution happens in the background, and any status Applied before it resolves is backfilled with its marker once the folder is found or created (`Has`/the client attributes work immediately regardless).
+
+Every active status is also cleared through the real `Remove` (bridge marker destroyed, `Changed` fired) on `Unregister` and on the combatant's `Humanoid.Died`, not left to linger on a dead or deregistered character (REVIEW-M3-01 M3/L1).
+
+**Other markers still handled the old way** (unchanged, not part of this rebuild): `BigFreezeInput`/`FreezeInput`/`ActionFreezeInput` (input locks, `EffectsService` + `InputHandler.client.luau`), `Reading`/`OnMission` (MissionHandler), `MutedStep`/`Hungry`/`CombatTagged`/`FireBurn`/`Bleed` (checked for, but nothing creates them except `Hungry` via the disabled Fear&Hunger script).
+
+**Files:** `Shared/Data/Combat.luau` (move sets, block/dash/run/knockout/stagger numbers — data only, no logic), `Server/Services/StatusService.luau`.
+**Depends on:** `PlayerService.Ready`/`Players.PlayerRemoving` (player registration only; NPC registration is M3-04's job).
+**Depended on by:** M3-02's `MovementService` (subscribes to `Changed` to clear `Run` on a stun/knock), M3-03's `CombatService` (the only service that decides *when* to Apply/Remove a status), `EffectsService.server.luau` (still reacts to the bridge markers, unchanged).
+**Not yet touched this milestone:** `Services/EffectsService.server.luau` and `Services/DamageHandler.luau` (M3-03 replaces both).
 
 ---
 
@@ -319,10 +344,16 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 
 ---
 
-## 12. Footsteps
+## 12. Footsteps — moved M3-03 (same behavior as the old code)
 
-**What it does.** The run animation and `Animate` fire `MiscRemotes.Footstep("Right" | "Left" | "Jump")` on each step. The server plays a step sound that matches the floor material (stone, dirt, wood) and leaves fading footprint blocks on sand and mud.
-**Files:** `SSS/Interactions/InteractionsHandler.server.luau`, `SCS/Animate/init.client.luau` (Roblox's Animate with footstep hooks added), `SCS/Scripts/PhysicalHandler.client.luau`, `RS/Modules/ColorMath.luau` (third-party color math, used to darken footprints).
+**What it does.** `Animate` fires `MiscRemotes.Footstep("Right" | "Left" | "Jump")` on each step (still the old, unvalidated remote — TRIAGE #16 rebuilds this properly in M6). The server plays a step sound that matches the floor material (stone, dirt, wood), checking `IntFold["Running?"]` (now maintained by M3-02's `MovementService`) for volume and `character.Effects.MutedStep` to suppress it. Separately, on **every** step call (not only a jump), it raycasts straight down from the Torso and drops a fading footprint block if that specific raycast hits sand or mud — independent of whatever the sound decision above used (REVIEW-M3-03 M6: the first port of this only ever ran that raycast for a jump, matching the outer sound-material check instead of the old code's own inner, unconditional one — footprints on an ordinary grounded step over sand silently stopped appearing).
+
+Moved out of `Interactions/InteractionsHandler.server.luau` into its own `FootstepService.luau` when that file was deleted for M3-03's combat rebuild (TRIAGE #10) — the footstep code was the one piece of that file that still worked and had nothing to do with combat.
+
+**⚠** `PhysicalHandler.client.luau` (which used to fire `MiscRemotes.Footstep` on each step, alongside its now-deleted combat/movement input) has been fully broken since M3-02 removed `Remotes.Running`, its very first top-level lookup — the whole script errors at load, so **no client currently sends footstep events at all**. `FootstepService` itself is unchanged and correct; it just has nothing to react to until M3-05 replaces `PhysicalHandler.client.luau`.
+
+**Files:** `Server/Services/FootstepService.luau`, `SCS/Animate/init.client.luau` (Roblox's Animate with footstep hooks added, unchanged), `Modules/ColorMath.luau` (third-party color math, used to darken footprints, unchanged).
+**Removed:** nothing new; the code lived inside `Interactions/InteractionsHandler.server.luau`, deleted by M3-03 as a whole for its combat parts.
 
 ---
 
@@ -341,12 +372,30 @@ Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Q
 
 ---
 
-## 15. NPCs
+## 15. NPCs — rebuilt M3-04 (TRIAGE #20, fixes AUDIT M19)
 
-**What it does.** Two training dummies at `Workspace.NPC.DUMMY` chase a target with pathfinding within 40 studs and give up beyond that. InteractionsDesign and EffectsService give NPCs the same speed and effects handling as players.
-**Files:** `RS/Modules/NPController.luau`, plus `Workspace.NPC.DUMMY.NPCFetch` and `Health` (Studio-only).
+**What it does.** Behavior-tree NPCs (Bryan, 2026-09-27: "Man was bad. Use behavior trees if at all possible. NPCs should be treated like normal players but with obvious AI controllers"), not ported from the old `NPController`/`NPCFetch` design at all — only its numbers (chase/give-up/attack range) carried over. `NpcService` finds NPC models (children of `Workspace.NPC`, or anything tagged `"NPC"` via `CollectionService`) with a `Humanoid`, reads an `NpcType` attribute or StringValue (`"Dummy"` or `"Target"`, defaulting to `"Dummy"`), and registers each one with `HealthService`, `StatusService`, `MovementService` and `CombatService` **exactly the way a player's character does on `PlayerService.Ready`** — an NPC takes damage, blocks, staggers, gets knocked and recovers through the identical code path, keyed by its character Model, never a Player (REVIEW-M3-04 H1: `HealthService.Register(character, {maxHealth})` gives it the same regen loop and `TakeDamage`/`SpendBlock` a Player gets, not a separate NPC-only health implementation).
 
-The two `NPCFetch` copies have the same code but different settings. `npcType = "Dummy"` only plays walk and run animations and flinches when hit. `npcType = "Target"` also wanders, chases the nearest player within 30 studs (using NPController), and punches within 4 studs through `DamageHandler.damage` (3 damage). `Health` is Roblox's stock regen script. **⚠** Once the Target dummy loses its target or gets knocked out, it never starts again.
+**`Shared/BehaviorTree.luau`.** A small, generic BT: `Selector` (first non-`Failure` child wins), `Sequence` (first non-`Success` child wins), `Condition(fn)`, `Action(fn)` (the only node a tree author can return `"Running"` from directly), `Inverter`, `Wait(seconds)`, `Cooldown(seconds, child)`. Every factory returns a fresh `Node` (a table holding one `Tick` function) with its own closure state, so `NpcService/Trees.luau`'s `BuildDummy()`/`BuildTarget()` build one tree **per NPC** — a `Cooldown`'s timer never leaks between two NPCs sharing the same tree shape.
+
+**Trees (`NpcService/Trees.luau`):**
+- **Dummy** — `Selector( Sequence(IsKnocked, Wait), Sequence(WasHit, Flinch), Idle )`. Matches the old behavior exactly: no chasing, no wandering, just a flinch reaction and standing still otherwise.
+- **Target** — `Selector( Sequence(IsKnocked, Wait), Sequence(HasTarget, Selector( Sequence(InReach, Cooldown(AttackCooldown, Attack)), Sequence(TargetWithin(GiveUpRadius), ChaseStep), GiveUp )), AcquireTarget, Wander )`. `Attack` calls `CombatService.Attack(character)` directly (the same entry point `Attack()` uses for a player); `ChaseStep` uses `PathfindingService`, re-planning at most every 2 seconds (a small path cache) and falling back to a direct `Humanoid:MoveTo` if pathing fails; `AcquireTarget` picks the nearest living, non-`Knocked` player within `ChaseRadius`; `GiveUp` clears the target and path state; `Wander` roams a random point within `WanderRadius` of wherever the NPC started. **Fixes AUDIT M19**: giving up never leaves a permanent flag — the very next tick's `AcquireTarget`/`Wander` can pick a new target right away, and losing the character model entirely (below) gets a fresh `AiController` with no memory of the old chase at all, not a start "gave up forever."
+
+**`NpcService/AiController.luau`.** Holds one NPC's blackboard (character, humanoid, root part, npc type, current target, path/waypoint cache, wander goal) and its tree; `Tick()` just runs the tree once. One shared loop in `NpcService` ticks every registered NPC's `AiController` at `Config.Npc.TickSeconds` (0.2 s) — not a thread per NPC, same reasoning as `StatusService`'s own shared expiry loop.
+
+**Respawn.** At setup, each NPC model is cloned once into `ServerStorage.NpcTemplates` (keyed by its own `Name`) before anything else touches it — the dummy's own art is never modified, only read. If the live model is ever destroyed (a mission, a test, `.npc reset`), `NpcService` re-clones the template at the same spot and registers the fresh copy exactly like a new NPC — a clean restart, not a revive of old state.
+
+**Config:** `Config.Npc` in `Shared/Config.luau` — `TickSeconds = 0.2`, `ChaseRadius = 30`, `GiveUpRadius = 40`, `AttackRange = 4`, `AttackCooldown = 1.4`, `WanderRadius = 12`, `MaxHealth = { Dummy = 100, Target = 100 }` (NPCs get health from here, via `HealthService.Register`, not the player rank ladder), `Animations = { Walk = "", Run = "", Flinch = "" }` (asset id fallback, see below).
+
+**⚠ Animations still need Bryan's asset ids.** The old `NPCFetch`/`Health` scripts (Studio-only, already deleted by Bryan, never in this repo) are the only place the walk/run/flinch animation asset IDs ever lived — there's no source to port them from. `Trees.luau`'s `playAnimationIfPresent` tries an `Animation` instance by name (`"Walk"`/`"Run"`/`"Flinch"`) on the NPC model first, then falls back to an asset id in `Config.Npc.Animations = {Walk = "", Run = "", Flinch = ""}` (REVIEW-M3-04 L2, empty by default) — **Bryan/the playtester needs to check in Studio** whether the dummy models already have named Animation instances, and either way, fill in whichever one's missing (an instance on the art, or the id in `Config.Npc.Animations`). Movement, chasing, attacking and reacting to hits all work regardless — this only affects what animation plays while doing it.
+
+**Dev commands (section 16):** `.npc list`, `.npc reset`, `.npc type <name> Dummy|Target`.
+
+**Files:** `Shared/BehaviorTree.luau`, `Server/Services/NpcService/init.luau`, `Server/Services/NpcService/AiController.luau`, `Server/Services/NpcService/Trees.luau`.
+**Removed (TRIAGE #20):** `RS/Modules/NPController.luau` (nothing required it once the old Studio-only `NPCFetch`/`Health` scripts that used it were already gone).
+**Depends on:** `HealthService.Register`/`.Unregister` (REVIEW-M3-04 H1), `StatusService`, `MovementService`, `CombatService` (all keyed by character Model, NPC-safe by M3-01's own design rule), `Shared/Data/Combat` (Fist move set, via `CombatService`).
+**Depended on by:** nothing yet; a future mission/bounty system could read `StatusService.Has(npc, "Knocked")` the same way it would for a player.
 
 ---
 
@@ -379,6 +428,12 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 | `.heart [fatal] [player]` | fires a heart attack right now (`AgeService.ForceHeartAttack`); put `fatal` first to make it lethal |
 | `.hp <n> [player]` | sets current health (`HealthService`) |
 | `.tier <Idle\|Combat\|Knocked> [player]` | sets the regen tier (`HealthService.SetTier`) |
+| `.combat log on\|off` | logs every hit decision (swing/hit/blocked/parried/broken/knocked) to Output (`CombatService`) |
+| `.knock [player]` | forces a knockout (`StatusService.Apply(..., "Knocked", ...)`) |
+| `.stun <s> [player]` | forces a `Stun` for `s` seconds |
+| `.npc list` | lists every registered NPC, its type and current health |
+| `.npc reset` | destroys every live NPC (each respawns fresh from its `ServerStorage.NpcTemplates` copy) |
+| `.npc type <name> Dummy\|Target` | changes an NPC's type at runtime and rebuilds its `AiController` |
 
 Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 

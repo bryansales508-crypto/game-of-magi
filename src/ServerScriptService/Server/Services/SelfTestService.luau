@@ -6,6 +6,8 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
@@ -23,6 +25,13 @@ local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
+local StatusService = require(script.Parent.StatusService)
+local MovementService = require(script.Parent.MovementService)
+local CombatService = require(script.Parent.CombatService)
+local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
+local NpcService = require(script.Parent.NpcService)
+local NpcTrees = require(script.Parent.NpcService.Trees)
+local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -576,6 +585,628 @@ local function testHealthService(results: { Check })
 		expect(results, "HealthService: RegenAmount Combat over 5s (no regen in combat)", HealthService.RegenAmount("Combat", 5) == 0)
 		expect(results, "HealthService: RegenAmount Knocked over 5s", HealthService.RegenAmount("Knocked", 5) == 5)
 	end
+
+	-- REVIEW-M3-04 H1: an NPC registered with HealthService takes damage
+	-- through TakeDamage (not a direct Humanoid.Health write) and is
+	-- knocked at 0 exactly like a player - the identical CombatService.
+	-- ApplyHit path, just with a Model instead of a Player behind it.
+	do
+		local scratch = Instance.new("Folder")
+		scratch.Name = "SelfTestHealthServiceNpc"
+		scratch.Parent = ServerStorage
+
+		local attacker = Instance.new("Model")
+		attacker.Parent = scratch
+		local attackerHrp = Instance.new("Part")
+		attackerHrp.Name = "HumanoidRootPart"
+		attackerHrp.Anchored = true
+		attackerHrp.Parent = attacker
+		Instance.new("Humanoid").Parent = attacker
+
+		local npc = Instance.new("Model")
+		npc.Name = "SelfTestHealthServiceNpc"
+		npc.Parent = scratch
+		local npcHrp = Instance.new("Part")
+		npcHrp.Name = "HumanoidRootPart"
+		npcHrp.Anchored = true
+		npcHrp.Parent = npc
+		local npcHumanoid = Instance.new("Humanoid")
+		npcHumanoid.Parent = npc
+
+		HealthService.Register(npc, { maxHealth = 20 })
+		expect(results, "HealthService: Register sets an NPC's MaxHealth/Health", npcHumanoid.MaxHealth == 20 and npcHumanoid.Health == 20)
+
+		StatusService.Register(npc)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(npc, nil, "Fist")
+
+		local jab = Combat.move("Fist", 1) :: Combat.Move -- 5 damage
+		CombatService.ApplyHit(attacker, npc, jab, 1)
+		expect(
+			results,
+			"HealthService: an NPC's non-lethal hit goes through TakeDamage",
+			npcHumanoid.Health == 15 and npc:GetAttribute("Health") == 15
+		)
+
+		npcHumanoid.Health = 3 -- less than the next hit's damage
+		CombatService.ApplyHit(attacker, npc, jab, 1)
+		expect(
+			results,
+			"HealthService: a lethal hit still knocks an NPC out instead of killing it",
+			npcHumanoid.Health == 1 and StatusService.Has(npc, "Knocked")
+		)
+
+		HealthService.Unregister(npc)
+		StatusService.Unregister(npc)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(npc)
+		scratch:Destroy()
+	end
+end
+
+-- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
+-- mirroring, exercised against plain (never PlayerService.Ready'd) Model
+-- instances rather than a real character. REVIEW-M3-01 H2: the test
+-- models are parented under a scratch ServerStorage folder (destroyed at
+-- the end) instead of left with no Parent at all, so the shared expiry
+-- loop (which unregisters anything with Parent == nil) doesn't yank them
+-- out from under the test mid-way through.
+local function testStatusService(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestStatusService"
+	scratch.Parent = ServerStorage
+
+	do
+		local character = Instance.new("Model")
+		character.Parent = scratch
+
+		local activeFires, inactiveFires = 0, 0
+		local conn = StatusService.Changed:Connect(function(firedCharacter, status, active)
+			if firedCharacter == character and status == "Stun" then
+				if active then
+					activeFires += 1
+				else
+					inactiveFires += 1
+				end
+			end
+		end)
+
+		StatusService.Register(character)
+
+		StatusService.Apply(character, "Stun", 0.15)
+		expect(results, "StatusService: Apply makes Has true", StatusService.Has(character, "Stun"))
+		expect(
+			results,
+			"StatusService: attribute mirrors an active status",
+			character:GetAttribute("Stunned") == true
+		)
+		expect(results, "StatusService: Changed fires exactly once on Apply", activeFires == 1)
+
+		-- Refresh: re-Apply before expiry should push the expiry back out,
+		-- so waiting past the ORIGINAL duration alone must not clear it,
+		-- and must not re-fire Changed (the active state didn't change).
+		task.wait(0.1)
+		StatusService.Apply(character, "Stun", 0.15)
+		task.wait(0.1)
+		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
+		expect(results, "StatusService: a refreshing re-Apply doesn't re-fire Changed", activeFires == 1)
+
+		task.wait(0.3)
+		expect(results, "StatusService: an expired duration clears Has", not StatusService.Has(character, "Stun"))
+		expect(
+			results,
+			"StatusService: attribute clears once the status expires",
+			character:GetAttribute("Stunned") == false
+		)
+		expect(results, "StatusService: Changed fires exactly once on expiry", inactiveFires == 1)
+
+		conn:Disconnect()
+
+		-- REVIEW-M3-01 L4: Block's parry window (value 1) flips itself to
+		-- the block hold (value 0) on the shared loop, without anything
+		-- re-Applying.
+		StatusService.Apply(character, "Block", nil, { value = 1 })
+		expect(results, "StatusService: Has is true right after Apply", StatusService.Has(character, "Block"))
+
+		task.wait(Combat.Block.parryWindow + 0.15)
+		local blockInfo = StatusService.Get(character, "Block")
+		expect(
+			results,
+			"StatusService: Block's parry window flips itself to a block hold (value 0)",
+			StatusService.Has(character, "Block") and blockInfo ~= nil and (blockInfo.data :: any).value == 0
+		)
+
+		StatusService.Remove(character, "Block")
+		expect(results, "StatusService: Has is false right after Remove", not StatusService.Has(character, "Block"))
+
+		StatusService.Unregister(character)
+		character:Destroy()
+	end
+
+	-- AUDIT M18: applying to (or removing from, or querying) a character
+	-- that's already gone must never error.
+	do
+		local character = Instance.new("Model")
+		character.Parent = scratch
+		character:Destroy()
+
+		local okApply = pcall(StatusService.Apply, character, "Stun", 1)
+		expect(results, "StatusService: Apply on a destroyed model doesn't error", okApply)
+
+		local okRemove = pcall(StatusService.Remove, character, "Stun")
+		expect(results, "StatusService: Remove on a destroyed model doesn't error", okRemove)
+
+		local okHas, hasResult = pcall(StatusService.Has, character, "Stun")
+		expect(
+			results,
+			"StatusService: Has on a destroyed model doesn't error and reports false",
+			okHas and hasResult == false
+		)
+	end
+
+	scratch:Destroy()
+end
+
+-- M3-02: MovementService's pure helpers (stack math, dash cooldown,
+-- low-health thresholds), the same "test the math directly" approach as
+-- HealthService's self-test.
+local function testMovementService(results: { Check })
+	do
+		expect(results, "MovementService: no modifiers is 1.0 (full speed)", MovementService.EffectiveMultiplier({}) == 1.0)
+		expect(
+			results,
+			"MovementService: the smallest active modifier wins",
+			MovementService.EffectiveMultiplier({ Run = 1.75, Block = 0.6 }) == 0.6
+		)
+		expect(
+			results,
+			"MovementService: a 0 modifier freezes",
+			MovementService.EffectiveMultiplier({ Run = 1.75, TrueStun = 0 }) == 0
+		)
+		expect(
+			results,
+			"MovementService: clearing the only modifier restores 1.0",
+			MovementService.EffectiveMultiplier({}) == 1.0
+		)
+	end
+
+	do
+		expect(
+			results,
+			"MovementService: CanDash with no prior dash is allowed",
+			MovementService.CanDash(100, nil, 1.2)
+		)
+		expect(
+			results,
+			"MovementService: CanDash rejects a second dash inside the cooldown",
+			not MovementService.CanDash(100.5, 100, 1.2)
+		)
+		expect(
+			results,
+			"MovementService: CanDash allows a dash once the cooldown has fully elapsed",
+			MovementService.CanDash(101.2, 100, 1.2)
+		)
+	end
+
+	do
+		expect(
+			results,
+			"MovementService: LowHealthMult at full health (walking) is 1.0",
+			MovementService.LowHealthMult(false, 1) == 1.0
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at 0 health (walking) is a quarter",
+			MovementService.LowHealthMult(false, 0) == 0.25
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at full health (running) is Combat.Run.speedMult",
+			math.abs(MovementService.LowHealthMult(true, 1) - 1.75) < 1e-9
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult at 0 health (running) is half of Combat.Run.speedMult",
+			math.abs(MovementService.LowHealthMult(true, 0) - 0.875) < 1e-9
+		)
+		expect(
+			results,
+			"MovementService: LowHealthMult clamps an out-of-range ratio",
+			MovementService.LowHealthMult(false, 5) == 1.0 and MovementService.LowHealthMult(false, -5) == 0.25
+		)
+	end
+
+	-- REVIEW-M3-02 #3: the Dash bridge marker used to never clear
+	-- (ClearModifier bailed on a missing entry.modifiers entry, since the
+	-- marker was written directly through writeBridgeModifier instead of
+	-- SetModifier). IntFold/IntFold.MovementSpeed are pre-created here so
+	-- MovementService's own background bridge resolution (normally a
+	-- bounded real-time wait) resolves synchronously inside Register.
+	do
+		local scratch = Instance.new("Folder")
+		scratch.Name = "SelfTestMovementServiceDash"
+		scratch.Parent = ServerStorage
+
+		local character = Instance.new("Model")
+		character.Parent = scratch
+		local intFold = Instance.new("Folder")
+		intFold.Name = "IntFold"
+		intFold.Parent = character
+		local movementSpeed = Instance.new("Folder")
+		movementSpeed.Name = "MovementSpeed"
+		movementSpeed.Parent = intFold
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.CFrame = CFrame.new(0, 5, 0)
+		hrp.Parent = character
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = character
+
+		MovementService.Register(character)
+		local dashed = MovementService.Dash(character, 0, 1)
+		expect(results, "MovementService: Dash succeeds with no prior dash", dashed)
+		expect(
+			results,
+			"MovementService: Dash writes a transient IntFold.MovementSpeed.Dash bridge child",
+			movementSpeed:FindFirstChild("Dash") ~= nil
+		)
+
+		task.wait(Combat.Dash.duration + 0.1)
+		expect(
+			results,
+			"MovementService: the Dash bridge child clears itself after the dash duration",
+			movementSpeed:FindFirstChild("Dash") == nil
+		)
+
+		MovementService.Unregister(character)
+		character:Destroy()
+		scratch:Destroy()
+	end
+end
+
+-- M3-03: CombatService's pure combo/facing/block-decision helpers, the
+-- hit-check geometry against fake models parented in Workspace (spatial
+-- queries only find parts actually in the DataModel), knockout at 0 HP,
+-- and a stunned character's Attack being rejected. Block's meter-drain
+-- (HealthService.SpendBlock) needs a real Player and is exercised by the
+-- playtester instead - ResolveBlock's own pure test below covers the
+-- decision logic that path feeds into.
+local function testCombatService(results: { Check })
+	do
+		expect(results, "CombatService: NextComboStep continues within the window", CombatService.NextComboStep(1, 0.9, 100, 100.5) == 2)
+		expect(
+			results,
+			"CombatService: NextComboStep resets once the window has passed",
+			CombatService.NextComboStep(2, 0.9, 100, 101.5) == 1
+		)
+		expect(results, "CombatService: NextComboStep resets with no prior hit", CombatService.NextComboStep(2, 0.9, nil, 100) == 1)
+	end
+
+	do
+		expect(
+			results,
+			"CombatService: IsFacingAttacker true when the target looks back at the attacker",
+			CombatService.IsFacingAttacker(Vector3.new(0, 0, -1), Vector3.new(0, 0, 2), Vector3.new(0, 0, 0))
+		)
+		expect(
+			results,
+			"CombatService: IsFacingAttacker false when the target faces away",
+			not CombatService.IsFacingAttacker(Vector3.new(0, 0, 1), Vector3.new(0, 0, 2), Vector3.new(0, 0, 0))
+		)
+	end
+
+	do
+		expect(results, "CombatService: ResolveBlock parries when not on cooldown", CombatService.ResolveBlock(true, false, true) == "Parried")
+		expect(
+			results,
+			"CombatService: ResolveBlock (AUDIT H5) falls back to a held block on parry cooldown",
+			CombatService.ResolveBlock(true, true, true) == "Blocked"
+		)
+		expect(results, "CombatService: ResolveBlock holds while the meter lasts", CombatService.ResolveBlock(false, false, true) == "Blocked")
+		expect(
+			results,
+			"CombatService: ResolveBlock breaks once the meter is empty",
+			CombatService.ResolveBlock(false, false, false) == "BlockBroken"
+		)
+	end
+
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestCombatService"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+
+		model.Parent = scratch
+		return model
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestAttacker", Vector3.new(500, 5, 0), Vector3.new(500, 5, 1))
+		local move = Combat.move("Fist", 1) :: Combat.Move
+
+		local inRange = buildFakeCombatant("SelfTestInRange", Vector3.new(500, 5, 3), Vector3.new(500, 5, 4))
+		local outOfRange = buildFakeCombatant("SelfTestOutOfRange", Vector3.new(500, 5, 50), Vector3.new(500, 5, 51))
+		local behind = buildFakeCombatant("SelfTestBehind", Vector3.new(500, 5, -3), Vector3.new(500, 5, -4))
+
+		-- REVIEW-M3-03 M5: only a registered combatant can be hit.
+		CombatService.Register(inRange, nil, "Fist")
+		CombatService.Register(outOfRange, nil, "Fist")
+		CombatService.Register(behind, nil, "Fist")
+
+		expect(results, "CombatService: FindTarget finds a combatant in range", CombatService.FindTarget(attacker, move) == inRange)
+
+		inRange:Destroy()
+		expect(
+			results,
+			"CombatService: FindTarget finds neither an out-of-range nor a behind-the-attacker combatant",
+			CombatService.FindTarget(attacker, move) == nil
+		)
+
+		CombatService.Unregister(inRange)
+		CombatService.Unregister(outOfRange)
+		CombatService.Unregister(behind)
+		outOfRange:Destroy()
+		behind:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestUnregisteredAttacker", Vector3.new(700, 5, 0), Vector3.new(700, 5, 1))
+		local move = Combat.move("Fist", 1) :: Combat.Move
+		local unregisteredTarget = buildFakeCombatant("SelfTestUnregisteredTarget", Vector3.new(700, 5, 3), Vector3.new(700, 5, 4))
+
+		expect(
+			results,
+			"CombatService: FindTarget (M5) never hits an unregistered combatant",
+			CombatService.FindTarget(attacker, move) == nil
+		)
+
+		unregisteredTarget:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestKnockoutAttacker", Vector3.new(600, 5, 0), Vector3.new(600, 5, 1))
+		local target = buildFakeCombatant("SelfTestKnockoutTarget", Vector3.new(600, 5, 3), Vector3.new(600, 5, 0))
+		StatusService.Register(target)
+
+		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
+		targetHumanoid.Health = 3 -- less than Jab's 5 damage
+
+		local jab = Combat.move("Fist", 1) :: Combat.Move
+		CombatService.ApplyHit(attacker, target, jab, 1)
+
+		expect(results, "CombatService: a lethal hit knocks out instead of killing", targetHumanoid.Health == 1)
+		expect(results, "CombatService: knockout applies the Knocked status", StatusService.Has(target, "Knocked"))
+
+		StatusService.Unregister(target)
+		target:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local character = Instance.new("Model")
+		character.Parent = scratch
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.Parent = character
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = character
+
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		StatusService.Apply(character, "Stun", 5)
+
+		CombatService.Attack(character)
+		expect(
+			results,
+			"CombatService: Attack while stunned is rejected",
+			(character:GetAttribute("NextAttackAt") :: number) == 0
+		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	-- REVIEW-M3-03 L8 / REVIEW-M3-04 L1: the full parry-window -> cooldown
+	-- -> held -> broken sequence, against a fake (no-Player) blocker -
+	-- which only works at all because a target with no real Player gets
+	-- its own HealthService-backed block meter now (via HealthService.
+	-- Register, the same as NpcService gives a real NPC).
+	do
+		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
+		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
+		HealthService.Register(blocker, { maxHealth = 100 })
+		StatusService.Register(attacker)
+		StatusService.Register(blocker)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(blocker, nil, "Fist")
+
+		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
+		local jab = Combat.move("Fist", 1) :: Combat.Move
+
+		StatusService.Apply(blocker, "Block", nil, { value = 1 })
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1)
+		expect(
+			results,
+			"CombatService: a parry stuns the attacker and costs no block HP (M1)",
+			StatusService.Has(attacker, "Stun") and blockerHumanoid.Health == 100
+		)
+
+		StatusService.Remove(attacker, "Stun")
+		CombatService.ApplyHit(attacker, blocker, jab, 1)
+		expect(
+			results,
+			"CombatService: a second hit right after a parry can't parry again (AUDIT H5 cooldown) and drains the meter instead",
+			not StatusService.Has(attacker, "Stun") and StatusService.Has(blocker, "Block") and blockerHumanoid.Health == 100
+		)
+
+		task.wait(Combat.Block.parryCooldown + Combat.Block.parryWindow + 0.1)
+		local blockInfoAfter = StatusService.Get(blocker, "Block")
+		expect(
+			results,
+			"CombatService: once the cooldown and parry window elapse, a hit just holds the block",
+			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
+		)
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 100 -> 65
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 65 -> 30
+		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
+
+		CombatService.ApplyHit(attacker, blocker, jab, 1) -- 30 < 35: breaks
+		expect(results, "CombatService: the block breaks once a no-Player target's meter runs out (L8)", not StatusService.Has(blocker, "Block"))
+		expect(results, "CombatService: a broken block applies TrueStun", StatusService.Has(blocker, "TrueStun"))
+
+		HealthService.Unregister(blocker)
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(blocker)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(blocker)
+		attacker:Destroy()
+		blocker:Destroy()
+	end
+
+	scratch:Destroy()
+end
+
+-- M3-04: BehaviorTree node semantics (Selector short-circuit, Sequence
+-- failure, Running propagation, Cooldown), pure and self-contained - no
+-- Roblox instances needed, just counters and canned statuses.
+local function testBehaviorTree(results: { Check })
+	local function counted(status: BehaviorTree.Status): (BehaviorTree.Node, () -> number)
+		local calls = 0
+		local node: BehaviorTree.Node = BehaviorTree.Action(function(_bb: any): BehaviorTree.Status
+			calls += 1
+			return status
+		end)
+		return node, function()
+			return calls
+		end
+	end
+
+	do
+		local failing, failingCalls = counted("Failure")
+		local succeeding, succeedingCalls = counted("Success")
+		local untouched, untouchedCalls = counted("Success")
+		local selector = BehaviorTree.Selector({ failing, succeeding, untouched })
+
+		local status = selector.Tick({})
+		expect(results, "BehaviorTree: Selector returns the first non-Failure status", status == "Success")
+		expect(results, "BehaviorTree: Selector ticked the failing child", failingCalls() == 1)
+		expect(results, "BehaviorTree: Selector ticked the succeeding child", succeedingCalls() == 1)
+		expect(results, "BehaviorTree: Selector short-circuits before the untouched child", untouchedCalls() == 0)
+	end
+
+	do
+		local succeeding, succeedingCalls = counted("Success")
+		local failing, failingCalls = counted("Failure")
+		local untouched, untouchedCalls = counted("Success")
+		local sequence = BehaviorTree.Sequence({ succeeding, failing, untouched })
+
+		local status = sequence.Tick({})
+		expect(results, "BehaviorTree: Sequence returns the first non-Success status", status == "Failure")
+		expect(results, "BehaviorTree: Sequence ticked the succeeding child", succeedingCalls() == 1)
+		expect(results, "BehaviorTree: Sequence ticked the failing child", failingCalls() == 1)
+		expect(results, "BehaviorTree: Sequence short-circuits before the untouched child", untouchedCalls() == 0)
+	end
+
+	do
+		local running = counted("Running")
+		local selector = BehaviorTree.Selector({ running })
+		expect(results, "BehaviorTree: Selector propagates Running", selector.Tick({}) == "Running")
+
+		local sequence = BehaviorTree.Sequence({ running })
+		expect(results, "BehaviorTree: Sequence propagates Running", sequence.Tick({}) == "Running")
+	end
+
+	do
+		local succeeding, succeedingCalls = counted("Success")
+		local gated = BehaviorTree.Cooldown(0.15, succeeding)
+
+		expect(results, "BehaviorTree: Cooldown ticks its child the first time", gated.Tick({}) == "Success")
+		expect(results, "BehaviorTree: Cooldown blocks a second tick immediately after", gated.Tick({}) == "Failure")
+		expect(results, "BehaviorTree: Cooldown doesn't tick the child while gated", succeedingCalls() == 1)
+
+		task.wait(0.2)
+		expect(results, "BehaviorTree: Cooldown allows the child again once it elapses", gated.Tick({}) == "Success")
+		expect(results, "BehaviorTree: Cooldown ticked the child a second time once ready", succeedingCalls() == 2)
+	end
+end
+
+-- M3-04: the Target tree's give-up transition, driven with a fake
+-- blackboard (a plain table, not even a real AiController) and fake
+-- Model/Humanoid/HumanoidRootPart instances - StatusService.Has on an
+-- unregistered character is just false, so "IsKnocked" never gets in the
+-- way here.
+local function testNpcService(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestNpcService"
+	scratch.Parent = ServerStorage
+
+	local function buildFakeNpc(name: string, position: Vector3): (Model, Humanoid, BasePart)
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.CFrame = CFrame.new(position)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model, humanoid, hrp
+	end
+
+	do
+		local attacker, attackerHumanoid, attackerRoot = buildFakeNpc("SelfTestNpcAttacker", Vector3.new(0, 0, 0))
+		local farTarget = buildFakeNpc("SelfTestNpcFarTarget", Vector3.new(1000, 0, 0))
+
+		local blackboard: { target: Model?, [string]: any } = {
+			character = attacker,
+			humanoid = attackerHumanoid,
+			rootPart = attackerRoot,
+			npcType = "Target",
+			home = Vector3.new(0, 0, 0),
+			target = farTarget :: Model?,
+			wanderGoal = nil,
+			path = nil,
+			waypoints = nil,
+			waypointIndex = 1,
+			pathComputedAt = nil,
+		}
+
+		local tree = NpcTrees.BuildTarget()
+		tree.Tick(blackboard)
+
+		expect(results, "NpcService: the Target tree gives up on a target beyond GiveUpRadius", blackboard.target == nil)
+	end
+
+	do
+		expect(results, "NpcService: ResolveNpcType defaults to Dummy", NpcService.ResolveNpcType(Instance.new("Model")) == "Dummy")
+	end
+
+	scratch:Destroy()
 end
 
 local SelfTestService = {}
@@ -598,6 +1229,11 @@ function SelfTestService:Start()
 		testCharacterService(collected)
 		testAgeService(collected)
 		testHealthService(collected)
+		testStatusService(collected)
+		testMovementService(collected)
+		testCombatService(collected)
+		testBehaviorTree(collected)
+		testNpcService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

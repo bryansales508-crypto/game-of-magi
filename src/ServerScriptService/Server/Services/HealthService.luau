@@ -2,10 +2,12 @@
 -- Max health, health/block regen and the Rank/Epithet/Alignment display
 -- attributes (TRIAGE #14, DESIGN.md section 3a "Rank raises max health").
 -- Replaces the old StarterCharacterScripts/Health.server.luau and
--- BlockHealthRegen.server.luau; keeps the "revive from Knocked" countdown
--- those scripts also did (DamageHandler still creates the Knocked marker
--- and damages the Humanoid directly - that's M3's rebuild, not this one -
--- so this service must not fight it: no health clamping loop besides regen).
+-- BlockHealthRegen.server.luau. The old "revive from Knocked" countdown
+-- those scripts also did (decrementing character.Effects.Knocked.Value
+-- once a second) is gone (REVIEW-M3-03 L6): M3-03's CombatService/
+-- StatusService are the sole authority on when a knockout ends now, so a
+-- second, independent timer here was a real conflict, not just a
+-- documented overlap - no health clamping loop besides regen.
 --
 -- Health/Block/MaxBlock/RegenTier aren't part of the save (SaveSchema has
 -- no Health section): Humanoid.Health/MaxHealth is the one source of
@@ -30,11 +32,29 @@ local log = Log.new("HealthService")
 type Data = SaveSchema.Data
 export type Tier = "Idle" | "Combat" | "Knocked"
 
-local KNOCKED_NAME = "Knocked"
+-- REVIEW-M3-04 H1: NPCs take the identical health path as players now -
+-- every function below accepts either. A Player is resolved to its own
+-- `.Character` (unchanged); a Model (an NPC) is its own character
+-- already. Attributes are set directly on whichever was passed in - a
+-- Player's own attributes for a player (what the HUD reads), the NPC's
+-- own character attributes for an NPC (the same place every other M3
+-- service, keyed by character Model, already puts its attributes).
+export type Combatant = Player | Model
+
 local APPEARENCE_WAIT_TIMEOUT = 30
-local EFFECTS_WAIT_TIMEOUT = 10
 
 local HealthService = {}
+
+local function isPlayerCombatant(combatant: Combatant): boolean
+	return typeof(combatant) == "Instance" and combatant:IsA("Player")
+end
+
+local function resolveCharacter(combatant: Combatant): Model?
+	if isPlayerCombatant(combatant) then
+		return (combatant :: Player).Character
+	end
+	return combatant :: Model
+end
 
 -- ==================== pure helpers (self-tested directly) ====================
 
@@ -54,61 +74,99 @@ function HealthService.RegenAmount(tier: Tier, seconds: number): number
 	return Config.Health.RegenPerSecond[tier] * seconds
 end
 
--- ==================== per-player state ====================
+-- ==================== per-combatant state ====================
 -- None of this is saved (SaveSchema has no Health section): Block is
--- fresh every spawn, same as the old IntFold.BlockInt was.
+-- fresh every spawn, same as the old IntFold.BlockInt was. Keyed by
+-- whatever HealthService.Register (NPCs) or PlayerService.Ready (players)
+-- put in - a Player or a character Model, never mixed for the same
+-- combatant.
 
-local active: { [Player]: boolean } = {}
-local tierState: { [Player]: Tier } = {}
-local blockingState: { [Player]: boolean } = {}
-local blockAmount: { [Player]: number } = {}
+local active: { [Combatant]: boolean } = {}
+local tierState: { [Combatant]: Tier } = {}
+local blockingState: { [Combatant]: boolean } = {}
+local blockAmount: { [Combatant]: number } = {}
 
-local function initCharacterState(player: Player)
-	tierState[player] = "Idle"
-	blockingState[player] = false
-	blockAmount[player] = Config.Health.MaxBlock
+local function initCharacterState(combatant: Combatant)
+	tierState[combatant] = "Idle"
+	blockingState[combatant] = false
+	blockAmount[combatant] = Config.Health.MaxBlock
 end
 
-local function clearState(player: Player)
-	active[player] = nil
-	tierState[player] = nil
-	blockingState[player] = nil
-	blockAmount[player] = nil
+local function clearState(combatant: Combatant)
+	active[combatant] = nil
+	tierState[combatant] = nil
+	blockingState[combatant] = nil
+	blockAmount[combatant] = nil
 end
 
 -- ==================== public API (M3 combat calls these) ====================
 
-function HealthService.TakeDamage(player: Player, amount: number, _source: string?)
-	local character = player.Character
+function HealthService.TakeDamage(combatant: Combatant, amount: number, _source: string?)
+	local character = resolveCharacter(combatant)
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil or amount <= 0 then
 		return
 	end
 	humanoid.Health = math.max(0, humanoid.Health - amount)
-	player:SetAttribute("Health", humanoid.Health)
+	combatant:SetAttribute("Health", humanoid.Health)
 end
 
-function HealthService.SetTier(player: Player, tier: Tier)
-	tierState[player] = tier
-	player:SetAttribute("RegenTier", tier)
+function HealthService.SetTier(combatant: Combatant, tier: Tier)
+	tierState[combatant] = tier
+	combatant:SetAttribute("RegenTier", tier)
 end
 
-function HealthService.SpendBlock(player: Player, amount: number): boolean
-	local current = blockAmount[player] or 0
+function HealthService.SpendBlock(combatant: Combatant, amount: number): boolean
+	local current = blockAmount[combatant] or 0
 	if amount <= 0 or current < amount then
 		return false
 	end
-	blockAmount[player] = current - amount
-	player:SetAttribute("Block", blockAmount[player])
+	blockAmount[combatant] = current - amount
+	combatant:SetAttribute("Block", blockAmount[combatant])
 	return true
 end
 
-function HealthService.IsBlocking(player: Player): boolean
-	return blockingState[player] == true
+function HealthService.IsBlocking(combatant: Combatant): boolean
+	return blockingState[combatant] == true
 end
 
-function HealthService.SetBlocking(player: Player, blocking: boolean)
-	blockingState[player] = blocking
+function HealthService.SetBlocking(combatant: Combatant, blocking: boolean)
+	blockingState[combatant] = blocking
+end
+
+-- ==================== NPC registration (REVIEW-M3-04 H1) ====================
+-- The Player path (PlayerService.Ready, below) still does its own rank-
+-- based setupCharacter; this is the parallel entry point NpcService uses -
+-- max health is just given directly (Config.Npc.MaxHealth[type], no rank
+-- ladder), not computed here.
+
+export type RegisterOptions = { maxHealth: number }
+
+function HealthService.Register(character: Model, opts: RegisterOptions?)
+	if active[character] then
+		return
+	end
+	active[character] = true
+	initCharacterState(character)
+
+	local maxHealth = (opts and opts.maxHealth) or Config.Health.Base
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.MaxHealth = maxHealth
+		humanoid.Health = maxHealth
+	end
+
+	pcall(function()
+		character:SetAttribute("MaxHealth", maxHealth)
+		character:SetAttribute("Health", if humanoid then humanoid.Health else maxHealth)
+		character:SetAttribute("MaxBlock", Config.Health.MaxBlock)
+		character:SetAttribute("Block", Config.Health.MaxBlock)
+		character:SetAttribute("RegenTier", "Idle")
+	end)
+end
+
+function HealthService.Unregister(character: Model)
+	clearState(character)
 end
 
 -- ==================== build / rebuild ====================
@@ -136,43 +194,6 @@ local function setupCharacter(player: Player, character: Model, data: Data)
 	player:SetAttribute("MaxBlock", Config.Health.MaxBlock)
 	player:SetAttribute("Block", blockAmount[player] or Config.Health.MaxBlock)
 	player:SetAttribute("RegenTier", tierState[player] or "Idle")
-end
-
--- Ported from the old Health.server.luau: while Knocked and above the
--- revive threshold, count the marker down once a second; destroy it at 0
--- (how a knocked-out player gets back up). DamageHandler still creates
--- this marker and sets Health to 1 when it does.
-local function reviveLoop(character: Model, knockedValue: IntValue)
-	task.spawn(function()
-		while knockedValue.Parent do
-			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if humanoid and humanoid.MaxHealth > 0 and humanoid.Health > humanoid.MaxHealth * Config.Health.KnockedReviveThreshold then
-				knockedValue.Value -= 1
-				if knockedValue.Value <= 0 then
-					knockedValue:Destroy()
-				end
-			end
-			task.wait(1)
-		end
-	end)
-end
-
-local function watchKnocked(character: Model)
-	local effects = character:WaitForChild("Effects", EFFECTS_WAIT_TIMEOUT)
-	if effects == nil then
-		return
-	end
-
-	for _, child in effects:GetChildren() do
-		if child.Name == KNOCKED_NAME and child:IsA("IntValue") then
-			reviveLoop(character, child)
-		end
-	end
-	effects.ChildAdded:Connect(function(child: Instance)
-		if child.Name == KNOCKED_NAME and child:IsA("IntValue") then
-			reviveLoop(character, child)
-		end
-	end)
 end
 
 -- ==================== dev commands ====================
@@ -236,7 +257,6 @@ function HealthService:Start()
 	PlayerService.Ready:Connect(function(player: Player, character: Model)
 		initCharacterState(player)
 		active[player] = true
-		watchKnocked(character)
 
 		local data = DataService.Get(player)
 		if data then
@@ -272,50 +292,65 @@ function HealthService:Start()
 	task.spawn(function()
 		while true do
 			task.wait(Config.Health.Tick)
-			for player in active do
-				if player.Parent ~= Players then
-					clearState(player)
-					continue
-				end
+			for combatant in active do
+				local character: Model?
 
-				local character = player.Character
-				local data = DataService.Get(player)
+				if isPlayerCombatant(combatant) then
+					local player = combatant :: Player
+					if player.Parent ~= Players then
+						clearState(combatant)
+						continue
+					end
 
-				-- REVIEW-M2-03 finding 1: recomputed every tick, not only at
-				-- Ready/AppearenceLoaded. AgeService.resizeCharacter changes
-				-- Character.Height in place on a birthday, with no respawn
-				-- to re-fire PlayerService.Ready, so without this MaxHealth
-				-- stayed stuck at spawn's height until the player's next
-				-- death/rejoin - the exact M11 bug this service exists to
-				-- fix, just moved. setupCharacter already applies the "top
-				-- up only if already full" rule; calling it here reuses
-				-- that instead of a second copy of it, and keeps AgeService
-				-- and HealthService decoupled (no new call from AgeService
-				-- into HealthService needed).
-				if character and data then
-					setupCharacter(player, character, data)
+					character = player.Character
+					local data = DataService.Get(player)
+
+					-- REVIEW-M2-03 finding 1: recomputed every tick, not only
+					-- at Ready/AppearenceLoaded. AgeService.resizeCharacter
+					-- changes Character.Height in place on a birthday, with
+					-- no respawn to re-fire PlayerService.Ready, so without
+					-- this MaxHealth stayed stuck at spawn's height until
+					-- the player's next death/rejoin - the exact M11 bug
+					-- this service exists to fix, just moved. setupCharacter
+					-- already applies the "top up only if already full"
+					-- rule; calling it here reuses that instead of a second
+					-- copy of it, and keeps AgeService and HealthService
+					-- decoupled (no new call from AgeService into
+					-- HealthService needed).
+					if character and data then
+						setupCharacter(player, character, data)
+					end
+
+					if data then
+						player:SetAttribute("Rank", Ranks.titleFor(data.Progress.Magoi, data.Character.Gender))
+						player:SetAttribute("Epithet", data.Progress.Epithet)
+						player:SetAttribute("Alignment", Alignment.label(Alignment.alignmentFor(data.Progress.GoldRukh, data.Progress.BlackRukh)))
+					end
+				else
+					-- An NPC (REVIEW-M3-04 H1): no rank/save, just health/
+					-- block regen below, same as a player gets.
+					local model = combatant :: Model
+					if model.Parent == nil then
+						clearState(combatant)
+						continue
+					end
+					character = model
 				end
 
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 				if humanoid then
-					local regen = HealthService.RegenAmount(tierState[player] or "Idle", Config.Health.Tick)
+					local regen = HealthService.RegenAmount(tierState[combatant] or "Idle", Config.Health.Tick)
 					if regen > 0 and humanoid.Health > 0 and humanoid.Health < humanoid.MaxHealth then
 						humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + regen)
 					end
-					player:SetAttribute("Health", humanoid.Health)
+					combatant:SetAttribute("Health", humanoid.Health)
 				end
 
-				if not blockingState[player] then
-					local current = blockAmount[player] or Config.Health.MaxBlock
+				if not blockingState[combatant] then
+					local current = blockAmount[combatant] or Config.Health.MaxBlock
 					local refilled = math.min(Config.Health.MaxBlock, current + Config.Health.BlockRegenPerSecond * Config.Health.Tick)
-					blockAmount[player] = refilled
-					player:SetAttribute("Block", refilled)
-				end
-
-				if data then
-					player:SetAttribute("Rank", Ranks.titleFor(data.Progress.Magoi, data.Character.Gender))
-					player:SetAttribute("Epithet", data.Progress.Epithet)
-					player:SetAttribute("Alignment", Alignment.label(Alignment.alignmentFor(data.Progress.GoldRukh, data.Progress.BlackRukh)))
+					blockAmount[combatant] = refilled
+					combatant:SetAttribute("Block", refilled)
 				end
 			end
 		end

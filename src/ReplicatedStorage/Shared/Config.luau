@@ -83,11 +83,13 @@ Config.Health = {
 	RegenPerSecond = { Idle = 2, Combat = 0, Knocked = 1 },
 	MaxBlock = 100,
 	BlockRegenPerSecond = 10,
-	-- Health/block still above 10% while Knocked ticks the revive
-	-- countdown down once a second (unchanged from the old Health script).
-	KnockedReviveThreshold = 0.1,
 	-- How often the shared regen loop ticks, in real seconds.
 	Tick = 1,
+	-- M3-03 (REVIEW-M3-03 M2): CombatService.SetTier(player, "Combat") on
+	-- any hit dealt or taken; it falls back to "Idle" once this many
+	-- seconds pass with no further combat activity (and no longer than
+	-- that - "Knocked" always wins over both while it's active).
+	CombatTierSeconds = 6,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -123,6 +125,25 @@ Config.Scene = {
 	CoreDistance = 15,
 }
 
+-- M3-04: NpcService/AiController (TRIAGE #20). NPCs are combatants exactly
+-- like players (Bryan, 2026-09-27): MaxHealth comes from here, by
+-- NpcType, instead of the player rank ladder.
+Config.Npc = {
+	-- How often the shared AiController loop ticks every NPC's tree.
+	TickSeconds = 0.2,
+	ChaseRadius = 30,
+	GiveUpRadius = 40,
+	AttackRange = 4,
+	AttackCooldown = 1.4,
+	WanderRadius = 12,
+	MaxHealth = { Dummy = 100, Target = 100 },
+	-- REVIEW-M3-04 L2: optional asset ids Bryan can fill in for the walk/
+	-- run/flinch animations (empty by default - Trees.luau's by-name
+	-- Animation-instance lookup on the model itself is tried first; this
+	-- is only a fallback for when the art doesn't have one).
+	Animations = { Walk = "", Run = "", Flinch = "" },
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
@@ -137,6 +158,9 @@ table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
+table.freeze(Config.Npc.MaxHealth)
+table.freeze(Config.Npc.Animations)
+table.freeze(Config.Npc)
 table.freeze(Config)
 
 return Config
