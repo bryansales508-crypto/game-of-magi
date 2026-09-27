@@ -1,6 +1,6 @@
 # TRIAGE
 
-**Status: REVISED DRAFT (2026-09-26), waiting for Bryan's approval.** This follows Bryan's new rule ("build it right, keep the look") and the approved DESIGN.md. Once approved, it becomes the Phase 5 milestones in TASKS.md.
+**Status: APPROVED by Bryan (2026-09-26).** This follows Bryan's new rule ("build it right, keep the look") and the approved DESIGN.md. It is now the Phase 5 milestones in TASKS.md.
 
 **Calls:**
 
@@ -46,6 +46,7 @@ Save data is debug-only and will be wiped. Much of the old code is left over fro
 | 26 | Bounty Hunting | **New** | Crimes put a bounty on you. A **bounty board** in the cities lists the wanted. Knocking out a wanted player and turning them in pays coin and Magoi and adds Gold Rukh. Unlocks at Adventurer. | DESIGN §3 |
 | 27 | Day/night and city lights | **New** | Lighting cycle; city lamps, torches and fires light at dusk and go out at dawn. | DESIGN §3 · Bryan |
 | 28 | Weapons and gear for sale | **New** | The Rathole blacksmith and gear with real stats, bought with coin. | DESIGN §3 |
+| 29 | Debug and testing tools | **New** | Built into the foundation, per Bryan ("I struggled with that a lot"). **Test saves** separate from the live save in Studio, including a fresh-save-every-run switch. **Time controls** (fast aging, skip to dusk). **Dev commands** for every system's state. A **debug overlay** showing the live state of a character. **Tagged logging** instead of raw prints. **Playtest scenarios** written down with exact setup commands. | Bryan · AUDIT (debug prints, Studio save trouble) |
 
 ## Park (to `ServerStorage/Parked`)
 
@@ -73,7 +74,7 @@ Save data is debug-only and will be wiped. Much of the old code is left over fro
 
 Each milestone ends with a playtest and Bryan's approval before the next starts.
 
-1. **Foundation:** the new code layout, data service (#1), remote layer, join pipeline (#2), dev commands (#21), data wipe, and the parks and removals.
+1. **Foundation:** the new code layout, data service (#1), remote layer, join pipeline (#2), dev commands (#21), **debug and testing tools (#29)**, data wipe, and the parks and removals.
 2. **A life:** character creation (#3), aging, visible aging and death (#4), health (#14), menu (#18).
 3. **Combat:** movement (#9), status (#13), server and client combat (#10, #11), training dummies (#20), dagger removal (#12).
 4. **Status and Rukh:** rank, alignment and epithets (#25), HUD (#17).
