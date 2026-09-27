@@ -88,7 +88,7 @@ local function runPulse(pulseOut: Tween, pulseBack: Tween)
 	pulseBack:Destroy()
 end
 
-local function runLoadSequence(character: Model)
+local function runLoadSequence(_character: Model)
 	if not loadScreenTemplate then
 		return
 	end
