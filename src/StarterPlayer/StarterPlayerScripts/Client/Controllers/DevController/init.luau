@@ -69,7 +69,7 @@ local function formatSnapshotValue(value: any): string
 	end
 	if typeof(value) == "table" then
 		local x, y, z = value.x, value.y, value.z
-		if x ~= nil and y ~= nil and z ~= nil then
+		if typeof(x) == "number" and typeof(y) == "number" and typeof(z) == "number" then
 			return string.format("%.1f, %.1f, %.1f", x, y, z)
 		end
 		return "n/a"
