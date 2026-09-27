@@ -1,0 +1,81 @@
+{
+  "name": "game-of-magi",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "Assets": {
+        "$path": "src/ReplicatedFirst/Assets"
+      },
+      "GUI": {
+        "$properties": {
+          "IconTint": {
+            "Color3": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "$path": "src/ReplicatedFirst/GUI"
+      },
+      "ShapecastHitbox": {
+        "$properties": {
+          "SourceAssetId": 122697148509799.0
+        },
+        "$attributes": {
+          "Name": "shapecasthitbox",
+          "Scope": "teamswordphin",
+          "Version": "0.2.5"
+        },
+        "$path": "src/ReplicatedFirst/ShapecastHitbox"
+      },
+      "Tools": {
+        "$properties": {
+          "IconTint": {
+            "Color3": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "$path": "src/ReplicatedFirst/Tools"
+      }
+    },
+    "ReplicatedStorage": {
+      "$path": "src/ReplicatedStorage"
+    },
+    "ServerScriptService": {
+      "$path": "src/ServerScriptService"
+    },
+    "StarterGui": {
+      "$className": "StarterGui",
+      "HUD": {
+        "$properties": {
+          "ScreenInsets": "DeviceSafeInsets",
+          "ZIndexBehavior": "Sibling"
+        },
+        "$path": "src/StarterGui/HUD"
+      },
+      "$properties": {
+        "ScreenOrientation": "Sensor"
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterCharacterScripts": {
+        "$path": "src/StarterPlayer/StarterCharacterScripts"
+      },
+      "StarterPlayerScripts": {
+        "$path": "src/StarterPlayer/StarterPlayerScripts"
+      },
+      "$properties": {
+        "CameraMaxZoomDistance": 15.0,
+        "EnableDynamicHeads": "Disabled",
+        "LoadCharacterLayeredClothing": "Disabled",
+        "UserEmotesEnabled": false
+      }
+    }
+  }
+}
