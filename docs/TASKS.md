@@ -105,6 +105,6 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M3-02 | MovementService (speed stack, run, dash with server cooldown, low-health slow, IntFold bridge) | server-builder | queued (same session) | Dash from spawn incl. diagonals; second dash within cooldown rejected; hurt slows immediately |
 | M3-03 | CombatService (server hit checks, combo chain, block/parry/break, knockout, NPC API, removals, footsteps kept alive) | server-builder | queued | A client can't hit out of range or spam; blocker immune while block holds; 3-hit fist chain |
 | M3-04 | NpcService + Shared/BehaviorTree + AiController (Dummy, Target trees) | server-builder | queued | Target chases within 30, gives up at 40, punches within 4, restarts; NPCs take hits like players |
-| M3-05 | CombatController (client input -> intentions; animations on server events) | client-builder | in progress (cloud) | Same feel; no stacked listeners; no client-side hit reports |
-| M3-06 | EffectsController (hit fx, parry/block-break, knockout blind + freeze, ragdoll visuals, dash trail, run zoom) | client-builder | queued (same session) | Same sounds and particles as today |
+| M3-05 | CombatController (client input -> intentions; animations on server events) | client-builder | built, in review | Same feel; no stacked listeners; no client-side hit reports |
+| M3-06 | EffectsController (hit fx, parry/block-break, knockout blind + freeze, ragdoll visuals, dash trail, run zoom) | client-builder | in progress (cloud) | Same sounds and particles as today |
 | M3-07 | PLAYTEST.md M3 scenarios; Bryan plays the feel and tunes numbers; agent runs cheat checks only | Bryan + lead + playtester | todo | Feel approved by Bryan; every cheat check rejected |
