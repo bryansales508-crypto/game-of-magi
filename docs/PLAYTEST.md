@@ -438,3 +438,31 @@ Setup as before. Numbers you can tune live: `Shared/Data/Combat.luau` (Rojo sync
 
 ---
 
+
+---
+
+## M4 Status and Rukh
+
+Setup as before. Dev commands: `.magoi <n>`, `.magoi+ <n>`, `.rukh <gold> <black>`, `.rankup`, `.epithet clear`, `.state` (shows rank, epithet, alignment).
+
+**Bryan runs:**
+
+### M4-A Origin at birth
+- `.fresh`, finish the creation screen. **Pass:** the Rukh flutters white around you, a card in the menu style says it's your origin with 3 Street Rat epithets; click one (or press 1/2/3); the card fades; M shows that title.
+
+### M4-B Rank-up
+- `.magoi 300`. **Pass:** flutter in your alignment colour, card "A NEW RANK: WANDERER" with 3 Wanderer epithets for your alignment; choosing sets the menu title; `.state` shows rank Wanderer. `.rankup` jumps to the next threshold and repeats it.
+
+### M4-C Pending choice survives a rejoin
+- `.rankup`, do NOT choose, Stop, Play. **Pass:** the card comes back with the same 3 choices; choosing works; nothing else broke.
+
+### M4-D Alignment change
+- `.rukh 8 1` (Gold), then `.rukh 1 8` (Black), then `.rukh 5 5` (Gold & Black). **Pass:** a flutter in gold, then black, then both; the menu's alignment line updates each time; no card (no rank change).
+
+### M4-E Rank down and clear
+- `.magoi 0`: rank returns to Street Rat with no card; `.epithet clear` then `.rankup`: a fresh choice appears. **Pass:** both; no errors.
+
+**Agent runs (`execute_luau` on the client):**
+
+### M4-F Remote abuse
+- With nothing pending: `Net.ChooseEpithet:FireServer(2)` -> rejected, nothing changes. With a pending choice: `FireServer(7)` and `FireServer("The Cheat")` -> dropped with `[Remotes]` warnings; `FireServer(1)` then `FireServer(2)` -> only the first counts. **Pass:** every line; `[Rank]` log confirms.
