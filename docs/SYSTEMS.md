@@ -1,16 +1,351 @@
 # SYSTEMS
 
-_The full system map is written in Phase 2._
+What every part of Game of Magi does today, as read from the code in Phase 2. Nothing here has been changed. Anything marked **⚠** is something I noticed while reading. Those go to the Phase 3 audit for a proper look; they are not decisions.
+
+Paths are shortened: `SSS` = ServerScriptService, `RS` = ReplicatedStorage, `RF` = ReplicatedFirst, `SCS` = StarterPlayer.StarterCharacterScripts.
+
+---
+
+## 1. Saving and loading (DataStore)
+
+**What it does.** When a player joins, two server scripts load their save, build folders of Value objects under the player, and fill in defaults for new players. Any change to one of those Values marks the player "dirty"; every 60 seconds dirty players are saved. Players are also saved when they leave and when the server shuts down.
+
+| | Stats (`MainStore2`) | OnCharacter (`OnCharacterStore2`) |
+|---|---|---|
+| File | `SSS/Datastore/MainStore2/init.server.luau` | `SSS/Datastore/MainStore2/OnCharacterStore2.server.luau` |
+| Folder it builds | `player.Stats` | `player.OnCharacter` (with subfolders `Clothes`, `Currency`, `Hats`, `Inventory`, and a `Position` value) |
+| "Done loading" flag | `player.Loaded` (waits for `LoadedOC` first) | `player.LoadedOC` |
+| If loading fails | Kicks the player and blocks saving (`BadData` marker) | Only warns; carries on with an empty table |
+| Save call | `SetAsync` | `UpdateAsync` (ignores the old value) |
+
+**DataStore name:** the value of `SSS.Datastore.CurrentStore` (a StringValue), currently `"GameOfMagi_v0.01am"`.
+**Key:** `player.UserId`, used by **both** scripts.
+
+**Stats data shape** (saved table):
+```
+Race          int   1 Fanalis, 2 Human, 3 Imuchakk, 4 Magician, 5 Magi (new players: always 2, Human, for now)
+HairColor     {R, G, B}  0–1 floats (random for new players)
+FirstName     string (random from Assets.FirstNames.sindria.male)
+Kingdom       int   (always 1 for now)
+MaxMagoi      int   (by race: 1 / 10 / 10 / 100 / 1000; used as EXP)
+EyeColor      int 1–5,  FaceBase int 1–2,  MouthShape int 1–6
+Gender        int   0 = not chosen yet, then set by the gender picker
+Age           int   starts at 13
+Height        number  10 = "not rolled yet" sentinel, then a real height (~0.75–1.25)
+GrowthProfile string  "v1|startHeight|adultHeight|spurtAge|fatEnd" (see Aging)
+SkinTone      int   0 until chosen
+TimePassed    int   os.time() of the last aging tick
+ProgToAge     int   seconds banked toward the next birthday
+Hunger        number  starts at 5
+```
+
+**OnCharacter data shape:**
+```
+Clothing_Shirt, Clothing_Pants   item code string, e.g. "S|Short Sleeve Rags|35,35,35" (see Items)
+Copper, Silver, Gold             int (new players: 20 Copper)
+HatSpot1..3                      item code string or ""
+Row1, Row2                       string: inventory rows, ";"-separated item codes read by the menu (nothing writes them yet)
+Position                         not saved (code is commented out); new spawns go to Qarzin
+```
+
+**⚠ Both scripts write to the same DataStore under the same key.** Each saves only its own table, so whichever saves last overwrites the other's data. For example, Stats saving can erase your coins, and OnCharacter saving can erase your age.
+
+**Depends on:** `RF.Assets` (first names), `SSS.Character.ItemHandler` (required but not used), `RS.Modules.AssetID` (required but not used).
+**Depended on by:** almost everything. Scripts wait on `player.Loaded`, `player.Stats`, and `player.OnCharacter`.
+
+**Disabled:** `SSS/Datastore/StatManipulation` is switched off. It requires a `DataStore2` module that doesn't exist, and its body is all commented out (an older chat-command and backup idea).
+
+---
+
+## 2. Join flow (loading screen → spawn)
+
+**What it does.** Coordinates the order things happen in when a character spawns. Many scripts wait on the markers below.
+
+1. `SCS/Scripts/Load` (client) shows a loading screen, fades it, then fires **`MiscRemotes.MainScreen`** to the server.
+2. `SSS/Character/AppearanceController` and `SSS/Character/LocationHandler` each wait for that `MainScreen` fire before continuing.
+3. AppearanceController builds the character (section 3) and sets `character.AppearenceLoaded = true`.
+4. LocationHandler then teleports the character to its saved position, or to `Workspace.MAP.Spawns.QarzinSpawn` if there is none (always, for now).
+5. `SSS/Character/Protection` kicks the player if `AppearenceLoaded` isn't true within 30 seconds.
+6. Once `AppearenceLoaded` is true, other scripts set up: `EffectsService` makes `character.Effects`, `InteractionsDesign` makes `character.IntFold`, `RegionHandlerPart2` makes `character.RegionInfo`.
+
+**Remotes:** `MiscRemotes.MainScreen` (client → server, no arguments).
+
+---
+
+## 3. Character creation and appearance
+
+**What it does.** Every spawn, the server strips the Roblox avatar down and rebuilds it from saved stats: skin tone (by `SkinTone` + `Kingdom`), a "FalseHead" with face decals (face base, eyes, mouth, eyebrows from `RF.Assets`), hair recolored to `HairColor`, a combat hitbox part, collision groups, sounds, particles, footstep sounds and music tracks copied onto the torso. It then puts on the saved shirt and pants, giving new players a random ragged starter outfit. If `Gender` is 0, it shows the gender picker GUI (`RF.GUI.Gender`) and waits until a gender is chosen. It also rolls the first height/growth profile (section 4).
+
+`FaceControl` (a copy is placed in each character's FalseHead) animates the face: mouth flaps while the player chats, random blinking, and "hurt" or "knocked out" faces when `Hit` or `Ragdoll` effects appear.
+
+`SSS/Animations` swaps in custom run, walk, jump, idle and fall animations on the character's `Animate` script.
+
+**Files:**
+- `SSS/Character/AppearanceController/init.server.luau`. Its children `Black`, `Brown`, `White`, `Tan`, `LightTan` (BodyColors), `FalseHead`, `NormMeshie` and `FaceControl` are templates.
+- `SSS/Character/AppearanceController/FaceControl/init.server.luau`
+- `SSS/Animations.server.luau`
+- `RF/Assets/init.luau`: the big data module. Face decal tables, first and last names, clothing and outfit lists, hat and cloak lists, and item-code lookup. Its 34 children are the actual Accessory models for hats and cloaks.
+- Gender picker: `RF.GUI.Gender.Decisions` (inside `Gender.rbxm`, Studio-only). A **server** Script in the picker GUI: you choose Masculine/Feminine and a skin box (Black, Brown, White), then Enter. It sets `Stats.Gender` (1 male, 2 female) and `Stats.SkinTone` (1 Black, 2 Brown, 3 White). **⚠** Normally a server script can't see a player's GUI clicks, so this may never finish for a new player. Phase 3 will test it.
+
+**Depends on:** Saving (Stats, OnCharacter), `ItemHandler`, `AgeHandler`, `HeightHandler`, `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox`, `MainScreen` remote.
+**Depended on by:** nearly every character script waits on `AppearenceLoaded`.
+
+---
+
+## 4. Aging and growth
+
+**What it does.** Characters start at 13 and age with real time. Every 10 seconds the server banks elapsed seconds into `ProgToAge` and turns each `SECONDS_PER_YEAR` into a birthday. That constant is **30 seconds** right now, marked `--debug`; the comment says it's meant to be 5 minutes. Growth stops changing at 18. On a birthday (or a fresh spawn) the body is resized: height follows a per-player S-curve growth spurt, and build goes from skinny at 13 toward a random adult build. Hats and cloaks are removed and re-put-on so they fit the new size.
+
+**Growth profile format (versioned):** `"v1|startHeight|adultHeight|spurtAge|fatEnd"`, rolled once and stored in `Stats.GrowthProfile`. `AgeHandler.unpack` rejects anything that isn't `v1`, and the controller re-rolls if the profile is invalid.
+
+**Files:** `SSS/Character/AgeController.server.luau` (the loop), `SSS/Character/AgeHandler.luau` (growth math and the profile format), `SSS/Character/HeightHandler.luau` (resizes body parts, joints, attachments and accessories; also holds the per-cloak fit offsets).
+**Depends on:** Stats (`Age`, `Height`, `GrowthProfile`, `TimePassed`, `ProgToAge`), `ItemHandler`, `OnCharacter.Hats`.
+**Depended on by:** Appearance, Items, MissionHandler (requires HeightHandler; the resize calls are commented out), Health (Height adds max health).
+
+---
+
+## 5. Items, clothing and hats
+
+**What it does.** Every wearable is stored as a short **item code** string: `"type|name|r,g,b"`.
+- Types: `S` shirt, `P` pants, `H` hat, `C` cloak.
+- `name` matches an entry in `RF.Assets.outfits.desertBasic` (clothing) or a child of `RF.Assets` (hats and cloaks).
+- `r,g,b` is 0–255.
+
+`ItemHandler.equip(code, character)` puts the item on, recolors it, and resizes it to the character's current body.
+
+**Files:** `SSS/Character/ItemHandler.luau`.
+**Saved in:** `OnCharacter.Clothes.Clothing_Shirt/Clothing_Pants`, `OnCharacter.Hats.HatSpot1..3`.
+**Depends on:** `RF.Assets`, `HeightHandler`, `AgeHandler`.
+**Depended on by:** Appearance, AgeController, MarketHandler, the Qarzin clothes shop (section 6).
+
+---
+
+## 6. Market and currency
+
+**What it does.** `MarketHandler` is a module that prices goods from a city's supply and demand, and handles "can this player buy this?". It checks money, whether the player needs to convert coins, whether their hat slots are full, and whether they're already wearing the item. If the purchase goes through it takes the coins. On failure it makes the player "say" a flavor line in chat through the `ForcedChat` remote. Only one city (Qarzin) and four resource types are defined. The data lives in the module, so it is not saved.
+
+**Coins:** Copper, Silver, Gold, saved in `OnCharacter.Currency`. **⚠** The two halves of the module disagree on what a Gold coin is worth. Pricing treats 1 Gold as 100 Silver = 100,000 Copper; the bank total treats it as 10,000 Copper.
+
+**The Qarzin clothes shop** (`Workspace.Qarzin.ClothesStand.ClothingSpawn`, Studio-only). Five seconds after the server starts, it stocks the shop once, with no restocking:
+- random hats on the hat table, in White, Gold or Black
+- random shirts, with pants, on the 9 mannequins
+- a cloak on every cloak stand
+
+Each item has an "E" prompt, and its price comes from `MarketHandler.GetPrice("Qarzin", "Clothing", ...)`. On purchase it builds an item code and calls `GetPlayerEcon`. If that says "yes", it puts the item on and writes the code into `OnCharacter.Clothes` or the first empty `OnCharacter.Hats` slot. Hovering a mannequin highlights it. **⚠** The hover changes what every player sees, not just the one hovering; every rack sells the same pants; and a hat bought with all 3 slots full is paid for but not saved.
+
+**Files:** `SSS/MISC/MarketHandler.luau`, `Workspace.Qarzin.ClothesStand.ClothingSpawn` (Studio-only).
+**Remotes:** `MiscRemotes.ForcedChat` (server → client, one string; the client posts it to chat in `InputHandler`).
+
+---
+
+## 7. Delivery missions
+
+**What it does.** Clicking a `*Delivery` part in `Workspace.MAP.MISSION` opens a delivery board (`RF.GUI.MissionGUI.DeliveryFrame`) listing the cities on that city's trade route. Each destination gets 0–3 random **modifiers** (`TimeCrunch`, `CourierLoop`, `HighlyValuable`, `HeavyCargo`, `VIP`, `FragilePackage`, `CleartheRoute`), weighted by how much the route has been used and how safe it is. The board closes if you walk more than 20 studs away. Starting a mission straps a package to your back. Reaching the destination (within 10 studs) pays Copper based on your level, server population, your number of past deliveries, and the modifiers. If someone knocks you out mid-delivery, they get your reward and it's taken from you.
+
+**Cities:** Qarzin, Sahraqin, Illegal Port, Ain Jamala, Saleh, Rathole, Jaddaty's Hut. **⚠** The trade-route table refers to `"JADDATYSHUT"` and `"CITYF"`, which don't exist, so those entries are empty. The server also accepts any city name the client sends, even one not on the route.
+
+**Files:**
+- Server: `SSS/MISC/MissionHandler/init.server.luau`. Its 7 city Frames, with their LocalScripts, are the route buttons (Studio-only, `.rbxm`).
+- Shared/client: `RS/Modules/MissionDeliniation.luau`. It builds the city description panel, the start button, the quest tracker and the modifier pop-outs, and fires `Delivery` "MissionStart".
+- `RS/Modules/RewardHandler.luau`: reward math and payout.
+- The 7 city button LocalScripts (Studio-only) are one line each: `MissionDeliniation.DeliveryProtocol(player, button, "<City>")`. They only run once MissionHandler copies them into the player's delivery board.
+- `RF.GUI.MissionGUI.DeliveryFrame…LocalScript`: the board's close (X) button. It fires `Delivery("Exit")` (Studio-only).
+
+**Remotes:**
+- `ImportantRemotes.Delivery` (client → server): `("MissionStart", cityName)` or `("Exit")`.
+- `MiscRemotes.QuestGUI` (server → client): modifier name.
+- `MiscRemotes.Quest2GUI` (server → client): the return-point part for Courier Loop.
+
+**Player/character values it creates:**
+- `player.CityMods.<city>.<modifier>`
+- `player.SuccessRate` (made by Appearance)
+- `player.TimerQuestMod`
+- `character.Effects.Reading` / `OnMission` (with `RewardAmount`)
+- `character.Pack`
+
+**Depends on:** RewardHandler, SpeedHandler, the Effects system, OnCharacter currency, Stats (`MaxMagoi`, `Race`).
+
+---
+
+## 8. Movement and speed
+
+**What it does.** Walk speed is 16 and run speed 28. The race- and height-based speeds are commented out. Double-tapping W runs, which zooms the camera out and plays the run animation. Anything that changes speed (running, blocking, dashing, being hit, heavy cargo, parried, stunned) adds a named child to `character.IntFold.MovementSpeed`. The server recomputes WalkSpeed from the smallest multiplier present, and `0` means frozen. Low health also slows you, down to half run speed and a quarter walk speed.
+
+**Files:**
+- `RS/Modules/SpeedHandler.luau`: add or remove a speed modifier.
+- `SSS/Interactions/InteractionsDesign.server.luau`: creates `IntFold`, recomputes speed, and has a separate copy of the logic for NPCs.
+- `SSS/Interactions/InteractionsHandler.server.luau`: the `Running` and `Dash` remotes.
+- `SCS/Scripts/PhysicalHandler.client.luau`: run and dash input.
+
+**Remotes (client → server):**
+- `Running(bool)`
+- `CombatRemotes.Dash("Dash" | "Release" | "RunningHit")`
+
+---
+
+## 9. Combat
+
+**What it does.** Client-driven melee.
+
+**Client** (`PhysicalHandler`):
+- **M1:** a click plays a swing animation. At the animation's `Hit` marker, the client runs a shapecast hitbox from the fist or dagger and tells the server what it hit. Fist has a 2-hit combo; Royal Dagger has 3.
+- **F:** holds block. The first 0.25 s of a block is a parry window.
+- **Q + a direction key:** dashes.
+- **Right-click or jump during a swing:** cancels it.
+
+**Server:**
+- `InteractionsHandler` receives `CombatRemotes.Hit(nil, partHit)` and calls `DamageHandler.damage` with a fixed packet: 5 damage, knockback, a brief slow, 1 s stun.
+- `DamageHandler` applies the effects:
+  - adds `Stun` and `Hit` markers
+  - slows the target and knocks them back; every 5th hit knocks back 10× harder
+  - takes health
+  - at 0 health, instead of dying, the target is **Knocked**: health is set to 1, and the name of the attacker is stored under the Knocked marker
+  - blocking from the front routes to `InteractionsDesign` via the `GetDamage` bindable. That drains "block HP" (35), breaks the block at 0 (3 s TrueStun), or on a parry stuns the attacker and plays the parry effects.
+- `EffectsService` reacts to markers in `character.Effects`:
+  - `Knocked` → ragdoll, blind screen and input freeze
+  - `Hit` → sound and particles
+  - `BlockBroken` → TrueStun
+- `SCS/Health` (a server Script inside the character) sets max health from race, MaxMagoi and height, and regenerates health. It also counts `Knocked` down while health is above 10% and removes it at 0, which is how you get back up.
+- `SCS/BlockHealthRegen` regenerates block HP.
+
+**Weapon:** 10 seconds after every spawn, the server equips the **Royal Dagger** on everyone (`WeaponHandler.equip`, called from InteractionsDesign).
+
+**Files:**
+- Client: `SCS/Scripts/PhysicalHandler.client.luau`
+- Server: `SSS/Interactions/InteractionsHandler.server.luau`, `SSS/Interactions/InteractionsDesign.server.luau`, `SSS/Services/DamageHandler.luau`, `SSS/Services/EffectsService.server.luau`
+- Character scripts: `SCS/Health.server.luau`, `SCS/BlockHealthRegen.server.luau`
+- Shared modules: `RS/Modules/Combat/WeaponHandler.luau`, `RS/Modules/Ragdoll`
+- `RF/ShapecastHitbox` (third-party, TeamSwordphin v0.2.5)
+
+**Remotes:**
+- `CombatRemotes.Hit` (client → server): `("Highlight")` to flash your cancel highlight, or `(nil, partHit)` for a hit.
+- `Blocking(bool)` (client → server)
+- `RagdollEvent(bool)`, `Remotes.Hit()`, `CombatRemotes.Parry()` (server → client, for animations and screen effects)
+- `GetDamage` (server bindable)
+
+**⚠** The server takes the client's word for what was hit, with no distance or cooldown check, so a modified client could hit anyone on the map.
+
+**Not in use:** `RS/Modules/Combat/LightCombat.luau` and `BasicSwordCombat.luau` are an older server-side combat design. Nothing requires them, and they would error if something did: they require `SSS.Services.DamageService`, which doesn't exist.
+
+---
+
+## 10. Effects (status markers)
+
+**What it does.** A shared convention rather than one script. Status is shown by putting a named Value in `character.Effects`, and other scripts react when it's added or removed.
+
+| Marker | Added by | Effect |
+|---|---|---|
+| `Hit` | DamageHandler | stagger animation, hit sound and particle, hurt face; cancels your swing or block |
+| `Stun` | DamageHandler, parry | blocks attacking |
+| `Knocked` | DamageHandler | ragdoll, blind screen, input freeze; removed by Health regen |
+| `Ragdoll` | EffectsService | physics ragdoll, knocked-out face |
+| `Block` | Blocking remote | blocking; value 1 = parry window |
+| `BlockBroken` | InteractionsDesign | adds `TrueStun` for 3 s |
+| `TrueStun` | EffectsService | speed 0, no jumping |
+| `BigFreezeInput` / `FreezeInput` / `ActionFreezeInput` | EffectsService | client input lock (`InputHandler`) |
+| `Reading`, `OnMission` | MissionHandler | mission state |
+| `MutedStep`, `Hungry`, `CombatTagged`, `FireBurn`, `Bleed` | checked for, but nothing creates them now, except `Hungry`, which only the disabled Fear&Hunger script creates |
+
+**Files:** `SSS/Services/EffectsService.server.luau`, `SCS/Scripts/InputHandler.client.luau` (input freezes, and posting ForcedChat lines to chat).
+
+---
+
+## 11. Regions, music and announcements
+
+**What it does.** The map has invisible parts whose names contain `REGION` (under `Workspace.Regions`). The server watches the character's root part touching them and keeps a list in `character.RegionInfo`. The client reacts: it starts a region's music playlist (Qarzin, Qishan City, Badlands, Sakura Island), plays ambient loops (Rain, Ocean), shows a "Q A R Z I N — The Merchant's Playground" banner, and darkens lighting in `DesertLairTunnel`. It fades music out when you leave.
+
+**Files:** `SSS/MISC/RegionHandlerPart2.server.luau`, `SCS/Scripts/RegionHandlerPart1.client.luau`, `RS/Modules/SoundController.luau`.
+**⚠** The server-side region list uses `Touched` and `TouchEnded`, and the client changes Lighting without ever restoring it (the restore code is commented out).
+
+---
+
+## 12. Footsteps
+
+**What it does.** The run animation and `Animate` fire `MiscRemotes.Footstep("Right" | "Left" | "Jump")` on each step. The server plays a step sound that matches the floor material (stone, dirt, wood) and leaves fading footprint blocks on sand and mud.
+**Files:** `SSS/Interactions/InteractionsHandler.server.luau`, `SCS/Animate/init.client.luau` (Roblox's Animate with footstep hooks added), `SCS/Scripts/PhysicalHandler.client.luau`, `RS/Modules/ColorMath.luau` (third-party color math, used to darken footprints).
+
+---
+
+## 13. Hunger
+
+**What it does.** `Stats.Hunger` (0–5, saved) is drawn as 5 pips on the HUD (`StarterGui/HUD/HungerHandler`). The script that makes hunger go down, `SSS/Character/Fear&Hunger`, is **disabled**, so hunger currently never changes.
+
+---
+
+## 14. HUD, menu and backpack
+
+- `StarterGui/HUD` holds the **health bar** (`HealthHandler`), **block bar** (`BlockHandler`) and **hunger** (`HungerHandler`). Other ScreenGuis in StarterGui (`Currency`, `QuestLine`, `Announcer`) are filled in by server and client scripts; they aren't synced.
+- **Coin purse:** the OnCharacter save script writes coin counts straight into `PlayerGui.Currency.Bank.CoinPurse`.
+- **M key** opens and closes the character menu (`RF.GUI.UIGUI.MenuGUI`; its script `MenuMechanics` is Studio-only). The menu shows your name, kingdom (Midlander, Easterner, Westerner), age ("THE 13TH YEAR SINCE BIRTH"), and height in feet and inches. The title is always "THE MERCHANT'S CHILD". The Apparel tab shows inventory tokens from `OnCharacter.Inventory.Row1`. **⚠** Only one item code (`"1AA"` = FeatherHat) is known to the lookup, so any other item there would error.
+- **Backpack/hotbar:** `StarterPlayerScripts/BackpackGUI.client.luau` is a customized copy of Roblox's backpack script (10 slots, drag and drop, inventory panel).
+
+---
+
+## 15. NPCs
+
+**What it does.** Two training dummies at `Workspace.NPC.DUMMY` chase a target with pathfinding within 40 studs and give up beyond that. InteractionsDesign and EffectsService give NPCs the same speed and effects handling as players.
+**Files:** `RS/Modules/NPController.luau`, plus `Workspace.NPC.DUMMY.NPCFetch` and `Health` (Studio-only).
+
+The two `NPCFetch` copies have the same code but different settings. `npcType = "Dummy"` only plays walk and run animations and flinches when hit. `npcType = "Target"` also wanders, chases the nearest player within 30 studs (using NPController), and punches within 4 studs through `DamageHandler.damage` (3 damage). `Health` is Roblox's stock regen script. **⚠** Once the Target dummy loses its target or gets knocked out, it never starts again.
+
+---
+
+## 16. Dev commands
+
+**What it does.** Chat commands for the developer only. Permission is checked on the server by **UserId** (`27938432`) inside `DevCommandHandler.Execute`.
+
+| Command | Effect |
+|---|---|
+| `.cmd` | lists commands |
+| `.<field> <player> <number>` | sets a value |
+| `.<field>+ <player> <number>` | adds to it |
+
+Fields: `silvercoin`, `coppercoin`, `goldcoin`, `age`, `height`, `hunger`, `maxmagoi`, `exp` (a placeholder; `Exp` doesn't exist yet). For an online player it edits the live Value, so saving picks it up. For an offline player it writes straight to the DataStore.
+
+**⚠** The offline path writes to DataStores named `"Mainstore2"` and `"OnCharacterStore2"`. The game actually saves to `"GameOfMagi_v0.01am"`, so offline edits never reach the real save.
+
+**Files:** `SSS/DevCommandHandler.luau`, `SSS/DevCommandChatListener.server.luau`.
+
+---
+
+## 17. Collisions
+
+`SSS/Interactions/CollisionsHandler` puts all map parts (except `Areas`) in `MapCollisionGroup`, and clothing racks in `ClothingRackGroup`. Appearance gives each player their own limb group that doesn't collide with clothing racks.
+
+---
+
+## 18. Ocean (Workspace, not synced)
+
+766 server Scripts under `Workspace.MAP.OCEAN`, three per ocean tile, animate the waves: parts bob 2 studs over 15 s, and wave decals fade in and out over 10 s. **⚠** The `OceanWaves` copies move up and then "down" to the same spot, so they stop after one bob. Every copy adds more event connections each cycle, so the cost keeps growing the longer a server runs.
+
+---
+
+## Not in use (dead or unfinished code)
+
+These are here so you know they exist. Nothing is being removed; that would be a Triage decision.
+
+| What | Why it looks unused |
+|---|---|
+| `RS/Modules/Combat/LightCombat`, `BasicSwordCombat` | nothing requires them; they require a module that doesn't exist |
+| `RS/Modules/LevelHandler` | nothing requires it; it reads `Depravity` and `LovedByRukh`, which aren't in Stats |
+| `RS/Modules/RubbleHandler`, `RS/Modules/CameraShaker` (third-party) | nothing in `src/` requires them |
+| `RS/Modules/DashHandler` | required by EffectsService but never called; it also looks in the wrong place (`RS.VFX` instead of `RF.VFX`) |
+| `RS/Modules/AssetID` | required but never called; it uses a proxy site that has been shut down |
+| `SSS/Datastore/StatManipulation` | disabled; broken require |
+| `SSS/Character/Fear&Hunger` | disabled (hunger drain) |
+| `RF/Tools/.../UniversalToolBar/LocalScript` | empty event handlers |
+| **Remotes with no code using them in `src/`:** `AutoSave`, `Wipe`, `ItemEquip`, `MissionInteraction`, `MissionFinisher`, all of `SpellRemotes` (MagoiBlast, BorgHover/BorgHoverU, Wand, Sound/Water/Light/Plant/Heat/Strength/WindMagic), `BorgActivation`, `SpawnTeleport`, `RegionEntered`, `RegionLeft`, `GenderSelected`, `DeathHandlerPart3`, `CombatMusic`, `CombatMusicClientFires`, `CombatMusicFunc`, `FollowUp`, `RaceSkill`, `Carry`, `SandStormSound`, `Party`, `ClientCommunication`, `Holding`, `GameLoaded`, `GetDamageFunc`, `CombatPress` (looked up, never used) | I checked the Studio-only scripts too: none of them use these. |
+
+---
 
 ## Not synced
 
 These scripts live inside models or asset folders that Rojo does not sync, so they stay only in the place file and are edited in Studio.
 
-Only scripts that actually run and do something are listed. Left off: empty scripts, disabled scripts, notes-only scripts, and LocalScripts in Workspace, which never run there.
+Only scripts that actually run and do something are listed. Left off: empty scripts, disabled scripts, notes-only scripts, and LocalScripts in Workspace, which never run there. Also left off: `RF.Objects.MissionWagon.Cradle.Seat.Script`. It was read in Phase 2; it only records who sits in the wagon seat, but server scripts don't run in ReplicatedFirst and nothing ever places the wagon in the world, so it never runs.
 
 | Path | Class | What it does |
 |---|---|---|
-| `ReplicatedFirst.Objects.MissionWagon.Cradle.Seat.Script` | Script | Seat logic for the mission wagon (to be read in Phase 2) |
 | `Workspace.Qarzin.ClothesStand.ClothingSpawn` | Script | Clothing and hat shop in Qarzin. Requires MarketHandler, ItemHandler, HeightHandler, AgeHandler and Assets. |
 | `Workspace.NPC.DUMMY.NPCFetch` (×2) | Script | NPC AI. Uses NPController and DamageHandler. |
 | `Workspace.NPC.DUMMY.Health` (×2) | Script | Health regen for the NPC dummies (stock Roblox script) |
@@ -34,3 +369,40 @@ These scripts sit inside GUI frames, which Rojo saves as binary `.rbxm` files. T
 | `ReplicatedFirst.GUI.Gender.Decisions` (Script) | `src/ReplicatedFirst/GUI/Gender.rbxm` |
 | `ReplicatedFirst.GUI.UIGUI.MenuGUI.MasterFrame.MenuGUIFrame.MenuMechanics` (LocalScript) | `src/ReplicatedFirst/GUI/UIGUI/MenuGUI.rbxm` |
 | `ReplicatedFirst.GUI.MissionGUI.DeliveryFrame.OutsideFrame.XButtonFrame.TextButton.LocalScript` (LocalScript) | `src/ReplicatedFirst/GUI/MissionGUI/DeliveryFrame.rbxm` |
+
+---
+
+## How the systems connect
+
+Arrows mean "needs". For example, "Appearance → Saving" means Appearance needs Saving.
+
+```
+Saving (Stats + OnCharacter)      → RF.Assets
+Join flow (Load screen)           → MainScreen remote → Appearance, Location
+Appearance                        → Saving, Aging, Items, RF.Assets, Gender picker
+Location (spawn)                  → Saving, Join flow, Appearance
+Aging                             → Saving, Items, HeightHandler
+Items (ItemHandler)               → RF.Assets, HeightHandler, AgeHandler
+Market (MarketHandler)            → Items, Saving (currency, hats), ForcedChat → InputHandler
+Qarzin clothes shop (Workspace)   → Market, Items, Aging, RF.Assets
+Delivery missions                 → RewardHandler, SpeedHandler, Effects, Saving (currency, stats)
+  city buttons / X button (client) → MissionDeliniation → Delivery remote → MissionHandler
+Movement & speed                  → SpeedHandler, IntFold (from InteractionsDesign)
+Combat (client PhysicalHandler)   → ShapecastHitbox, Hit/Blocking/Dash remotes → InteractionsHandler
+Combat (server)                   → DamageHandler → SpeedHandler, GetDamage → InteractionsDesign
+                                  → Effects → EffectsService → Ragdoll, InputHandler (freezes)
+Health / BlockHealthRegen         → Saving (Stats), Effects, IntFold
+Weapon                            → WeaponHandler ← InteractionsDesign (auto-equips Royal Dagger)
+Regions & music                   → RegionHandlerPart2 (server) → RegionInfo → RegionHandlerPart1 → SoundController
+Footsteps                         → Animate / PhysicalHandler → Footstep remote → InteractionsHandler → ColorMath
+HUD                               → Humanoid, IntFold, Saving (Hunger)
+Menu                              → Saving, RF.Assets
+NPCs (Workspace)                  → NPController, DamageHandler, Effects, speed handling
+Dev commands                      → Saving (live Values, or the DataStore directly for offline players)
+Collisions                        → Workspace.MAP, clothing racks; Appearance adds player groups
+```
+
+The central pieces nearly everything depends on:
+- the two save scripts (`player.Stats`, `player.OnCharacter`, `player.Loaded`)
+- `AppearanceController` (`character.AppearenceLoaded`)
+- the `character.Effects` and `character.IntFold` folders
