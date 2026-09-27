@@ -6,6 +6,11 @@
 -- own M4-01 comment), and fires the rank-up/alignment-changed moments and
 -- the origin epithet choice at birth.
 --
+-- A rank-up never overwrites a choice that's still pending, and never skips
+-- straight to the top rank when one grant crosses several thresholds at
+-- once: NextRankToAnnounce/NextRankAfterChoice walk the player forward one
+-- rank at a time, the origin choice always first (H1 fix, REVIEW-M4-01).
+--
 -- No shared polling loop: every Progress mutation goes through AddMagoi/
 -- AddDeed (including the dev `.magoi`/`.magoi+`/`.rukh` commands, re-
 -- registered below to route through them - DevService.Register overwrites
@@ -108,6 +113,42 @@ function RankService.ShouldOfferOrigin(data: Data, gender: number): boolean
 	return data.Progress.Epithet == "" and data.Progress.PendingEpithet == nil and gender ~= 0
 end
 
+-- Pure (H1 fix, REVIEW-M4-01): decides which rank, if any, AddMagoi should
+-- announce right after an ApplyMagoi call. Never overwrites a choice
+-- that's still pending (nil while one is), never announces before the
+-- origin epithet exists (Epithet == "" - it always comes first), and never
+-- jumps past oldIndex + 1 even if `amount` crossed several thresholds at
+-- once - RankService.NextRankAfterChoice below walks the rest forward one
+-- at a time as each card is answered.
+function RankService.NextRankToAnnounce(data: Data, oldIndex: number, newIndex: number): number?
+	if newIndex <= oldIndex then
+		return nil
+	end
+	if data.Progress.PendingEpithet ~= nil then
+		return nil
+	end
+	if data.Progress.Epithet == "" then
+		return nil
+	end
+	return oldIndex + 1
+end
+
+-- Pure (H1 fix, REVIEW-M4-01): once `answeredRank`'s choice has just been
+-- cleared (ChooseEpithet), decides whether Magoi has already reached the
+-- NEXT rank up too - a single big grant across several thresholds walks
+-- the player through one card per rank, in order, instead of announcing
+-- only the final one.
+function RankService.NextRankAfterChoice(data: Data, answeredRank: number): number?
+	if data.Progress.PendingEpithet ~= nil then
+		return nil
+	end
+	local currentIndex = (Ranks.rankFor(data.Progress.Magoi))
+	if currentIndex > answeredRank then
+		return answeredRank + 1
+	end
+	return nil
+end
+
 -- ==================== attributes ====================
 
 local function refreshRankAttributes(player: Player, data: Data)
@@ -124,7 +165,10 @@ end
 -- Rolls three epithet choices for `rankIndex`, stores them as the pending
 -- choice, refreshes attributes and fires RankUp. `origin` picks the White
 -- Rukh Street Rat bank (DESIGN.md 3a: origin is always chosen before a life
--- is judged) instead of the player's actual current alignment.
+-- is judged) instead of the player's actual current alignment. Callers
+-- never pass more than one rank above whatever was last resolved -
+-- NextRankToAnnounce/NextRankAfterChoice below are what decide `rankIndex`,
+-- never AddMagoi's own newIndex directly (H1 fix, REVIEW-M4-01).
 local function announceRankUp(player: Player, data: Data, rankIndex: number, origin: boolean)
 	local gender = data.Character.Gender
 	local rankTitle = Ranks.List[rankIndex].title
@@ -191,8 +235,9 @@ function RankService.AddMagoi(player: Player, amount: number, reason: string)
 	LegacyBridge.Refresh(player, data)
 	refreshRankAttributes(player, data)
 
-	if newIndex > oldIndex then
-		announceRankUp(player, data, newIndex, false)
+	local announceIndex = RankService.NextRankToAnnounce(data, oldIndex, newIndex)
+	if announceIndex then
+		announceRankUp(player, data, announceIndex, false)
 	end
 end
 
@@ -467,6 +512,11 @@ function RankService:Init()
 			return
 		end
 
+		-- Captured before ApplyChooseEpithet clears it - needed for the H1
+		-- fix below (REVIEW-M4-01): walking forward one rank at a time once
+		-- this choice is answered.
+		local pendingBefore = data.Progress.PendingEpithet
+
 		local ok, reason = RankService.ApplyChooseEpithet(data, index)
 		if not ok then
 			log:Warn(string.format("%s's ChooseEpithet(%s) rejected: %s", player.Name, tostring(index), reason or "invalid"))
@@ -475,6 +525,13 @@ function RankService:Init()
 
 		refreshRankAttributes(player, data)
 		log:Info(string.format("%s chose the epithet %q", player.Name, data.Progress.Epithet))
+
+		if pendingBefore then
+			local announceIndex = RankService.NextRankAfterChoice(data, pendingBefore.rank)
+			if announceIndex then
+				announceRankUp(player, data, announceIndex, false)
+			end
+		end
 	end)
 end
 
