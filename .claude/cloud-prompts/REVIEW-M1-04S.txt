@@ -1,0 +1,15 @@
+You are the reviewer for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/reviewer.md` exactly. Your task is **REVIEW-M1-04S**: review the server half of the join pipeline (PlayerService, JoinState attribute, ClientReady remote, spawn placement, bridge edits to the old AppearanceController, removal of LocationHandler and Protection). The task spec is `.claude/cloud-prompts/M1-04S.txt`; the client half's contract is in `.claude/cloud-prompts/M1-04C.txt` (already reviewed, PASS); the plan is M1-04 in `docs/TASKS.md`; AUDIT H3, P1, M9 describe the bugs it must fix.
+
+Steps:
+1. `git fetch origin claude/dataservice-profilestore-ah4c6i`. Review ONLY `git diff c2fec5f fc0117e` (the M1-04S commits; M1-03 before it was reviewed separately and its fixes are still pending).
+2. Check out fc0117e and run `bash scripts/check.sh`. Report the exact counts.
+3. Review in this order:
+   (a) Order and no missed signals: `Loading` on PlayerAdded and on every CharacterAdded; `Loaded` only after both the data is loaded AND the character is placed; `ClientReady` accepted only in `Loaded`; every wait reads the current state first. Think through: client fires `ClientReady` before the server set `Loaded` (should be ignored, and the client fires again? No: the client only fires after seeing `Loaded`, so check the server can't set `Loaded` before it listens). Respawn while a previous load is mid-way (generation/stale-thread guard). Player leaves mid-load (M9): every loop exits, no leaked thread.
+   (b) Spawn: pivot to `Workspace.MAP.Spawns.QarzinSpawn` (a Part) before `Loaded`, raised so it doesn't clip; WaitForChild with timeout and Log:Error if missing; works for a character that respawns.
+   (c) Security: `ClientReady` declared in `Shared/Remotes.luau` with no args and a rate limit; handler ignores wrong-state calls quietly (or a throttled Warn).
+   (d) The old `AppearanceController/init.server.luau` edit is minimal: only the MainScreen wait replaced by a JoinState == "Ready" wait that checks the current attribute first. Nothing else changed in that file (diff it).
+   (e) `LocationHandler.server.luau` and `Protection.server.luau` are removed; grep `src/` for any other reader of `MainScreen`, `LocationHandler`, or a 30-second kick.
+   (f) No kick anywhere in PlayerService; the 120 s stuck warning fires once.
+   (g) `--!strict`, no raw print, `task.*` only; the SelfTest block tests the pure transition function; `docs/SYSTEMS.md` section 2 matches the code and no other section changed.
+4. Write `docs/reviews/M1-04S.md`: verdict first line (`PASS` or `CHANGES NEEDED`), check.sh counts, findings with severity, file:line and a one-line fix, then a 3-line plain-language summary for Bryan. Under 60 lines.
+5. Commit ONLY that file on a new branch from main with the message `DONE REVIEW-M1-04S: PASS` or `DONE REVIEW-M1-04S: CHANGES NEEDED`, and push the branch. Never push main, never edit any other file.
