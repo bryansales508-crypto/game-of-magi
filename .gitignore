@@ -2,3 +2,7 @@
 *.rbxlx
 *.lock
 rojo.exe
+
+# Local-only: old nested project copy, and the binary old-game reference (text copy is in docs/reference/)
+game-of-magi/
+OldGameScripts.rbxm
