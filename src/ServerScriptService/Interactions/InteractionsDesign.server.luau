@@ -1,6 +1,4 @@
-local combatpress = game.ReplicatedStorage.Remotes.CombatRemotes.CombatPress
 local speedMod = require(game.ReplicatedStorage.Modules.SpeedHandler)
-local weap = require(game.ReplicatedStorage.Modules.Combat.WeaponHandler)
 local db = game:GetService("Debris")
 
 -- remotes
@@ -268,9 +266,6 @@ game.Players.PlayerAdded:Connect(function(player)
 				character.Humanoid.HealthChanged:Wait()
 			end
 		end)
-		
-		task.wait(10)
-		weap.equip(character, "Royal Dagger")
 	end)
 end)
 
