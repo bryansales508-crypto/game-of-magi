@@ -196,8 +196,11 @@ local function startDeathSequence(player: Player, data: Data)
 		return
 	end
 
+	-- F2's same reasoning applies here: NewLife resets Character.Gender to
+	-- 0 too, so this new life goes through CharacterService's
+	-- wait-for-CreateCharacter path again, which rolls growth once gender
+	-- is known again - not eagerly here, where it would be gender-blind.
 	DataService.NewLife(player)
-	rollFirstGrowth(data)
 	LegacyBridge.Refresh(player, data)
 
 	player:SetAttribute("Dying", false)
@@ -333,9 +336,12 @@ function AgeService:Start()
 		end
 
 		applyOfflineAging(player, data)
-		if data.Character.GrowthProfile == "" then
-			rollFirstGrowth(data)
-		end
+		-- REVIEW-M2-01 F2: the first growth-profile roll needs gender
+		-- (totalGain is 0.9x for gender 2), which isn't chosen yet this
+		-- early for a brand-new life - rolling here regardless used to
+		-- always take the male curve. CharacterService now rolls it once
+		-- gender is known; resizeCharacter's own fallback below still
+		-- catches it defensively if that's ever skipped.
 		LegacyBridge.Refresh(player, data)
 		player:SetAttribute("Age", data.Age.Years)
 

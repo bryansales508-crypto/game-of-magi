@@ -24,6 +24,31 @@ local YAP_MOUTHS = { "rbxassetid://13473292861", "rbxassetid://13473295251" }
 
 local FaceControl = {}
 
+-- REVIEW-M2-01 F3: waits for `character.Effects` with no fixed timeout
+-- (EffectsService only creates it once AppearenceLoaded is true, and
+-- FaceControl.Start is now called right after that), but still gives up
+-- cleanly if the character is destroyed first instead of hanging forever.
+local function waitForEffects(character: Model): Instance?
+	local existing = character:FindFirstChild("Effects")
+	if existing then
+		return existing
+	end
+
+	local found: Instance? = nil
+	local connection: RBXScriptConnection
+	connection = character.ChildAdded:Connect(function(child: Instance)
+		if child.Name == "Effects" then
+			found = child
+		end
+	end)
+
+	while found == nil and character.Parent ~= nil do
+		task.wait()
+	end
+	connection:Disconnect()
+	return found
+end
+
 -- `falseHead` must already have FaceBase, MouthShape, EyeColor and EyeBrow
 -- Decals parented under it (CharacterService builds those first).
 function FaceControl.Start(player: Player, character: Model, falseHead: Instance)
@@ -39,13 +64,38 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 	local eyeColorId = eyeColor.Texture
 	local faceBaseId = faceBase.Texture
 
-	local watery = Instance.new("IntValue")
-	watery.Name = "WateryEyes"
+	-- F10: clone the two template Values (siblings of this module, moved
+	-- with it from the old FaceControl folder) instead of building fresh
+	-- ones, so they aren't unused dead weight in the place file.
+	local wateryTemplate = script:FindFirstChild("WateryEyes")
+	local talkCountTemplate = script:FindFirstChild("TalkCount")
+	if not (wateryTemplate and talkCountTemplate) then
+		log:Error("FaceControl WateryEyes/TalkCount templates missing")
+		return
+	end
+	local watery = wateryTemplate:Clone() :: IntValue
 	watery.Parent = falseHead
-
-	local talkCount = Instance.new("IntValue")
-	talkCount.Name = "TalkCount"
+	local talkCount = talkCountTemplate:Clone() :: IntValue
 	talkCount.Parent = falseHead
+
+	-- F5: every connection this character's FaceControl makes, disconnected
+	-- together once, instead of piling up (and running against destroyed
+	-- decals) across every respawn.
+	local connections: { RBXScriptConnection } = {}
+	local function track(connection: RBXScriptConnection)
+		table.insert(connections, connection)
+	end
+	local cleanedUp = false
+	local function cleanup()
+		if cleanedUp then
+			return
+		end
+		cleanedUp = true
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+	end
+	track(character.Destroying:Connect(cleanup))
 
 	local talking = false
 	local locked = false
@@ -76,7 +126,7 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 		end)
 	end
 
-	player.Chatted:Connect(function(message: string)
+	track(player.Chatted:Connect(function(message: string)
 		if not allowedToTalk then
 			return
 		end
@@ -87,9 +137,9 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 		elseif talkCount.Value < 20 then
 			talkCount.Value = math.min(20, talkCount.Value + #message)
 		end
-	end)
+	end))
 
-	talkCount.Changed:Connect(function(value: number)
+	track(talkCount.Changed:Connect(function(value: number)
 		if value > 0 and not locked2 then
 			locked2 = true
 			task.spawn(function()
@@ -103,7 +153,7 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 				mouthShape.Texture = mouthId
 			end)
 		end
-	end)
+	end))
 
 	local allowedToBlink = true
 	local locked3 = false
@@ -121,7 +171,7 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 		end)
 	end
 
-	watery.Changed:Connect(function(value: number)
+	track(watery.Changed:Connect(function(value: number)
 		if value > 0 and not locked3 then
 			locked3 = true
 			task.spawn(function()
@@ -134,13 +184,13 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 		elseif value == 0 then
 			blink()
 		end
-	end)
+	end))
 
 	blink()
 
-	local effects = character:WaitForChild("Effects", 10)
+	local effects = waitForEffects(character)
 	if effects == nil then
-		log:Warn(string.format("%s's character has no Effects folder; hurt/knocked faces disabled", player.Name))
+		log:Warn(string.format("%s's character was removed before Effects appeared; hurt/knocked faces disabled", player.Name))
 		return
 	end
 
@@ -156,7 +206,7 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 		mouthShape.Texture = mouthId
 	end
 
-	effects.ChildAdded:Connect(function(effect: Instance)
+	track(effects.ChildAdded:Connect(function(effect: Instance)
 		if effect.Name == "Ragdoll" then
 			allowedToTalk = false
 			allowedToBlink = false
@@ -166,15 +216,15 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 			allowedToBlink = false
 			setNeutralFace(HIT_MOUTH)
 		end
-	end)
+	end))
 
-	effects.ChildRemoved:Connect(function(effect: Instance)
+	track(effects.ChildRemoved:Connect(function(effect: Instance)
 		if effect.Name == "Ragdoll" or (effect.Name == "Hit" and not effects:FindFirstChild("Ragdoll")) then
 			allowedToTalk = true
 			allowedToBlink = true
 			restoreFace()
 		end
-	end)
+	end))
 end
 
 return FaceControl

@@ -29,6 +29,7 @@ local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
 local AgeService = require(script.Parent.AgeService)
+local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local FaceControl = require(script.FaceControl)
 
 local log = Log.new("CharacterService")
@@ -53,10 +54,10 @@ local CharacterService = {}
 -- ==================== pure helpers (self-tested directly) ====================
 
 -- P4: by NAME, not by old positional guesses. 1 Black, 2 Brown, 3 White,
--- then the same kingdom overrides the old script used (Qarzin lightens
--- White to LightTan; a second kingdom lightens Black to Tan and Brown to
--- LightTan). Whether each .rbxm template's own colours actually match its
--- name still needs a Studio look (AUDIT P4); this only fixes the mapping.
+-- then the same kingdom overrides the old script used (Kingdom 1 swaps
+-- White for the more tan LightTan; Kingdom 2 swaps Black for Tan and Brown
+-- for LightTan). REVIEW-M2-01 confirmed each .rbxm template's own colours
+-- match its name (darkest to lightest: Black, Tan, Brown, LightTan, White).
 function CharacterService.SkinTemplateName(skinTone: number, kingdom: number): string
 	local base: string
 	if skinTone == 1 then
@@ -439,6 +440,17 @@ local function applyAnimations(character: Model)
 	setAnimId("jump", "JumpAnim", "rbxassetid://15428492106")
 	setAnimId("idle", "Animation1", "rbxassetid://15422107398")
 	setAnimId("fall", "FallAnim", "rbxassetid://15428818320")
+
+	-- F9: the old script stopped every playing track around the id swap so
+	-- a stale (old-id) track can't keep playing; stopped here, after the
+	-- ids are set, so the next state change starts fresh with the new id.
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		for _, track in animator:GetPlayingAnimationTracks() do
+			track:Stop(0)
+		end
+	end
 end
 
 local function setAttributes(player: Player, data: Data)
@@ -451,13 +463,27 @@ local function setAttributes(player: Player, data: Data)
 	player:SetAttribute("Age", data.Age.Years)
 end
 
+-- F4: used by MissionHandler and RewardHandler (both index it directly and
+-- would error if it were missing). Created once per player, not once per
+-- spawn like the old "misc stuff" block did (which leaked a new Folder
+-- under the player on every respawn).
+local function ensureSuccessRateFolder(player: Player)
+	if player:FindFirstChild("SuccessRate") then
+		return
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = "SuccessRate"
+	folder.Parent = player
+end
+
 -- Waits until CreateCharacter has been handled (data.Character.Gender ~= 0),
--- or the player leaves. The client shows the Gender screen itself whenever
--- it sees the Gender attribute at 0; the server just waits here, same
--- polling shape as PlayerService.WaitForReady.
-local function waitForCharacterCreated(player: Player, data: Data): boolean
+-- the player leaves, or (F8) this character is replaced by a respawn while
+-- still waiting. The client shows the Gender screen itself whenever it sees
+-- the Gender attribute at 0; the server just waits here, same polling shape
+-- as PlayerService.WaitForReady.
+local function waitForCharacterCreated(player: Player, character: Model, data: Data): boolean
 	while data.Character.Gender == 0 do
-		if player.Parent ~= Players then
+		if player.Parent ~= Players or player.Character ~= character then
 			return false
 		end
 		task.wait()
@@ -471,13 +497,31 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 	appearenceLoaded.Value = false
 	appearenceLoaded.Parent = character
 
+	-- F1: set every attribute now, not only at the end. A brand-new
+	-- player's Gender is still 0 here, but that IS the signal M2-04's
+	-- CreationController waits for to show the creation screen; without
+	-- this, the attribute stays nil forever and the screen never appears.
+	setAttributes(player, data)
+
 	if data.Character.Gender == 0 then
-		if not waitForCharacterCreated(player, data) then
+		if not waitForCharacterCreated(player, character, data) then
 			return
 		end
 	end
 	if player.Parent ~= Players or player.Character ~= character then
 		return
+	end
+
+	-- F2: the old AppearanceController's "first time height" roll (moved
+	-- out when AppearanceController was removed, not into AgeController).
+	-- Needs gender, so it happens here, once gender is known, rather than
+	-- eagerly on load (AgeService no longer rolls it that early either -
+	-- see AgeService's DataService.Loaded handler). AgeService's own
+	-- resizeCharacter still re-rolls defensively if this is ever skipped.
+	if data.Character.Height == 10 then
+		local profileStr, height = AgeHandler.start(data.Age.Years, data.Character.Race, data.Character.Gender)
+		data.Character.GrowthProfile = profileStr
+		data.Character.Height = height
 	end
 
 	stripDefaultAvatar(character)
@@ -490,15 +534,20 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 	equipGear(character, data)
 	wireToolGrip(character)
 	applyAnimations(character)
-
-	if falseHead then
-		FaceControl.Start(player, character, falseHead)
-	end
+	ensureSuccessRateFolder(player)
 
 	LegacyBridge.Refresh(player, data)
 	setAttributes(player, data)
 
 	appearenceLoaded.Value = true
+
+	-- F3: FaceControl waits (unbounded) on `Effects`, which EffectsService
+	-- only creates once AppearenceLoaded is true; starting it only after
+	-- that flip (and off this thread) means it no longer stalls every
+	-- spawn for FaceControl's old fixed 10s timeout.
+	if falseHead then
+		task.spawn(FaceControl.Start, player, character, falseHead)
+	end
 
 	local charactersFolder = Workspace:FindFirstChild("Characters")
 	if charactersFolder then
@@ -508,16 +557,24 @@ end
 
 -- ==================== service ====================
 
+-- F7: a second CreateCharacter after Gender is already set is silently
+-- ignored (as before), but now warns once per cooldown instead of never,
+-- so a client stuck retrying doesn't go unnoticed.
+local lastDuplicateCreateWarn: { [Player]: number } = {}
+local DUPLICATE_CREATE_WARN_COOLDOWN = 30
+
 function CharacterService:Init()
-	local ok = pcall(function()
+	-- F6: register both groups if missing (ClothingRackGroup is normally
+	-- registered later by CollisionsHandler, only after the map loads) so
+	-- SetCollidable below always has two real groups to work with, and
+	-- runs with no pcall: a real failure here should be loud, not silent.
+	if not PhysicsService:IsCollisionGroupRegistered(COLLISION_GROUP) then
 		PhysicsService:RegisterCollisionGroup(COLLISION_GROUP)
-	end)
-	if not ok then
-		log:Debug(string.format("collision group %s already registered", COLLISION_GROUP))
 	end
-	pcall(function()
-		PhysicsService:CollisionGroupSetCollidable(COLLISION_GROUP, CLOTHING_RACK_GROUP, false)
-	end)
+	if not PhysicsService:IsCollisionGroupRegistered(CLOTHING_RACK_GROUP) then
+		PhysicsService:RegisterCollisionGroup(CLOTHING_RACK_GROUP)
+	end
+	PhysicsService:CollisionGroupSetCollidable(COLLISION_GROUP, CLOTHING_RACK_GROUP, false)
 
 	Remotes.Server.On("CreateCharacter", function(player: Player, gender: number, skin: number)
 		local data = DataService.Get(player)
@@ -525,10 +582,22 @@ function CharacterService:Init()
 			return
 		end
 		if not CharacterService.ApplyCreateCharacter(data, gender, skin) then
+			if data.Character.Gender ~= 0 then
+				local now = os.clock()
+				local last = lastDuplicateCreateWarn[player]
+				if not last or now - last >= DUPLICATE_CREATE_WARN_COOLDOWN then
+					lastDuplicateCreateWarn[player] = now
+					log:Warn(string.format("%s sent CreateCharacter again after Gender was already set", player.Name))
+				end
+			end
 			return
 		end
 		LegacyBridge.Refresh(player, data)
 		setAttributes(player, data)
+	end)
+
+	Players.PlayerRemoving:Connect(function(player: Player)
+		lastDuplicateCreateWarn[player] = nil
 	end)
 end
 
