@@ -65,7 +65,7 @@ Nothing here is deleted until Bryan approves each line. The **?** lines are ones
 - **Saving:** one save handler with one key. #1 becomes a **rewrite**: one data service, one key, with the fixes from #1 built in.
 - **Hunger:** not in this version. Remove it from the HUD and **park** the hunger code with the other unfinished work (#18 becomes **park**).
 - **Magic and rank leftovers (R9–R12):** **park** them as placeholders that don't load or clutter the live game. They are not deleted.
-- **Aging:** old-age death starts at 60, with the chance of dying at each birthday rising with age, alongside visible aging (grey hair, wrinkles, etc.). The age script was never finished, so this is part of #5.
+- **Aging:** old-age death starts at 60, with the chance of dying at each birthday rising with age, alongside visible aging (grey hair, wrinkles, etc.). The age script was never finished, so this is part of #5. **On death, the player starts completely fresh.** A family/lineage system comes later, so the save layout should leave room for it without building it.
 - **Style:** Bryan's code style doesn't need to be kept; only his aesthetic does (see CLAUDE.md). The keep/fix calls above get revisited after the design pass, and some "fix" lines may become cleaner rewrites.
 
 **Parked work** goes in `ServerStorage/Parked`. Code there never runs and never reaches players, but it stays in the project so it can come back.
