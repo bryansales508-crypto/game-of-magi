@@ -70,6 +70,187 @@ Repeatable checks the playtester runs after each milestone. Every scenario says 
 
 ---
 
+Before I tested anything, I spawned in completely naked and my hair gray. I had a loaded face. The error read as such. No animations played, and none of the clothes and hats for hat stand loaded.
+  12:08:37.345  ReplicatedStorage.Shared.Data.Epithets:83: invalid argument #1 to 'freeze' (table is already frozen)  -  Server - Epithets:83
+  12:08:37.345  Stack Begin  -  Studio
+  12:08:37.345  Script 'ReplicatedStorage.Shared.Data.Epithets', Line 83  -  Studio - Epithets:83
+  12:08:37.345  Stack End  -  Studio
+  12:08:37.345  Requested module experienced an error while loading  -  Server - SelfTestService:18
+  12:08:37.345  Stack Begin  -  Studio
+  12:08:37.345  Script 'ServerScriptService.Server.Services.SelfTestService', Line 18  -  Studio - SelfTestService:18
+  12:08:37.345  Stack End  -  Studio
+  12:08:37.346  [Server.Main] require(SelfTestService) failed: Requested module experienced an error while loading  -  Server - Main:36
+  12:08:37.349  HeightHandler is not a valid member of Folder "ServerScriptService.Character"  -  Server - ClothingSpawn:5
+  12:08:37.349  Stack Begin  -  Studio
+  12:08:37.349  Script 'Workspace.Qarzin.ClothesStand.ClothingSpawn', Line 5  -  Studio - ClothingSpawn:5
+  12:08:37.349  Stack End  -  Studio
+  12:08:37.517  [CreationController] ready  -  Client - Log:58
+  12:08:37.518  [DevController] dev overlay (F8) and dev panel (backquote `) ready  -  Client - Log:58
+  12:08:37.518  [HudController] ready  -  Client - Log:58
+  12:08:37.519  [MenuController] ready (M to toggle)  -  Client - Log:58
+  12:08:37.519  [RukhController] ready  -  Client - Log:58
+  12:08:38.497  [ProfileStore]: Roblox API services available - data will be saved  -  Server - ProfileStore:2115
+  12:08:47.617  [DataService] Loaded save for iiBry (scope Studio)  -  Server - Log:58
+  12:08:47.621  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.621  Stack Begin  -  Studio
+  12:08:47.621  Script 'ServerScriptService.Interactions.InteractionsDesign', Line 11  -  Studio - InteractionsDesign:11
+  12:08:47.621  Stack End  -  Studio
+  12:08:47.621  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.621  Stack Begin  -  Studio
+  12:08:47.621  Script 'ServerScriptService.MISC.RegionHandlerPart2', Line 3  -  Studio - RegionHandlerPart2:3
+  12:08:47.621  Stack End  -  Studio
+  12:08:47.621  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.621  Stack Begin  -  Studio
+  12:08:47.621  Script 'ServerScriptService.Services.EffectsService', Line 159  -  Studio - EffectsService:159
+  12:08:47.621  Stack End  -  Studio
+  12:08:47.621  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.621  Stack Begin  -  Studio
+  12:08:47.621  Script 'Workspace.NPC.DUMMY.NPCFetch', Line 168  -  Studio - NPCFetch:168
+  12:08:47.621  Stack End  -  Studio
+  12:08:47.683  Infinite yield possible on 'Players.iiBry:WaitForChild("Stats")'  -  Studio
+  12:08:47.683  Stack Begin  -  Studio
+  12:08:47.683  Script 'ReplicatedFirst.GUI.UIGUI.MenuGUI.MasterFrame.MenuGUIFrame.MenuMechanics', Line 16  -  Studio - MenuMechanics:16
+  12:08:47.683  Stack End  -  Studio
+  12:08:47.683  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.683  Stack Begin  -  Studio
+  12:08:47.683  Script 'Workspace.iiBry.Animate', Line 4  -  Studio - Animate:4
+  12:08:47.683  Stack End  -  Studio
+  12:08:47.683  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.683  Stack Begin  -  Studio
+  12:08:47.683  Script 'Workspace.iiBry.Scripts.RegionHandlerPart1', Line 3  -  Studio - RegionHandlerPart1:3
+  12:08:47.683  Stack End  -  Studio
+  12:08:47.683  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:08:47.683  Stack Begin  -  Studio
+  12:08:47.683  Script 'Workspace.iiBry.Scripts.PhysicalHandler', Line 27  -  Studio - PhysicalHandler:27
+  12:08:47.683  Stack End  -  Studio
+  12:08:47.683  Infinite yield possible on 'Players.iiBry:WaitForChild("Stats")'  -  Studio
+  12:08:47.683  Stack Begin  -  Studio
+  12:08:47.683  Script 'Players.iiBry.PlayerGui.MenuGUI.MasterFrame.MenuGUIFrame.MenuMechanics', Line 16  -  Studio - MenuMechanics:16
+  12:08:47.683  Stack End  -  Studio
+  12:08:50.825  ReplicatedFirst.Assets:125: attempt to index nil with 'Value'  -  Server - Assets:125
+  12:08:50.825  Stack Begin  -  Studio
+  12:08:50.825  Script 'ReplicatedFirst.Assets', Line 125  -  Studio - Assets:125
+  12:08:50.825  Script 'ServerScriptService.Server.Services.CharacterService', Line 233 - function buildFalseHead  -  Studio - CharacterService:233
+  12:08:50.825  Script 'ServerScriptService.Server.Services.CharacterService', Line 521 - function buildCharacter  -  Studio - CharacterService:521
+  12:08:50.825  Stack End  -  Studio
+
+Seemingly when I aged, hair fixed as it regained color, but no clothes.
+
+M2-A; I picked it, I refreshed it seems. Jamilah is feminie name, but my hair is gray and I didn't have any clothes. Same thing for when I was black male. M2-C; I reset, same look, as in no clothes gray hair, same face. When I aged, my hair color went to blonde. When I reset it  went back to the old height before I aged, and white hair. And when I aged, it restored again.
+M2-D; Nothing changed when I used age to 13 beside the number in menu. When I birthday'd, my height went to what I would expect to have at 14. Same for the next birthdays. When I did 60, nothing changed. When I birthday'd my height stayed the same and hair was duller color and I saw a pulsating screen. When I aged 69, my hair turned nearly completely white and then pulsating began to slow and got a message saying I had to die. I was then teleported to the afterlife model and respawned to a new character. I think something error'd but I didn't catch the log.
+
+M2-E; Perfectly fine. Worked.
+  12:23:18.792  [AgeService] iiBry has a heart attack at age 62 (fatal=false, chance=0.07)  -  Server - Log:58
+
+M2-F;
+  12:24:10.041  [DevService] .state iiBry:
+  name: iiBry
+  userId: 27938432
+  joinState: Ready
+  age: 62
+  magoi: 0
+  rank: n/a
+  goldRukh: 0
+  blackRukh: 0
+  epithet: n/a
+  bounty: 0
+  copper: 20
+  silver: 0
+  gold: 0
+  walkSpeed: 16
+  health: 53.47999954223633
+  maxHealth: 53.47999954223633
+  position: (1944.5, 198.0, -7667.7)
+  saveScope: Studio
+  freshSave: false
+  timeScale: 1
+  sessionSeconds: 932  -  Server - Log:58
+  12:24:10.041  [DevService] [dev iiBry] .state -> State for iiBry sent  -  Server - Log:58
+
+12:24:10.041  [DevService] [dev iiBry] .state -> State for iiBry sent  -  Server - Log:58
+  12:24:18.840  [AgeService] iiBry has a heart attack at age 63 (fatal=false, chance=0.08)  -  Server - Log:58
+  12:24:32.188  [DataService] New life for iiBry (life #3)  -  Server - Log:58
+  12:24:32.189  [DevService] [dev iiBry] .heart fatal -> Heart attack fired for iiBry (fatal=true)  -  Server - Log:58
+  12:24:48.972  ReplicatedFirst.Assets:125: attempt to index nil with 'Value'  -  Server - Assets:125
+  12:24:48.972  Stack Begin  -  Studio
+  12:24:48.972  Script 'ReplicatedFirst.Assets', Line 125  -  Studio - Assets:125
+  12:24:48.972  Script 'ServerScriptService.Server.Services.CharacterService', Line 233 - function buildFalseHead  -  Studio - CharacterService:233
+  12:24:48.972  Script 'ServerScriptService.Server.Services.CharacterService', Line 521 - function buildCharacter  -  Studio - CharacterService:521
+  12:24:48.972  Stack End  -  Studio
+
+Saw the afterlife, it is the one for my old game. But it is too fast, and I probably need to work on it personally since it is a feel thing versus just brute code.
+
+M2-G; Age was 31. Here is the log.
+  12:26:50.336  HeightHandler is not a valid member of Folder "ServerScriptService.Character"  -  Server - ClothingSpawn:5
+  12:26:50.336  Stack Begin  -  Studio
+  12:26:50.336  Script 'Workspace.Qarzin.ClothesStand.ClothingSpawn', Line 5  -  Studio - ClothingSpawn:5
+  12:26:50.336  Stack End  -  Studio
+  12:26:50.351  ReplicatedStorage.Shared.Data.Epithets:83: invalid argument #1 to 'freeze' (table is already frozen)  -  Server - Epithets:83
+  12:26:50.351  Stack Begin  -  Studio
+  12:26:50.351  Script 'ReplicatedStorage.Shared.Data.Epithets', Line 83  -  Studio - Epithets:83
+  12:26:50.351  Stack End  -  Studio
+  12:26:50.351  Requested module experienced an error while loading  -  Server - SelfTestService:18
+  12:26:50.351  Stack Begin  -  Studio
+  12:26:50.351  Script 'ServerScriptService.Server.Services.SelfTestService', Line 18  -  Studio - SelfTestService:18
+  12:26:50.351  Stack End  -  Studio
+  12:26:50.351  [Server.Main] require(SelfTestService) failed: Requested module experienced an error while loading  -  Server - Main:36
+  12:26:50.524  [CreationController] ready  -  Client - Log:58
+  12:26:50.525  [DevController] dev overlay (F8) and dev panel (backquote `) ready  -  Client - Log:58
+  12:26:50.525  [HudController] ready  -  Client - Log:58
+  12:26:50.526  [MenuController] ready (M to toggle)  -  Client - Log:58
+  12:26:50.526  [RukhController] ready  -  Client - Log:58
+  12:26:51.799  [ProfileStore]: Roblox API services available - data will be saved  -  Server - ProfileStore:2115
+  12:27:01.192  [DataService] Loaded save for iiBry (scope Studio)  -  Server - Log:58
+  12:27:01.196  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.196  Stack Begin  -  Studio
+  12:27:01.196  Script 'ServerScriptService.MISC.RegionHandlerPart2', Line 3  -  Studio - RegionHandlerPart2:3
+  12:27:01.196  Stack End  -  Studio
+  12:27:01.196  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.196  Stack Begin  -  Studio
+  12:27:01.196  Script 'ServerScriptService.Services.EffectsService', Line 159  -  Studio - EffectsService:159
+  12:27:01.196  Stack End  -  Studio
+  12:27:01.196  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.196  Stack Begin  -  Studio
+  12:27:01.196  Script 'ServerScriptService.Interactions.InteractionsDesign', Line 11  -  Studio - InteractionsDesign:11
+  12:27:01.196  Stack End  -  Studio
+  12:27:01.196  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.196  Stack Begin  -  Studio
+  12:27:01.196  Script 'Workspace.NPC.DUMMY.NPCFetch', Line 168  -  Studio - NPCFetch:168
+  12:27:01.196  Stack End  -  Studio
+  12:27:01.378  Infinite yield possible on 'Players.iiBry:WaitForChild("Stats")'  -  Studio
+  12:27:01.378  Stack Begin  -  Studio
+  12:27:01.378  Script 'ReplicatedFirst.GUI.UIGUI.MenuGUI.MasterFrame.MenuGUIFrame.MenuMechanics', Line 16  -  Studio - MenuMechanics:16
+  12:27:01.378  Stack End  -  Studio
+  12:27:01.378  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.378  Stack Begin  -  Studio
+  12:27:01.378  Script 'Workspace.iiBry.Animate', Line 4  -  Studio - Animate:4
+  12:27:01.378  Stack End  -  Studio
+  12:27:01.378  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.378  Stack Begin  -  Studio
+  12:27:01.378  Script 'Workspace.iiBry.Scripts.RegionHandlerPart1', Line 3  -  Studio - RegionHandlerPart1:3
+  12:27:01.378  Stack End  -  Studio
+  12:27:01.378  Infinite yield possible on 'Workspace.iiBry:WaitForChild("AppearenceLoaded")'  -  Studio
+  12:27:01.378  Stack Begin  -  Studio
+  12:27:01.378  Script 'Workspace.iiBry.Scripts.PhysicalHandler', Line 27  -  Studio - PhysicalHandler:27
+  12:27:01.378  Stack End  -  Studio
+  12:27:01.378  Infinite yield possible on 'Players.iiBry:WaitForChild("Stats")'  -  Studio
+  12:27:01.378  Stack Begin  -  Studio
+  12:27:01.378  Script 'Players.iiBry.PlayerGui.MenuGUI.MasterFrame.MenuGUIFrame.MenuMechanics', Line 16  -  Studio - MenuMechanics:16
+  12:27:01.378  Stack End  -  Studio
+  12:27:04.550  ReplicatedFirst.Assets:125: attempt to index nil with 'Value'  -  Server - Assets:125
+  12:27:04.550  Stack Begin  -  Studio
+  12:27:04.550  Script 'ReplicatedFirst.Assets', Line 125  -  Studio - Assets:125
+  12:27:04.550  Script 'ServerScriptService.Server.Services.CharacterService', Line 233 - function buildFalseHead  -  Studio - CharacterService:233
+  12:27:04.550  Script 'ServerScriptService.Server.Services.CharacterService', Line 521 - function buildCharacter  -  Studio - CharacterService:521
+  12:27:04.550  Stack End  -  Studio
+
+m2-h; in order to get it to work, i couldn't just do age. I had to birthday the character and then the correct health would show and it did increase with height. it also increased with magoi. good to go. block doesn't work so couldn't check with that. And health is much slower when tier is combat, versus idle.
+
+m2-I; title works alongside rukh and magoi. character preview is still black. buttons still make noise, but idk if there are post to do anything else. title reset properly back to adventuerer.
+
+
+Design notes; I don't like how the afterlife looks. Let me handle that portion, if you can just set it up where I put my own touch, I'll finish it off. Next, the heartbeat doesn't sound quite right. It needs to be BUMPBUMP... BUMPBUMP... Instead it is kind overlayed. I can also handle that if you want. There is obviously some problem with character loading at start. Aging seems to work just fine, and obviously no animations and no interactions can be done from what I can tell due to that error.
+
 ## M2 A life
 
 Setup as before. New dev commands used here: `.birthday`, `.heart [fatal]`, `.hp <n>`, `.tier <Idle|Combat|Knocked>`, `.age <n>`, `.magoi <n>`, `.rukh <gold> <black>`, `.epithet <text>`, `.fresh`. Attributes on the Player (`Age`, `Rank`, `Epithet`, `Alignment`, `Health`, `MaxHealth`, `Block`, `Lives`, `Gender`) can be read with `inspect_instance` on `Players.<name>` instead of screenshots.
