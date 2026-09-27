@@ -167,9 +167,18 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 	worldModel.Parent = viewport
 	clone.Parent = worldModel
 
+	-- FIX BUG-21 (Bryan, design): a mirror, not a side/back view. The old
+	-- offset was a fixed world direction, so it showed whatever side
+	-- happened to be there depending on the character's spawn facing.
+	-- Using the head's own CFrame keeps the camera in front of the face
+	-- (along its LookVector) and looking back at it, regardless of which
+	-- way the character is actually facing.
+	local headCFrame = head.CFrame
+	local cameraPosition = headCFrame.Position + headCFrame.LookVector * 2.5 + Vector3.new(0, 0.3, 0)
+
 	local camera = Instance.new("Camera")
 	camera.CameraType = Enum.CameraType.Scriptable
-	camera.CFrame = CFrame.lookAt(head.Position + Vector3.new(0, 0.5, 4), head.Position)
+	camera.CFrame = CFrame.lookAt(cameraPosition, headCFrame.Position)
 	camera.Parent = viewport
 	viewport.CurrentCamera = camera
 
