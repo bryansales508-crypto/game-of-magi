@@ -1603,7 +1603,7 @@ function ProfileStore:StartSessionAsync(profile_key, params)
 						-- Attempt to load the profile again after a delay
 						local wait_until = os.clock() + if request_force_load == true then FIRST_LOAD_REPEAT else LOAD_REPEAT_PERIOD
 						-- selene: allow(multiple_statements)
-					repeat task.wait() until os.clock() >= wait_until or ProfileStore.IsClosing == true
+						repeat task.wait() until os.clock() >= wait_until or ProfileStore.IsClosing == true
 
 					else
 						-- Another session tried to load this profile:

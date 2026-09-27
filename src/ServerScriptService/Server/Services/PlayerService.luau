@@ -29,6 +29,14 @@ local STUCK_LOADING_SECONDS = 120
 
 local readyBindable = Instance.new("BindableEvent")
 
+-- The character JoinState == "Ready" actually refers to. Roblox doesn't
+-- guarantee CharacterAdded/CharacterRemoving handler order across scripts,
+-- so on a respawn something else (old AppearanceController, a caller of
+-- IsReady/WaitForReady) could otherwise still read "Ready" from the
+-- previous life for one frame. IsReady checks this generation too
+-- (REVIEW-M1-04S F1).
+local readyCharacter: { [Player]: Model } = {}
+
 local PlayerService = {}
 PlayerService.Ready = readyBindable.Event :: RBXScriptSignal
 
@@ -61,7 +69,7 @@ function PlayerService.GetState(player: Player): JoinState?
 end
 
 function PlayerService.IsReady(player: Player): boolean
-	return PlayerService.GetState(player) == "Ready"
+	return PlayerService.GetState(player) == "Ready" and readyCharacter[player] == player.Character
 end
 
 -- Applies one event to `player`'s JoinState and writes the result back as
@@ -116,7 +124,11 @@ local function getSpawnCFrame(): CFrame?
 		return nil
 	end
 
-	return qarzin.CFrame + Vector3.new(0, SPAWN_RAISE_STUDS, 0)
+	-- `+ Vector3` (not CFrame.new(position)) keeps QarzinSpawn's own facing
+	-- direction; only the position is translated. Raise by half the part's
+	-- own height plus a margin (REVIEW-M1-04S F3), not a flat guess, so a
+	-- tall or reshaped spawn part still clears the character.
+	return qarzin.CFrame + Vector3.new(0, qarzin.Size.Y / 2 + SPAWN_RAISE_STUDS, 0)
 end
 
 -- Logs once (never kicks: the old 30s kick during character creation was
@@ -174,11 +186,20 @@ local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character: Model)
 		onCharacterAdded(player, character)
 	end)
+	-- Fires before the next CharacterAdded (REVIEW-M1-04S F1): resets state
+	-- immediately, so nothing (old AppearanceController included) can read
+	-- a stale "Ready"/"Loaded" from the life that just ended.
+	player.CharacterRemoving:Connect(function()
+		readyCharacter[player] = nil
+		setState(player, "Respawn")
+	end)
 
-	local data = DataService.WaitFor(player)
-	if data == nil then
-		-- DataService already kicked (or is kicking) this player.
-		return
+	-- A character can already exist here: Start()'s catch-up loop reaches a
+	-- player who joined (and auto-spawned) before Init connected
+	-- CharacterAdded (REVIEW-M1-04S F2). Without this, that join stays on
+	-- "Loading" forever.
+	if player.Character then
+		task.spawn(onCharacterAdded, player, player.Character)
 	end
 end
 
@@ -187,14 +208,21 @@ function PlayerService:Init()
 		if PlayerService.GetState(player) ~= "Loaded" then
 			return
 		end
-		setState(player, "ClientReady")
 		local character = player.Character
-		if character then
-			readyBindable:Fire(player, character)
+		if character == nil then
+			-- Rare race: the character was removed between Loaded and this
+			-- call. Stay Loaded; the next CharacterAdded resets and retries.
+			return
 		end
+		setState(player, "ClientReady")
+		readyCharacter[player] = character
+		readyBindable:Fire(player, character)
 	end)
 
 	Players.PlayerAdded:Connect(onPlayerAdded)
+	Players.PlayerRemoving:Connect(function(player: Player)
+		readyCharacter[player] = nil
+	end)
 end
 
 function PlayerService:Start()
