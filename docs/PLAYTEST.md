@@ -2,7 +2,7 @@
 
 Repeatable checks the playtester runs after each milestone. Every scenario says exactly how to set it up with dev commands, what to look for, and what counts as a pass. The playtester runs on the cheap model: it reads **Output** and the **`.state` dump** first and takes a screenshot only where a scenario says "look".
 
-**Setup for every run:** Studio open on the published place, Rojo connected, then **Play** (F5). In Studio, `Config.Debug.Enabled` is on, the save scope is `Studio`, and everyone counts as a dev. Dev commands are typed in chat (they start with `.`) or in the F7 dev panel. `.cmd` lists them.
+**Setup for every run:** Studio open on the published place, Rojo connected, then **Play** (F5). In Studio, `Config.Debug.Enabled` is on, the save scope is `Studio`, and everyone counts as a dev. Dev commands are typed in chat (they start with `.`) or in the ` (backquote) dev panel. `.cmd` lists them.
 
 **Result format:** for each scenario: `PASS` / `FAIL` / `BLOCKED`, the Output lines that matter (errors and warnings verbatim), and the `.state` dump where the scenario asks for it. Log every FAIL as a bug in `docs/BUGS.md` (lead does this).
 
@@ -60,8 +60,8 @@ Repeatable checks the playtester runs after each milestone. Every scenario says 
 - **Pass:** Output shows `[Net]` warnings naming the player, the remote and the reason (throttled, not one per call), and no errors.
 
 ### M1-J Dev panel and overlay
-- **Setup:** press F8, then F7.
-- **Look (one screenshot):** the F8 overlay in the top-left lists the snapshot keys in order and updates once a second; the F7 panel in the top-right has the command box, reply log and quick buttons. `.timescale 10` then `.state` shows `timeScale = 10`. `.tp rathole` moves the character; `.cities` lists the spawns.
+- **Setup:** press F8, then the backquote key (`, left of 1).
+- **Look (one screenshot):** the F8 overlay in the top-left lists the snapshot keys in order and updates once a second; the backquote panel in the top-right has the command box, reply log and quick buttons. `.timescale 10` then `.state` shows `timeScale = 10`. `.tp rathole` moves the character; `.cities` lists the spawns.
 - **Pass:** both toggle cleanly, no input leaks into gameplay while typing, no errors.
 
 ### M1-K Leave and rejoin under load (two players)
