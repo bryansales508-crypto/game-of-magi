@@ -6,54 +6,56 @@ Paths are shortened: `SSS` = ServerScriptService, `RS` = ReplicatedStorage, `RF`
 
 ---
 
-## 1. Saving and loading (DataStore)
+## 1. Saving and loading (DataStore) — rebuilt M1-03
 
-**What it does.** When a player joins, two server scripts load their save, build folders of Value objects under the player, and fill in defaults for new players. Any change to one of those Values marks the player "dirty"; every 60 seconds dirty players are saved. Players are also saved when they leave and when the server shuts down.
+**What it does now.** One `DataService` (`SSS/Server/Services/DataService.luau`) owns one save per player, on top of the vendored **ProfileStore** library (`SSS/Server/Packages/ProfileStore.luau`, MadStudio/loleris, Apache 2.0, unchanged). ProfileStore session-locks each save (so two servers can never load and save the same profile at once), retries loading, and saves on leave and on server shutdown (it binds to `game:BindToClose` itself).
 
-| | Stats (`MainStore2`) | OnCharacter (`OnCharacterStore2`) |
+**Store and key.** Store name `Config.Data.StoreName` (`"GameOfMagi_v1"`, a new store — the old `"GameOfMagi_v0.01am"` data is not read by the new code). Key: `Config.Debug.SaveScope .. "_" .. userId`, where `SaveScope` is `"Studio"` in Studio and `"Live"` in a published server — so play tests in Studio can never touch or corrupt a live save. `Config.Debug.FreshSave` (Studio only) forces every session onto `ProfileStore.Mock` instead: nothing persists, and every run starts from a brand-new template. DataService also falls back to `.Mock` on its own, for the rest of that server's life, if the very first real `StartSessionAsync` call throws (DataStore API unavailable, e.g. testing offline).
+
+**Schema (v1)**, defined in `RS/Shared/SaveSchema.luau` as `SaveSchema.Template`, deep-copied per profile by ProfileStore:
+```
+Version   number                            -- schema version; SaveSchema.Migrate walks old saves up to Config.Data.SchemaVersion
+
+Character = { FirstName, Gender, Race, Kingdom, SkinTone, HairColor {R,G,B},
+              EyeColor, FaceBase, MouthShape, Height, GrowthProfile }   -- same fields/meanings as the old Stats shape below
+Age       = { Years, TimePassed, ProgToAge }   -- TimePassed set to os.time() on first load
+Progress  = { Magoi, GoldRukh, BlackRukh, Epithet }   -- DESIGN.md section 3a
+Bounty    number
+Economy   = { Copper, Silver, Gold }
+Gear      = { Shirt, Pants, Hats {3 slots}, Inventory {item code list} }
+Family    table   -- reserved, empty
+Magic     table   -- reserved, empty
+Meta      = { Created, LastSeen, Lives }
+```
+Missing keys on an existing save are filled in by `Profile:Reconcile()` before `SaveSchema.Migrate` runs, so a migration can assume its own version's shape already exists.
+
+**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use).
+
+**If loading fails or the player leaves mid-load:** the player is kicked with "Your save couldn't be loaded. Please rejoin in a moment." A session stolen by another server, or the DataStore going down mid-session, kicks the player the same way (ProfileStore's `OnSessionEnd`).
+
+**The legacy bridge** (`SSS/Server/Services/LegacyBridge.luau`, **temporary** — deleted once M2–M6 stop needing it). Old scripts (M2 onward, not yet rebuilt) still read and write `player.Stats` and `player.OnCharacter` directly, so on load DataService builds those exact folders and Value objects from the real save, and mirrors changes both ways:
+
+| Old Value | Mirrors | Direction |
 |---|---|---|
-| File | `SSS/Datastore/MainStore2/init.server.luau` | `SSS/Datastore/MainStore2/OnCharacterStore2.server.luau` |
-| Folder it builds | `player.Stats` | `player.OnCharacter` (with subfolders `Clothes`, `Currency`, `Hats`, `Inventory`, and a `Position` value) |
-| "Done loading" flag | `player.Loaded` (waits for `LoadedOC` first) | `player.LoadedOC` |
-| If loading fails | Kicks the player and blocks saving (`BadData` marker) | Only warns; carries on with an empty table |
-| Save call | `SetAsync` | `UpdateAsync` (ignores the old value) |
+| `Stats.Race`, `.Kingdom`, `.EyeColor`, `.FaceBase`, `.MouthShape`, `.SkinTone`, `.HairColor`, `.FirstName`, `.GrowthProfile`, `.Height` | `Character.*` (same names) | two-way |
+| `Stats.Gender` | `Character.Gender` | two-way |
+| `Stats.Age` | `Age.Years` | two-way |
+| `Stats.TimePassed`, `.ProgToAge` | `Age.TimePassed`, `.ProgToAge` | two-way |
+| `Stats.MaxMagoi` | `Progress.Magoi` | one-way (data → Value); nothing currently active writes it back (the only old writer, `LevelHandler`, is parked) |
+| `Stats.Hunger` | fixed at `5` | one-way (parked, TRIAGE K1) |
+| `OnCharacter.Clothes.Clothing_Shirt/Pants` | `Gear.Shirt`/`Pants` | two-way |
+| `OnCharacter.Currency.Copper/Silver/Gold` | `Economy.*` | two-way |
+| `OnCharacter.Hats.HatSpot1..3` | `Gear.Hats[1..3]` | two-way |
+| `OnCharacter.Inventory.Row1` | `Gear.Inventory`, `;`-joined | two-way |
+| `OnCharacter.Inventory.Row2` | fixed at `""` | one-way (nothing ever wrote it) |
+| `player.LoadedOC`, then `player.Loaded` | — | set once, in that order, after the folders above are populated |
 
-**DataStore name:** the value of `SSS.Datastore.CurrentStore` (a StringValue), currently `"GameOfMagi_v0.01am"`.
-**Key:** `player.UserId`, used by **both** scripts.
+`Position` is not part of the bridge (the old code that saved it was already commented out; new spawns always go to Qarzin — see section 2).
 
-**Stats data shape** (saved table):
-```
-Race          int   1 Fanalis, 2 Human, 3 Imuchakk, 4 Magician, 5 Magi (new players: always 2, Human, for now)
-HairColor     {R, G, B}  0–1 floats (random for new players)
-FirstName     string (random from Assets.FirstNames.sindria.male)
-Kingdom       int   (always 1 for now)
-MaxMagoi      int   (by race: 1 / 10 / 10 / 100 / 1000; used as EXP)
-EyeColor      int 1–5,  FaceBase int 1–2,  MouthShape int 1–6
-Gender        int   0 = not chosen yet, then set by the gender picker
-Age           int   starts at 13
-Height        number  10 = "not rolled yet" sentinel, then a real height (~0.75–1.25)
-GrowthProfile string  "v1|startHeight|adultHeight|spurtAge|fatEnd" (see Aging)
-SkinTone      int   0 until chosen
-TimePassed    int   os.time() of the last aging tick
-ProgToAge     int   seconds banked toward the next birthday
-Hunger        number  starts at 5
-```
+**Depends on:** `RS/Shared/Config`, `RS/Shared/Log`, `RS/Shared/SaveSchema`, `SSS/Server/Packages/ProfileStore`.
+**Depended on by:** every old script that reads `player.Stats` / `player.OnCharacter` / `player.Loaded` / `player.LoadedOC` (unchanged, via the bridge), and every M1-04+ system that will call `DataService.Get`/`WaitFor` directly instead.
 
-**OnCharacter data shape:**
-```
-Clothing_Shirt, Clothing_Pants   item code string, e.g. "S|Short Sleeve Rags|35,35,35" (see Items)
-Copper, Silver, Gold             int (new players: 20 Copper)
-HatSpot1..3                      item code string or ""
-Row1, Row2                       string: inventory rows, ";"-separated item codes read by the menu (nothing writes them yet)
-Position                         not saved (code is commented out); new spawns go to Qarzin
-```
-
-**⚠ Both scripts write to the same DataStore under the same key.** Each saves only its own table, so whichever saves last overwrites the other's data. For example, Stats saving can erase your coins, and OnCharacter saving can erase your age.
-
-**Depends on:** `RF.Assets` (first names), `SSS.Character.ItemHandler` (required but not used), `RS.Modules.AssetID` (required but not used).
-**Depended on by:** almost everything. Scripts wait on `player.Loaded`, `player.Stats`, and `player.OnCharacter`.
-
-**Disabled:** `SSS/Datastore/StatManipulation` is switched off. It requires a `DataStore2` module that doesn't exist, and its body is all commented out (an older chat-command and backup idea).
+**Removed:** the old `SSS/Datastore/` folder (`MainStore2/init.server.luau`, `MainStore2/OnCharacterStore2.server.luau`, `CurrentStore.txt`) — TRIAGE #1, approved. **Not removed** (out of this task's scope): `SSS/DevCommandHandler.luau` (M1-05) still opens two DataStores directly by name (`"Mainstore2"`, `"OnCharacterStore2"` — note these don't even match the old `CurrentStore` value, so that code path looks already-dead); M1-05 should point it at `DataService` instead.
 
 ---
 
