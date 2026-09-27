@@ -5,8 +5,6 @@ local rs = game:GetService("RunService")
 
 local ragdollMod = require(ReplicatedStorage.Modules.Ragdoll)
 local speedMod = require(ReplicatedStorage.Modules.SpeedHandler)
-local DamageService = require(game.ServerScriptService.Services.DamageHandler)
-local dashMod = require(ReplicatedStorage.Modules.DashHandler)
 
 --Variables
 local GUIFolder = game.ReplicatedFirst.GUI

@@ -5,7 +5,6 @@ local reward = require(game.ReplicatedStorage.Modules.RewardHandler)
 local rs = game:GetService("RunService")
 
 -- events
-local camEvent = game.ReplicatedStorage.Remotes.MiscRemotes.Cam
 local questGUI = game.ReplicatedStorage.Remotes.MiscRemotes.QuestGUI
 local quest2GUI = game.ReplicatedStorage.Remotes.MiscRemotes.Quest2GUI
 

@@ -24,20 +24,6 @@ end
 -- Variables
 local RegionInfo = chara:WaitForChild("RegionInfo")
 
---[[ Light Store
-local color1 = game.Lighting.Atmosphere.Color
-local color2 = game.Lighting.Atmosphere.Decay
-local val1 = game.Lighting.Atmosphere.Glare
-local val2 = game.Lighting.Atmosphere.Haze
-local val3 = game.Lighting.Atmosphere.Density
-
-local color3 = game.Lighting.Ambient
-local color4 = game.Lighting.ColorShift_Top
-local color5 = game.Lighting.ColorShift_Bottom
-local val4 = game.Lighting.EnvironmentDiffuseScale
-local val5 = game.Lighting.EnvironmentSpecularScale
-local color6 = game.Lighting.OutdoorAmbient]]
-
 -- Module
 local sfx = require(game.ReplicatedStorage.Modules.SoundController)
 local msgTypes = game.ReplicatedFirst.GUI.MsgTypes
@@ -103,22 +89,7 @@ RegionInfo.ChildAdded:Connect(function(c)
 	elseif c.Name == "SultanChest" then
 		
 	elseif c.Name == "DesertLairTunnel" then
-		
-		-- Lighting
-		game.Lighting.Atmosphere.Color = Color3.fromRGB(0, 0, 0)
-		game.Lighting.Atmosphere.Decay = Color3.fromRGB(0, 0, 0)
-		game.Lighting.Atmosphere.Glare = 0
-		game.Lighting.Atmosphere.Haze = 0
-		game.Lighting.Atmosphere.Density = 0.65
 
-		game.Lighting.Ambient = Color3.fromRGB(0,0,0)
-		game.Lighting.ColorShift_Top = Color3.fromRGB(0,0,0)
-		game.Lighting.ColorShift_Bottom = Color3.fromRGB(0,0,0)
-		game.Lighting.EnvironmentDiffuseScale = 0
-		game.Lighting.EnvironmentSpecularScale = 0
-		game.Lighting.OutdoorAmbient = Color3.fromRGB(0,0,0)
-		
-		
 	elseif c.Name == "LowHealth" then
 		--sfx.MainControl(chara, "LowHealthAmbi", 0.1)
 		--TODO: Interweave with the rest of the music. Like it needs to cut off the current music, then resume when it ends.
@@ -151,20 +122,7 @@ RegionInfo.ChildRemoved:Connect(function(c)
 	elseif c.Name == "SakuraIsland" then
 		sfx.CutOff(chara, "All")
 	elseif c.Name == "DesertLairTunnel" then
-		--[[Lighting
-		game.Lighting.Atmosphere.Color = color1
-		game.Lighting.Atmosphere.Decay = color2
-		game.Lighting.Atmosphere.Glare = val1
-		game.Lighting.Atmosphere.Haze = val2
-		game.Lighting.Atmosphere.Density = val3
 
-		game.Lighting.Ambient = color3
-		game.Lighting.ColorShift_Top = color4
-		game.Lighting.ColorShift_Bottom = color5
-		game.Lighting.EnvironmentDiffuseScale = val4
-		game.Lighting.EnvironmentSpecularScale = val5
-		game.Lighting.OutdoorAmbient = color6]]
-		
 	elseif c.Name == "LowHealth" then
 		
 	elseif c.Name == "Slept" then

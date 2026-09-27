@@ -3,8 +3,6 @@ local Players = game:GetService("Players")
 local SSS = game:GetService("ServerScriptService")
 
 local ds = game:GetService("DataStoreService")
-local httpService = game:GetService('HttpService')
-local AssetID = require(game.ReplicatedStorage.Modules.AssetID)
 local assets = require(game.ReplicatedFirst.Assets)
 
 CharaStats = {
