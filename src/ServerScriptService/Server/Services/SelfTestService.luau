@@ -13,6 +13,9 @@ local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local LegacyBridge = require(script.Parent.LegacyBridge)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
+local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
+local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
+local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 
 local log = Log.new("SelfTest")
 
@@ -302,6 +305,57 @@ local function testDevService(results: { Check })
 	expect(results, "DevService: Dispatch gives a non-dev no reply", ok and nonDevReply == nil)
 end
 
+-- M2-06: the shared rank/alignment/epithet data modules are pure, so
+-- they're exercised directly without any Player or save table.
+local function testData(results: { Check })
+	do
+		local _, streetRat = Ranks.rankFor(299)
+		expect(results, "Ranks: 299 magoi is still Street Rat", streetRat == "Street Rat")
+
+		local _, wanderer = Ranks.rankFor(300)
+		expect(results, "Ranks: 300 magoi reaches Wanderer", wanderer == "Wanderer")
+
+		local _, kingQueen = Ranks.rankFor(6000)
+		expect(results, "Ranks: 6000 magoi reaches King/Queen", kingQueen == "King/Queen")
+
+		expect(results, "Ranks: titleFor renders King for gender 1", Ranks.titleFor(6000, 1) == "King")
+		expect(results, "Ranks: titleFor renders Queen for gender 2", Ranks.titleFor(6000, 2) == "Queen")
+		expect(results, "Ranks: titleFor keeps King/Queen for gender 0", Ranks.titleFor(6000, 0) == "King/Queen")
+
+		expect(results, "Ranks: nextThreshold after Street Rat is Wanderer's", Ranks.nextThreshold(0) == 300)
+		expect(results, "Ranks: nextThreshold at the top is nil", Ranks.nextThreshold(6000) == nil)
+	end
+
+	do
+		expect(results, "Alignment: 0/0 deeds is White (below MinDeeds)", Alignment.alignmentFor(0, 0) == "White")
+		expect(results, "Alignment: 10/0 deeds is Gold", Alignment.alignmentFor(10, 0) == "Gold")
+		expect(results, "Alignment: 3/7 deeds is Black", Alignment.alignmentFor(3, 7) == "Black")
+		expect(results, "Alignment: 5/5 deeds is Gold & Black", Alignment.alignmentFor(5, 5) == "GoldBlack")
+		expect(results, "Alignment: 2/1 deeds is White (below MinDeeds)", Alignment.alignmentFor(2, 1) == "White")
+	end
+
+	do
+		local everyRank = { "Street Rat", "Wanderer", "Adventurer", "Renowned", "Hero", "Legend", "King/Queen" }
+		local everyAlignment = { "White", "Gold", "Black", "GoldBlack" }
+		local everyBankLargeEnough = true
+		for _, rankTitle in everyRank do
+			for _, alignment in everyAlignment do
+				local bank = Epithets.bankFor(rankTitle, alignment :: Alignment.Alignment, 0)
+				if #bank < 4 then
+					everyBankLargeEnough = false
+				end
+			end
+		end
+		expect(results, "Epithets: every bank has at least 4 entries", everyBankLargeEnough)
+	end
+
+	do
+		local picks = Epithets.pick3("Wanderer", "Gold", 0)
+		expect(results, "Epithets: pick3 returns 3 entries", #picks == 3)
+		expect(results, "Epithets: pick3 returns distinct entries", picks[1] ~= picks[2] and picks[1] ~= picks[3] and picks[2] ~= picks[3])
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -318,6 +372,7 @@ function SelfTestService:Start()
 		testDataService(collected)
 		testPlayerService(collected)
 		testDevService(collected)
+		testData(collected)
 		return collected
 	end)
 
