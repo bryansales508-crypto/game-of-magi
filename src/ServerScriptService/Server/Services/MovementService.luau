@@ -342,8 +342,12 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 
 	-- Transient bridge child (PhysicalHandler.client.luau cancels its own
 	-- swing on ChildAdded "Dash"; M3-05 replaces that file, but until then
-	-- this keeps the cancel working).
-	writeBridgeModifier(character, entry, "Dash", 1.0)
+	-- this keeps the cancel working). REVIEW-M3-02 #3: routed through the
+	-- real SetModifier/ClearModifier (not a direct writeBridgeModifier
+	-- call) so entry.modifiers actually has a "Dash" key for
+	-- ClearModifier to find - a value of 1.0 never wins the
+	-- EffectiveMultiplier min anyway, so this never slows the dash itself.
+	MovementService.SetModifier(character, "Dash", 1.0)
 	task.delay(Combat.Dash.duration, function()
 		if registered[character] == entry then
 			MovementService.ClearModifier(character, "Dash")

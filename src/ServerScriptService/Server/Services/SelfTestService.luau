@@ -755,6 +755,54 @@ local function testMovementService(results: { Check })
 			MovementService.LowHealthMult(false, 5) == 1.0 and MovementService.LowHealthMult(false, -5) == 0.25
 		)
 	end
+
+	-- REVIEW-M3-02 #3: the Dash bridge marker used to never clear
+	-- (ClearModifier bailed on a missing entry.modifiers entry, since the
+	-- marker was written directly through writeBridgeModifier instead of
+	-- SetModifier). IntFold/IntFold.MovementSpeed are pre-created here so
+	-- MovementService's own background bridge resolution (normally a
+	-- bounded real-time wait) resolves synchronously inside Register.
+	do
+		local scratch = Instance.new("Folder")
+		scratch.Name = "SelfTestMovementServiceDash"
+		scratch.Parent = ServerStorage
+
+		local character = Instance.new("Model")
+		character.Parent = scratch
+		local intFold = Instance.new("Folder")
+		intFold.Name = "IntFold"
+		intFold.Parent = character
+		local movementSpeed = Instance.new("Folder")
+		movementSpeed.Name = "MovementSpeed"
+		movementSpeed.Parent = intFold
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.CFrame = CFrame.new(0, 5, 0)
+		hrp.Parent = character
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = character
+
+		MovementService.Register(character)
+		local dashed = MovementService.Dash(character, 0, 1)
+		expect(results, "MovementService: Dash succeeds with no prior dash", dashed)
+		expect(
+			results,
+			"MovementService: Dash writes a transient IntFold.MovementSpeed.Dash bridge child",
+			movementSpeed:FindFirstChild("Dash") ~= nil
+		)
+
+		task.wait(Combat.Dash.duration + 0.1)
+		expect(
+			results,
+			"MovementService: the Dash bridge child clears itself after the dash duration",
+			movementSpeed:FindFirstChild("Dash") == nil
+		)
+
+		MovementService.Unregister(character)
+		character:Destroy()
+		scratch:Destroy()
+	end
 end
 
 -- M3-03: CombatService's pure combo/facing/block-decision helpers, the
