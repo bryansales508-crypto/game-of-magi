@@ -204,6 +204,7 @@ IDs start with the severity letter: C, H, M, L, and D for dead or duplicate code
 | D1 | **Deprecated APIs.** `spawn`: FaceControl, Fear&Hunger, Protection, InteractionsDesign, MissionHandler, Health, NPController. `wait`: Health, BlockHealthRegen, Load. `delay`: FaceControl, SoundController. Lowercase `:connect`: InteractionsHandler, FaceControl, MissionHandler, MissionDeliniation, NPController, PhysicalHandler. `Instance.new(class, parent)`: AppearanceController, ItemHandler. |
 | D2 | **Unused or duplicate code.** Unused requires in MainStore2, OnCharacterStore2, AppearanceController, EffectsService, InteractionsDesign, PhysicalHandler, MissionDeliniation and MissionHandler. The Modifiers table is copied 3 times (MissionHandler, RewardHandler, MissionDeliniation). The speed recompute is pasted 4 times in InteractionsDesign. Unused modules are listed in SYSTEMS.md under "Not in use". |
 | D3 | **Unused remotes.** The ~35 listed in SYSTEMS.md, plus `MiscRemotes.Drop`, `Announcer`, `Cam`, `CameraShake`, `CombatRemotes.CombatString`, `Gripped`, `BlockBroken`. |
+| D5 | **Leftovers from the previous game (Bryan).** The Desert Lair Tunnel region code in `SCS/Scripts/RegionHandlerPart1.client.luau:105-120, 153-166` (was M16). The tunnel doesn't exist anymore. |
 | D4 | **Accidental globals.** `PlyStats`, `CharaStats`, `DesertCities`, `forcedChatsMsgs`, `spawnfold`, `spawnlocations`, `HUD`, and PhysicalHandler's combat state. |
 
 ---
@@ -263,19 +264,34 @@ IDs start with the severity letter: C, H, M, L, and D for dead or duplicate code
 
 Earlier output already in the console (not from these sessions) showed "You must publish this place to the web to access DataStore" and an "Appearence isn't loading" kick. That's what happens when the local copy is played. It's why the playtest moved to the published place.
 
+### Confirmed by Bryan (2026-09-26)
+
+**Background:** Game of Magi is a remake of an earlier game. Many scripts, remotes and regions are left over from that previous version and aren't part of the new design.
+
+| Topic | Bryan's answer | Effect on findings |
+|---|---|---|
+| Customization | No errors | Fine |
+| Aging | Ages, no resize after 18. Resize not needed past that | Fine (M10 still stands for the runaway age and missing old-age death) |
+| Knockout | Screen lightens after about 20 s, up about 2 s later | Works |
+| Blocking at low health | Doesn't get knocked | M1 not seen in play (the dummy mostly hits the dagger, P2). The code path still exists, so it drops to **low** |
+| Hat with 3 slots full | "Not enough room" line, no charge | L12 "paid but not saved": **not a bug** |
+| Different shirt | Can buy | Works (same shirt in a different colour still untested) |
+| Delivery | Delivered and got paid | Works end to end |
+| Desert Lair Tunnel | Doesn't exist; left over from the previous game | M16 becomes **dead code** (D5) |
+| PvP | Block, parry and block-break all work. **Block-break "feels a little funky"** | Works; feel note for combat |
+| Courier interception | Took the courier's money | Works as designed (the H8 exploit and crash cases still stand) |
+| Mannequin hover for everyone | **Not intended** | L12 hover confirmed as a bug |
+| Royal Dagger on everyone | **Test code** | L7: test code |
+| Combat (combo chain etc.) | **Not finished** | Combat is work in progress; H6 and similar are "unfinished", not regressions |
+| Menu line cut off | Because the age number is huge | P3 is caused by M10 (runaway age), not the layout |
+
 ### Still unconfirmed
-- The gender picker on a fresh save
+- The gender picker on a fresh save (Bryan remembers it working)
 - Dash and run in the open
-- Delivery missions end to end
-- Regions and music, including the tunnel lighting (M16)
+- Regions and music
 - Dev commands in play
 - Ocean lag over time
-- Mannequin hover
-- A shirt purchase, including a different colour of the worn shirt
-- Hat purchase with all 3 slots full
-- Anything with two players: PvP block, parry and block-break; intercepting a courier (H8)
-
-Bryan will confirm what he can.
+- Buying the same shirt in a different colour
 
 ---
 
