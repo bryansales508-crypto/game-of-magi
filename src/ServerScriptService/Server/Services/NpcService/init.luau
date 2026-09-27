@@ -25,6 +25,7 @@ local CollectionService = game:GetService("CollectionService")
 
 local Log = require(ReplicatedStorage.Shared.Log)
 local Config = require(ReplicatedStorage.Shared.Config)
+local HealthService = require(script.Parent.HealthService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
@@ -90,6 +91,7 @@ end
 
 local function unregisterNpc(model: Model)
 	controllers[model] = nil
+	HealthService.Unregister(model)
 	StatusService.Unregister(model)
 	MovementService.Unregister(model)
 	CombatService.Unregister(model)
@@ -109,8 +111,6 @@ setupNpc = function(model: Model)
 
 	local npcType = NpcService.ResolveNpcType(model)
 	local maxHealth = Config.Npc.MaxHealth[npcType] or Config.Npc.MaxHealth.Dummy
-	humanoid.MaxHealth = maxHealth
-	humanoid.Health = maxHealth
 	pcall(function()
 		model:SetAttribute("NpcType", npcType)
 	end)
@@ -127,6 +127,11 @@ setupNpc = function(model: Model)
 		end
 	end
 
+	-- REVIEW-M3-04 H1: an NPC takes the identical health path as a player
+	-- now - HealthService.Register sets MaxHealth/Health itself (from
+	-- Config.Npc.MaxHealth, not the rank ladder a player's own
+	-- HealthService.Ready path uses).
+	HealthService.Register(model, { maxHealth = maxHealth })
 	StatusService.Register(model, nil)
 	MovementService.Register(model, nil)
 	CombatService.Register(model, nil, "Fist")

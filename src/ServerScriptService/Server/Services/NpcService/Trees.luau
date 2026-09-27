@@ -37,16 +37,30 @@ end
 -- Studio access here to know what's actually there, so this only ever
 -- reacts to what it finds; a missing animation is silently skipped, never
 -- an error).
-local function playAnimationIfPresent(bb: any, name: string)
+-- REVIEW-M3-04 L2: tries an existing named Animation instance on the
+-- model first (Bryan's own art, if it's there); falls back to
+-- Config.Npc.Animations[name] (an asset id, empty by default) so Bryan can
+-- fill in either one without a code change.
+local function playAnimationIfPresent(bb: any, name: "Walk" | "Run" | "Flinch")
 	local ok = pcall(function()
 		local animator = bb.humanoid:FindFirstChildOfClass("Animator")
 		if animator == nil then
 			return
 		end
+
 		local animation = bb.character:FindFirstChild(name, true)
 		if animation == nil or not animation:IsA("Animation") then
+			local assetId = Config.Npc.Animations[name]
+			if assetId == nil or assetId == "" then
+				return
+			end
+			local fallback = Instance.new("Animation")
+			fallback.AnimationId = assetId
+			animator:LoadAnimation(fallback):Play()
+			fallback:Destroy()
 			return
 		end
+
 		animator:LoadAnimation(animation):Play()
 	end)
 	if not ok then

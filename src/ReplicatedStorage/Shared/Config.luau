@@ -137,6 +137,11 @@ Config.Npc = {
 	AttackCooldown = 1.4,
 	WanderRadius = 12,
 	MaxHealth = { Dummy = 100, Target = 100 },
+	-- REVIEW-M3-04 L2: optional asset ids Bryan can fill in for the walk/
+	-- run/flinch animations (empty by default - Trees.luau's by-name
+	-- Animation-instance lookup on the model itself is tried first; this
+	-- is only a fallback for when the art doesn't have one).
+	Animations = { Walk = "", Run = "", Flinch = "" },
 }
 
 table.freeze(Config.Debug)
@@ -154,6 +159,7 @@ table.freeze(Config.Health)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
+table.freeze(Config.Npc.Animations)
 table.freeze(Config.Npc)
 table.freeze(Config)
 

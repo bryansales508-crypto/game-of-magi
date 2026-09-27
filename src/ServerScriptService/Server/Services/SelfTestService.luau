@@ -585,6 +585,63 @@ local function testHealthService(results: { Check })
 		expect(results, "HealthService: RegenAmount Combat over 5s (no regen in combat)", HealthService.RegenAmount("Combat", 5) == 0)
 		expect(results, "HealthService: RegenAmount Knocked over 5s", HealthService.RegenAmount("Knocked", 5) == 5)
 	end
+
+	-- REVIEW-M3-04 H1: an NPC registered with HealthService takes damage
+	-- through TakeDamage (not a direct Humanoid.Health write) and is
+	-- knocked at 0 exactly like a player - the identical CombatService.
+	-- ApplyHit path, just with a Model instead of a Player behind it.
+	do
+		local scratch = Instance.new("Folder")
+		scratch.Name = "SelfTestHealthServiceNpc"
+		scratch.Parent = ServerStorage
+
+		local attacker = Instance.new("Model")
+		attacker.Parent = scratch
+		local attackerHrp = Instance.new("Part")
+		attackerHrp.Name = "HumanoidRootPart"
+		attackerHrp.Anchored = true
+		attackerHrp.Parent = attacker
+		Instance.new("Humanoid").Parent = attacker
+
+		local npc = Instance.new("Model")
+		npc.Name = "SelfTestHealthServiceNpc"
+		npc.Parent = scratch
+		local npcHrp = Instance.new("Part")
+		npcHrp.Name = "HumanoidRootPart"
+		npcHrp.Anchored = true
+		npcHrp.Parent = npc
+		local npcHumanoid = Instance.new("Humanoid")
+		npcHumanoid.Parent = npc
+
+		HealthService.Register(npc, { maxHealth = 20 })
+		expect(results, "HealthService: Register sets an NPC's MaxHealth/Health", npcHumanoid.MaxHealth == 20 and npcHumanoid.Health == 20)
+
+		StatusService.Register(npc)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(npc, nil, "Fist")
+
+		local jab = Combat.move("Fist", 1) :: Combat.Move -- 5 damage
+		CombatService.ApplyHit(attacker, npc, jab, 1)
+		expect(
+			results,
+			"HealthService: an NPC's non-lethal hit goes through TakeDamage",
+			npcHumanoid.Health == 15 and npc:GetAttribute("Health") == 15
+		)
+
+		npcHumanoid.Health = 3 -- less than the next hit's damage
+		CombatService.ApplyHit(attacker, npc, jab, 1)
+		expect(
+			results,
+			"HealthService: a lethal hit still knocks an NPC out instead of killing it",
+			npcHumanoid.Health == 1 and StatusService.Has(npc, "Knocked")
+		)
+
+		HealthService.Unregister(npc)
+		StatusService.Unregister(npc)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(npc)
+		scratch:Destroy()
+	end
 end
 
 -- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
@@ -969,13 +1026,15 @@ local function testCombatService(results: { Check })
 		character:Destroy()
 	end
 
-	-- REVIEW-M3-03 L8: the full parry-window -> cooldown -> held -> broken
-	-- sequence, against a fake (no-Player) blocker - which only works at
-	-- all because L8 also gave a target with no real Player its own block
-	-- meter (previously meterHeld always defaulted to true for one).
+	-- REVIEW-M3-03 L8 / REVIEW-M3-04 L1: the full parry-window -> cooldown
+	-- -> held -> broken sequence, against a fake (no-Player) blocker -
+	-- which only works at all because a target with no real Player gets
+	-- its own HealthService-backed block meter now (via HealthService.
+	-- Register, the same as NpcService gives a real NPC).
 	do
 		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
+		HealthService.Register(blocker, { maxHealth = 100 })
 		StatusService.Register(attacker)
 		StatusService.Register(blocker)
 		CombatService.Register(attacker, nil, "Fist")
@@ -1017,6 +1076,7 @@ local function testCombatService(results: { Check })
 		expect(results, "CombatService: the block breaks once a no-Player target's meter runs out (L8)", not StatusService.Has(blocker, "Block"))
 		expect(results, "CombatService: a broken block applies TrueStun", StatusService.Has(blocker, "TrueStun"))
 
+		HealthService.Unregister(blocker)
 		StatusService.Unregister(attacker)
 		StatusService.Unregister(blocker)
 		CombatService.Unregister(attacker)

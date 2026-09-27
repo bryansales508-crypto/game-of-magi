@@ -63,10 +63,6 @@ type Entry = {
 	-- The window between a swing and its own hit-check resolving (H2: you
 	-- can't start blocking while your own swing is still in flight).
 	pendingHitUntil: number?,
-	-- A block meter for a target with no real Player (HealthService's is
-	-- Player-only) - REVIEW-M3-03 L8: without this, an NPC's block could
-	-- never break at all (meterHeld defaulted to always true).
-	blockMeter: number,
 	ancestryConn: RBXScriptConnection?,
 	diedConn: RBXScriptConnection?,
 }
@@ -128,6 +124,14 @@ local function resolveCombatant(part: BasePart): Model?
 	return nil
 end
 
+-- REVIEW-M3-04 H1/L1: HealthService now accepts a Player OR a character
+-- Model (an NPC registered via HealthService.Register) - this just picks
+-- whichever identity is the real one for `character`, so the two are
+-- never mixed for the same combatant.
+local function healthCombatant(character: Model): HealthService.Combatant
+	return Players:GetPlayerFromCharacter(character) or character
+end
+
 -- ==================== movement/status/health coupling ====================
 
 -- REVIEW-M3-03 M2: HealthService.SetTier(player, "Combat") on any hit
@@ -136,20 +140,17 @@ end
 -- while it's active (see reconcileTier). Only meaningful for a real
 -- Player; HealthService's tiers don't exist for an NPC.
 local function reconcileTier(character: Model)
-	local player = Players:GetPlayerFromCharacter(character)
-	if player == nil then
-		return
-	end
+	local combatant = healthCombatant(character)
 	if StatusService.Has(character, "Knocked") then
-		HealthService.SetTier(player, "Knocked")
+		HealthService.SetTier(combatant, "Knocked")
 		return
 	end
 	local entry = registered[character]
 	local lastCombatAt = entry and entry.lastCombatAt
 	if lastCombatAt and Workspace:GetServerTimeNow() - lastCombatAt < Config.Health.CombatTierSeconds then
-		HealthService.SetTier(player, "Combat")
+		HealthService.SetTier(combatant, "Combat")
 	else
-		HealthService.SetTier(player, "Idle")
+		HealthService.SetTier(combatant, "Idle")
 	end
 end
 
@@ -184,10 +185,7 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 		else
 			MovementService.ClearModifier(character, "Block")
 		end
-		local player = Players:GetPlayerFromCharacter(character)
-		if player then
-			HealthService.SetBlocking(player, active)
-		end
+		HealthService.SetBlocking(healthCombatant(character), active)
 	elseif active and ENDS_BLOCK[status] then
 		-- Re-fires this same function with ("Block", false), which is what
 		-- actually clears the speed modifier/HealthService flag above -
@@ -269,31 +267,10 @@ local function applyBlockedHit(attacker: Model, target: Model)
 
 	-- REVIEW-M3-03 M1: a parry is resolved BEFORE the block meter is ever
 	-- touched - it costs no block HP at all, not even a refunded drain.
-	local meterHeld: boolean
-	if wouldParry then
-		meterHeld = true -- unused by ResolveBlock's Parried branch; never spent below.
-	else
-		local targetPlayer = Players:GetPlayerFromCharacter(target)
-		if targetPlayer then
-			-- HealthService owns this number (and its own MaxBlock cap -
-			-- AUDIT M2: nothing here ever adds block back on a parry, so
-			-- there's no cap to overshoot any more).
-			meterHeld = HealthService.SpendBlock(targetPlayer, Combat.Block.drainPerHit)
-		else
-			-- REVIEW-M3-03 L8: a target with no real Player (an NPC) still
-			-- needs a real meter, or its block could never break.
-			local npcEntry = registered[target]
-			if npcEntry then
-				local held = npcEntry.blockMeter >= Combat.Block.drainPerHit
-				if held then
-					npcEntry.blockMeter -= Combat.Block.drainPerHit
-				end
-				meterHeld = held
-			else
-				meterHeld = true
-			end
-		end
-	end
+	-- REVIEW-M3-04 L1: HealthService owns the meter for a real Player AND
+	-- an NPC now (its own MaxBlock cap too - AUDIT M2: nothing here ever
+	-- adds block back on a parry, so there's no cap to overshoot any more).
+	local meterHeld = if wouldParry then true else HealthService.SpendBlock(healthCombatant(target), Combat.Block.drainPerHit)
 
 	local outcome = CombatService.ResolveBlock(parrying, cooldownActive, meterHeld)
 
@@ -379,15 +356,11 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 		return
 	end
 
-	local targetPlayer = Players:GetPlayerFromCharacter(target)
-	if targetPlayer then
-		HealthService.TakeDamage(targetPlayer, move.damage, by)
-	else
-		-- An NPC (M3-04) has no Player behind it, so HealthService's
-		-- Player-keyed TakeDamage doesn't apply - its Humanoid is the one
-		-- source of truth for its own health.
-		targetHumanoid.Health = wouldBeHealth
-	end
+	-- REVIEW-M3-04 H1: routes through HealthService.TakeDamage either way
+	-- now - a registered NPC has its own HealthService state (NpcService
+	-- calls HealthService.Register), the identical path a player's own
+	-- damage takes.
+	HealthService.TakeDamage(healthCombatant(target), move.damage, by)
 
 	StatusService.Apply(target, "Hit", Combat.Stagger.hitStun, { kind = "Fist" })
 	StatusService.Apply(target, "Stun", move.stun)
@@ -660,7 +633,6 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		weaponSet = weaponSet or "Fist",
 		comboStep = 1,
 		lastMoveWasFinisher = false,
-		blockMeter = Config.Health.MaxBlock,
 	}
 	registered[character] = entry
 
