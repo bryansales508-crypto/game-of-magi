@@ -61,6 +61,13 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 1, per = 10 },
 	},
+	-- M2-01: character creation. The server only acts on this while the
+	-- save's Character.Gender == 0; see CharacterService.
+	CreateCharacter = {
+		kind = "Event",
+		args = { Validate.number({ min = 1, max = 2, integer = true }), Validate.number({ min = 1, max = 3, integer = true }) },
+		rate = { count = 3, per = 10 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

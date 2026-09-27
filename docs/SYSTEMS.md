@@ -83,23 +83,33 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 ---
 
-## 3. Character creation and appearance
+## 3. Character creation and appearance — rebuilt M2-01
 
-**What it does.** Every spawn, the server strips the Roblox avatar down and rebuilds it from saved stats: skin tone (by `SkinTone` + `Kingdom`), a "FalseHead" with face decals (face base, eyes, mouth, eyebrows from `RF.Assets`), hair recolored to `HairColor`, a combat hitbox part, collision groups, sounds, particles, footstep sounds and music tracks copied onto the torso. It then puts on the saved shirt and pants, giving new players a random ragged starter outfit. If `Gender` is 0, it shows the gender picker GUI (`RF.GUI.Gender`) and waits until a gender is chosen. It also rolls the first height/growth profile (section 4).
+**What it does.** `CharacterService` runs on `PlayerService.Ready` (after the join pipeline and `DataService` load are both done). If the save's `Character.Gender` is still 0 (a brand-new life), it waits for the `CreateCharacter` remote before building anything; the client shows the Gender/skin screen itself whenever it sees the `Gender` attribute at 0 (M2-04 owns that screen; the old Studio-only `RF.GUI.Gender.Decisions` server script — AUDIT H4 — is never shown by the server anymore). Once a gender exists, it strips the default Roblox avatar and rebuilds the same look the old `AppearanceController` did: skin tone (by `SkinTone` + `Kingdom`, template picked **by name**), a `FalseHead` with face decals (face base, eyes, mouth, eyebrows from `RF.Assets`), hair recoloured to `HairColor`, a combat hitbox part, one shared collision group, sounds/particles/footstep sounds/music copied onto the torso, the saved shirt/pants and hats (or a fresh random starter rag outfit for a new life), and the custom run/walk/jump/idle/fall animations (old `SSS/Animations.server.luau`, now folded in). `AppearenceLoaded` (same name/spelling) is still set on the character at the end, since most other scripts (old and new) wait on it. First height/growth-profile rolling and resizing are **not** done here; they stay with `AgeController`/`AgeHandler` until M2-02 moves them into `AgeService`.
 
-`FaceControl` (a copy is placed in each character's FalseHead) animates the face: mouth flaps while the player chats, random blinking, and "hurt" or "knocked out" faces when `Hit` or `Ragdoll` effects appear.
+`FaceControl` (`CharacterService/FaceControl`) is now a plain module the service calls once per character instead of a script cloned into the FalseHead; same behaviour and timings — mouth flaps while the player chats, random blinking, "hurt"/"knocked out" faces on `Hit`/`Ragdoll` effects.
 
-`SSS/Animations` swaps in custom run, walk, jump, idle and fall animations on the character's `Animate` script.
+**Remote:** `CreateCharacter` (client → server, `gender: 1|2`, `skin: 1|2|3`, rate 3/10s). Ignored unless the save's `Character.Gender == 0`. Stores `Gender`/`SkinTone`, rolls a **gender-matched** first name from `Assets.FirstNames.sindria.male`/`.female` (AUDIT L3 — the old roll always used the male list, before gender was even chosen), and refreshes the legacy `Stats` mirror. The client sees it worked once the `Gender` attribute goes non-zero.
+
+**Player attributes kept current:** `Gender`, `SkinTone`, `Kingdom`, `FirstName`, `HeightStuds` (`Character.Height` × a nominal 5-stud default rig height — display only, not HeightHandler's own scale), `Lives`.
+
+**Audit fixes carried in:**
+- **H4** — the gender/skin picker is a client screen plus one server-validated remote, not a server script reading GUI clicks.
+- **L2** (`RF/Assets/init.luau`, `eyecolor`) — the magician eye-colour branch used `Race ~= 4 or Race ~= 5`, which is always true, so it could never run; fixed to `Race == 4 or Race == 5`. Race is fixed to Human (2) for the rest of this renovation (DESIGN.md section 4), so this branch is currently unreachable in play either way — the fix is correctness, not a live change.
+- **L3** — first name now rolls from the gender the player actually chose, not the male list rolled before gender exists (`SaveSchema.NewLife`'s roll is a placeholder `CreateCharacter` always overwrites).
+- **L6** — the `ToolGrip` Motor6D never had a `Part0`, so it never moved anything. Wired (`Part0 = Torso`, its own parent) rather than deleted: the not-yet-rebuilt `PhysicalHandler.client.luau` still reaches for `Torso.ToolGrip.Part1`.
+- **M8** — one collision group (`PlayerLimbs`), registered once at `CharacterService:Init()`, instead of one per player per spawn that was never removed (Roblox caps collision groups at 32).
+- **P4** — the skin template is now picked strictly **by name** (1 Black, 2 Brown, 3 White, with the same Kingdom overrides as before). Whether each `.rbxm` template's own colours actually match its name is still unverified (binary asset, no Studio access from this build) — **playtester: please eyeball SkinTone 1/2/3 in each kingdom and report any mismatch.**
 
 **Files:**
-- `SSS/Character/AppearanceController/init.server.luau`. Its children `Black`, `Brown`, `White`, `Tan`, `LightTan` (BodyColors), `FalseHead`, `NormMeshie` and `FaceControl` are templates.
-- `SSS/Character/AppearanceController/FaceControl/init.server.luau`
-- `SSS/Animations.server.luau`
-- `RF/Assets/init.luau`: the big data module. Face decal tables, first and last names, clothing and outfit lists, hat and cloak lists, and item-code lookup. Its 34 children are the actual Accessory models for hats and cloaks.
-- Gender picker: `RF.GUI.Gender.Decisions` (inside `Gender.rbxm`, Studio-only). A **server** Script in the picker GUI: you choose Masculine/Feminine and a skin box (Black, Brown, White), then Enter. It sets `Stats.Gender` (1 male, 2 female) and `Stats.SkinTone` (1 Black, 2 Brown, 3 White). **⚠** Normally a server script can't see a player's GUI clicks, so this may never finish for a new player. Phase 3 will test it.
+- `SSS/Server/Services/CharacterService/` (`init.luau` the service; `Black`/`Brown`/`White`/`Tan`/`LightTan`/`FalseHead`/`NormMeshie` template assets as before; `FaceControl/` a nested module + its two `WateryEyes`/`TalkCount` Value templates).
+- `RF/Assets/init.luau`: unchanged data module (face decal tables, first/last names, clothing/outfit/hat/cloak lists, item-code lookup), except the L2 fix above.
+- `SSS/Character/ItemHandler.luau`, `AgeHandler.luau`, `HeightHandler.luau`: unchanged, still required by `CharacterService` (`ItemHandler`) and by `AgeController` until M2-02.
 
-**Depends on:** Saving (Stats, OnCharacter), `ItemHandler`, `AgeHandler`, `HeightHandler`, `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox`, `MainScreen` remote.
-**Depended on by:** nearly every character script waits on `AppearenceLoaded`.
+**Removed (TRIAGE #3):** `SSS/Character/AppearanceController/init.server.luau`, `SSS/Character/AppearanceController/FaceControl/init.server.luau`, `SSS/Animations.server.luau`.
+
+**Depends on:** `DataService`, `PlayerService.Ready`, `LegacyBridge` (refreshes `Stats`/`OnCharacter` after writing `Gender`/`SkinTone`/`FirstName`/`Gear` directly to the save), `ItemHandler`, `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox` (none of the last three are synced by Rojo — Studio-only asset folders).
+**Depended on by:** nearly every character script still waits on `AppearenceLoaded` (unchanged name); the legacy bridge keeps `Stats.Gender`/`Stats.SkinTone` mirrored for anything not yet rebuilt.
 
 ---
 

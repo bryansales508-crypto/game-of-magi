@@ -64,10 +64,12 @@ module.eyecolor = function(stat)
 
 	local id
 
-	if stat["Race"].Value ~= 4 or stat["Race"].Value ~= 5 then
-		id = eyecolortable.human[stat["EyeColor"].Value]
-	else 
+	-- L2: this used to read `~= 4 or ~= 5`, which is always true (a number
+	-- can't equal both), so the magician branch below could never run.
+	if stat["Race"].Value == 4 or stat["Race"].Value == 5 then
 		id = eyecolortable.magician[stat["EyeColor"].Value]
+	else
+		id = eyecolortable.human[stat["EyeColor"].Value]
 	end
 
 	local eyecolor = Instance.new("Decal")

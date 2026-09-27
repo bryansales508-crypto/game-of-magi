@@ -16,6 +16,7 @@ local DevService = require(script.Parent.DevService)
 local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
+local CharacterService = require(script.Parent.CharacterService)
 
 local log = Log.new("SelfTest")
 
@@ -356,6 +357,89 @@ local function testData(results: { Check })
 	end
 end
 
+-- M2-01: CharacterService's pure helpers, exercised with a fake save table
+-- (no Player, no DataService, no Remotes involved).
+local function fakeCharacterData(): SaveSchema.Data
+	return {
+		Version = 1,
+		Character = {
+			FirstName = "",
+			Gender = 0,
+			Race = 2,
+			Kingdom = 1,
+			SkinTone = 0,
+			HairColor = { R = 0.5, G = 0.5, B = 0.5 },
+			EyeColor = 1,
+			FaceBase = 1,
+			MouthShape = 1,
+			Height = 10,
+			GrowthProfile = "",
+		},
+		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+		Bounty = 0,
+		Economy = { Copper = 20, Silver = 0, Gold = 0 },
+		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
+		Family = {},
+		Magic = {},
+		Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+	}
+end
+
+local function testCharacterService(results: { Check })
+	do
+		expect(results, "CharacterService: SkinTone 1 maps to Black", CharacterService.SkinTemplateName(1, 3) == "Black")
+		expect(results, "CharacterService: SkinTone 2 maps to Brown", CharacterService.SkinTemplateName(2, 3) == "Brown")
+		expect(results, "CharacterService: SkinTone 3 maps to White", CharacterService.SkinTemplateName(3, 3) == "White")
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 1 lightens White to LightTan",
+			CharacterService.SkinTemplateName(3, 1) == "LightTan"
+		)
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 2 lightens Black to Tan",
+			CharacterService.SkinTemplateName(1, 2) == "Tan"
+		)
+		expect(
+			results,
+			"CharacterService (P4): Kingdom 2 lightens Brown to LightTan",
+			CharacterService.SkinTemplateName(2, 2) == "LightTan"
+		)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local applied = CharacterService.ApplyCreateCharacter(data, 1, 2)
+		expect(results, "CharacterService: a good CreateCharacter call is applied", applied and data.Character.Gender == 1 and data.Character.SkinTone == 2)
+		expect(results, "CharacterService: ApplyCreateCharacter rolls a FirstName", data.Character.FirstName ~= "")
+	end
+
+	do
+		local data = fakeCharacterData()
+		local rejected = CharacterService.ApplyCreateCharacter(data, 3, 1)
+		expect(results, "CharacterService: an out-of-range gender is rejected", not rejected and data.Character.Gender == 0)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local rejected = CharacterService.ApplyCreateCharacter(data, 1, 9)
+		expect(results, "CharacterService: an out-of-range skin is rejected", not rejected and data.Character.SkinTone == 0)
+	end
+
+	do
+		local data = fakeCharacterData()
+		local first = CharacterService.ApplyCreateCharacter(data, 1, 1)
+		local firstName = data.Character.FirstName
+		local second = CharacterService.ApplyCreateCharacter(data, 2, 3)
+		expect(
+			results,
+			"CharacterService: a second CreateCharacter call is ignored once Gender is set",
+			first and not second and data.Character.Gender == 1 and data.Character.FirstName == firstName
+		)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -373,6 +457,7 @@ function SelfTestService:Start()
 		testPlayerService(collected)
 		testDevService(collected)
 		testData(collected)
+		testCharacterService(collected)
 		return collected
 	end)
 
