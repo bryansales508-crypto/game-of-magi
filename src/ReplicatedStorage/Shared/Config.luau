@@ -90,6 +90,34 @@ Config.Sfx = {
 	Heartbeat = "rbxassetid://102383912898742",
 }
 
+-- M2-FIX-C (BUG-16): every timing for the heart-attack pulses and the
+-- return-to-the-Rukh scene, so Bryan can tune the pacing directly. The
+-- scene's look (colours, the AfterLife model itself) stays in
+-- RukhController and his own ReplicatedFirst.AfterLife model, not here.
+Config.Scene = {
+	-- A heartbeat is "lub-dub": two quick beats. BeatGap is the gap
+	-- between them; PairGap is the pause after the pair before the next
+	-- cycle (seconds).
+	BeatGap = 0.25,
+	PairGap = 0.8,
+	-- Heart-attack moment length, in lub-dub cycles.
+	NonFatalCycles = 2,
+	FatalCycles = 3,
+	-- Each fatal cycle's BeatGap/PairGap is multiplied by this again
+	-- (compounding), so the beats slow and the pauses grow cycle to
+	-- cycle, per Bryan's "too fast" note.
+	FatalSlowFactor = 1.4,
+	-- How long "Your heart gave out." stays up before the scene starts.
+	MessageSeconds = 2,
+	-- The return-to-the-Rukh walk: total time, and how much of the end
+	-- of it is the fade to white.
+	WalkSeconds = 6,
+	FadeSeconds = 2,
+	-- How far ahead of the spawn point the stand-in core sits when
+	-- Bryan's AfterLife model has no AfterlifeCore of its own (studs).
+	CoreDistance = 15,
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
@@ -103,6 +131,7 @@ table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
 table.freeze(Config.Sfx)
+table.freeze(Config.Scene)
 table.freeze(Config)
 
 return Config
