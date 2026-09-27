@@ -94,3 +94,17 @@ Bryan's additions: old-age death styled as a heart attack (every online birthday
 | M2-04 | Client: CreationController, MenuController (rank/epithet/alignment, fixed stat line, live preview), HudController | client-builder | done (merged) | Same look; M menu shows the new fields; creation works through the remote |
 | M2-05 | Client: RukhController (heart attack pulses, fatal message, return-to-the-Rukh scene with AfterLife or stand-in) | client-builder | done (merged) | `.heart` passes in ~1 s; `.heart fatal` plays the scene and respawns fresh |
 | M2-07 | PLAYTEST.md M2 scenarios and the M2 playtest | Bryan + lead + playtester | playtest 1 done (Bryan A,C-I; agent B PASS, J blocked): E, H, I(title) pass; character build crash blocks the rest (BUG-09..16). Fix round M2-FIX merged; second pass done (A, C, D, I pass; BUG-17..22 logged). done: final check passed 2026-09-27 (Bryan) | All scenarios pass |
+
+### M3 Combat: plan (approved by Bryan 2026-09-27; details in docs/M3-PLAN.md)
+
+Bryan's rules: NPCs are combatants like players with AI controllers (behavior trees); the old dummy scripts are deleted, not ported; Bryan tunes feel numbers in `Shared/Data/Combat.luau` during the playtest.
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M3-01 | Shared combat data + StatusService (markers, durations, attributes, `Effects` bridge) | server-builder | in progress (cloud) | Self-test passes; old readers of `character.Effects` still work |
+| M3-02 | MovementService (speed stack, run, dash with server cooldown, low-health slow, IntFold bridge) | server-builder | queued (same session) | Dash from spawn incl. diagonals; second dash within cooldown rejected; hurt slows immediately |
+| M3-03 | CombatService (server hit checks, combo chain, block/parry/break, knockout, NPC API, removals, footsteps kept alive) | server-builder | queued | A client can't hit out of range or spam; blocker immune while block holds; 3-hit fist chain |
+| M3-04 | NpcService + Shared/BehaviorTree + AiController (Dummy, Target trees) | server-builder | queued | Target chases within 30, gives up at 40, punches within 4, restarts; NPCs take hits like players |
+| M3-05 | CombatController (client input -> intentions; animations on server events) | client-builder | in progress (cloud) | Same feel; no stacked listeners; no client-side hit reports |
+| M3-06 | EffectsController (hit fx, parry/block-break, knockout blind + freeze, ragdoll visuals, dash trail, run zoom) | client-builder | queued (same session) | Same sounds and particles as today |
+| M3-07 | PLAYTEST.md M3 scenarios; Bryan plays the feel and tunes numbers; agent runs cheat checks only | Bryan + lead + playtester | todo | Feel approved by Bryan; every cheat check rejected |

@@ -1,0 +1,18 @@
+Follow-up task **M3-02: MovementService** (read `docs/M3-PLAN.md`, `docs/SYSTEMS.md` section 8, AUDIT H10, M4, M5, M6, D2, TRIAGE #9). Same rules: your branch, never push main, check.sh at 0 errors, LAST commit starts with `DONE M3-02:`. `git fetch origin main && git merge origin/main` first. Same design rule: keyed by character Model, NPCs included.
+
+## Contract with the client (M3-05 builds CombatController; do not build client code)
+- Remotes (add to `Shared/Remotes.luau`): `Run(on: boolean)` rate 4/s, `Dash(x: number, z: number)` rate 2/s (finite, |v| <= 1; the server normalises). No `Running`/`Dash` old remotes anymore.
+- `CombatEvent` (server -> all clients, `kind: string, data: table`) is declared here too (M3-03 uses it as well): you emit `Dash {character, x, z}` and `Run {character, on}`.
+- Character attributes: `SpeedMult` (number), `Running` (bool), `NextDashAt` (server clock via `workspace:GetServerTimeNow()`).
+
+## What to build: `src/ServerScriptService/Server/Services/MovementService.luau`
+1. Speed stack per combatant: `SetModifier(character, name, mult)`, `ClearModifier(character, name)`; effective = smallest multiplier (0 = frozen) x base walk speed; the service writes `Humanoid.WalkSpeed` itself immediately on every change (AUDIT M6). Base walk 16, run = `Combat.Run.speedMult` x base (matches today's 16/28). Modifier names used by others: `Run`, `Block`, `Stun`, `TrueStun`, `Knocked`, `Hit`, `LowHealth`, `HeavyCargo` (missions keep using the bridge below).
+2. Run: `Run(true)` applies `Run`; ignored while stunned/knocked/blocking; server clears it on those statuses (subscribe to `StatusService.Changed`).
+3. Dash: server cooldown from `Combat.Dash.cooldown` (AUDIT M4), rejected while stunned/knocked; no first-punch requirement (H10); diagonals fine (any normalised x,z); applies an impulse or a short `LinearVelocity`/AssemblyLinearVelocity push of `Combat.Dash.distance` over `Combat.Dash.duration` along the given direction relative to the character's facing; emits `CombatEvent Dash`.
+4. Low health: subscribe to `HealthService` (Health/MaxHealth attributes) and apply `LowHealth` (down to half run / quarter walk like SYSTEMS 8 says) immediately and remove it fully on recovery.
+5. Cleanup on Unregister/death/leave: no loops left (AUDIT M5).
+6. **Bridge:** keep the old `character.IntFold.MovementSpeed` folder children in sync (write them from the stack) so `MissionHandler`'s heavy cargo and other old readers keep working until M5; read `Interactions/InteractionsDesign.server.luau` on main for the exact names. Remove `RS/Modules/SpeedHandler.luau` and the `Running`/`Dash` remote model files (approved TRIAGE #9); grep `src/` for other requires of SpeedHandler and repoint old scripts that must keep working to `MovementService` (say which), or leave a shim if simpler. Don't delete InteractionsDesign/InteractionsHandler yet (M3-03 does).
+7. Self-test: stack maths (min wins, 0 freezes, clear restores), dash cooldown rejects a second dash, LowHealth thresholds.
+8. `docs/SYSTEMS.md` section 8 only: rewrite.
+
+Reply with BRANCH, commit hash, files, check.sh counts.
