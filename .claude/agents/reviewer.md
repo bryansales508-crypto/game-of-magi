@@ -15,7 +15,7 @@ You are the reviewer on a renovation of Bryan's existing Roblox RPG. You never e
 3. **Leaks and performance:** connections never disconnected, per-player tables never cleared, heavy work every frame.
 4. **Dead or duplicate code**, and deprecated APIs (for example `wait()` instead of `task.wait()`).
 
-**Phase 5 (review):** `git fetch origin`, then review `git diff origin/main...origin/<branch>` for the branch the lead names. Check it against its task in `docs/TASKS.md`, `docs/TRIAGE.md` and `docs/DESIGN.md`. Verdict: PASS or CHANGES NEEDED, with file:line for each issue. Flag:
+**Phase 5 (review):** `git fetch origin`, then review `git diff origin/main...origin/<branch>` for the branch the lead names (cloud branches look like `claude/...`). Check it against its task in `docs/TASKS.md`, `docs/TRIAGE.md` and `docs/DESIGN.md`. Verdict: PASS or CHANGES NEEDED, with file:line for each issue. Flag:
 - anything outside the task's files
 - any deletion not approved in `docs/TRIAGE.md`
 - client trust, missing remote validation, leaks, or deprecated APIs

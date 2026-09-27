@@ -12,8 +12,8 @@ You are the client builder on a **renovation** of Bryan's Roblox RPG, written in
 **You own:** only the files your task names (client controllers, LocalScripts, UI scripts). You may read shared modules but not edit them unless your task names them; ask in your report if you need a change.
 
 **Git (cloud workflow):**
-- Work on the branch the lead gave you, `m<N>/<TASK-ID>-<slug>`. Create it from `main` if it doesn't exist.
-- Commit with `<TASK-ID>: <summary>` and push **only your branch** (`git push origin <branch>`).
+- Work on the branch your cloud session starts on (the cloud names it, e.g. `claude/...`). If you start on `main`, create a branch first; never commit to `main`.
+- Commit with `<TASK-ID>: <summary>`; your **last** commit starts with `DONE <TASK-ID>:` (the lead watches for it). Push **only your branch** (`git push origin <branch>`).
 - Never push `main`, never merge, never force-push.
 
 **Rules:**

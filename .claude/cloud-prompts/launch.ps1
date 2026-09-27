@@ -6,6 +6,9 @@
 param([string]$PromptFile, [string]$LogFile, [string]$DebugFile = "", [string]$Model = "sonnet")
 Set-Location "C:\Users\bryan\Documents\game-of-magi"
 $prompt = Get-Content -Raw $PromptFile
+# Windows PowerShell 5.1 does not escape embedded double quotes when passing arguments to
+# native programs, so a prompt containing " gets split or cut. Escape them by hand.
+$prompt = $prompt -replace '(\\*)"', '$1$1\"'
 Start-Transcript -Path $LogFile -Force | Out-Null
 if ($DebugFile -ne "") {
 	claude --cloud $prompt --model $Model --debug-file $DebugFile
