@@ -23,7 +23,7 @@ Through shared files you keep current:
 ### Phase 1: Inventory and extract
 1. Dispatch `playtester` to inventory the place in Studio, **read-only**: list every Script, LocalScript, and ModuleScript with its full path, and note which top-level containers hold scripts. Flag any scripts living inside Workspace models or other non-standard places.
 2. Using that inventory, write `default.project.json` so Rojo covers **only the containers that hold code**. Never include Workspace, and never include containers that hold only models, maps, or assets. Scripts found inside Workspace models get listed in `docs/SYSTEMS.md` as "not synced" instead.
-3. Show Bryan the inventory and the project file, then tell him to run syncback on his **copy** of the place.
+3. Show Bryan the inventory and the project file, then tell him to run syncback on a file snapshot of the place.
 4. After syncback, confirm the file count matches the inventory, then commit.
 **Gate:** Bryan confirms every script made it into `src/`.
 
@@ -51,4 +51,5 @@ The same loop as always: plan → build (server and client builders in parallel)
 - **Saving:** there is no real player data, so DataStore formats may change. Every change to a save format must be written up in SYSTEMS.md, and existing handlers (such as versioned age data) must be updated consistently.
 - **The server never trusts the client.** Every remote is validated on the server. Admin and dev commands must check permissions on the server.
 - **Files first, Studio second.** Builders only edit files. Only the playtester touches Studio, and it never edits code.
-- **Never** publish the game, push to a remote, or work on the original place file. Everything happens on Bryan's copy.
+- **Never** publish the game or push to a remote.
+- **Working on the published place is allowed** (Bryan's rule, 2026-09-26). Studio keeps version history for the published game and Bryan can revert it himself, so the playtester may playtest the published place opened in Studio, and Rojo may sync into it. Play tests there may read and write the live DataStore; that is fine. Studio stays open on the published place, not on a local copy. Publishing is still Bryan's call alone.
