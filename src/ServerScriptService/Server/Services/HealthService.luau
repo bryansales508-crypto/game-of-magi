@@ -269,6 +269,23 @@ function HealthService:Start()
 				end
 
 				local character = player.Character
+				local data = DataService.Get(player)
+
+				-- REVIEW-M2-03 finding 1: recomputed every tick, not only at
+				-- Ready/AppearenceLoaded. AgeService.resizeCharacter changes
+				-- Character.Height in place on a birthday, with no respawn
+				-- to re-fire PlayerService.Ready, so without this MaxHealth
+				-- stayed stuck at spawn's height until the player's next
+				-- death/rejoin - the exact M11 bug this service exists to
+				-- fix, just moved. setupCharacter already applies the "top
+				-- up only if already full" rule; calling it here reuses
+				-- that instead of a second copy of it, and keeps AgeService
+				-- and HealthService decoupled (no new call from AgeService
+				-- into HealthService needed).
+				if character and data then
+					setupCharacter(player, character, data)
+				end
+
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 				if humanoid then
 					local regen = HealthService.RegenAmount(tierState[player] or "Idle", Config.Health.Tick)
@@ -285,7 +302,6 @@ function HealthService:Start()
 					player:SetAttribute("Block", refilled)
 				end
 
-				local data = DataService.Get(player)
 				if data then
 					player:SetAttribute("Rank", Ranks.titleFor(data.Progress.Magoi, data.Character.Gender))
 					player:SetAttribute("Epithet", data.Progress.Epithet)

@@ -485,6 +485,16 @@ local function testHealthService(results: { Check })
 	do
 		expect(results, "HealthService: MaxHealthFor height 1.0 / rank 1", HealthService.MaxHealthFor(1.0, 1) == 53)
 		expect(results, "HealthService: MaxHealthFor height 1.3 / rank 4", math.abs(HealthService.MaxHealthFor(1.3, 4) - 88.9) < 1e-9)
+		-- REVIEW-M2-03 finding 1: the shared regen loop recomputes MaxHealth
+		-- from the current height/rank every tick (not only at spawn), so a
+		-- live AgeService birthday resize actually moves it. This confirms
+		-- the formula it recomputes from really is height-sensitive at a
+		-- fixed rank, same as a birthday would change under it.
+		expect(
+			results,
+			"HealthService: MaxHealthFor tracks a live height change at a fixed rank",
+			HealthService.MaxHealthFor(1.0, 1) ~= HealthService.MaxHealthFor(1.3, 1)
+		)
 	end
 
 	do
