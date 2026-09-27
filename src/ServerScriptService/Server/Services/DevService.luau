@@ -103,6 +103,18 @@ function DevService.GetTimeScale(): number
 	return timeScale
 end
 
+-- ==================== Mortality (BUG-20) ====================
+-- Same reasoning as TimeScale: Config is frozen, so the runtime-adjustable
+-- override lives here. Off by default in Studio (Config.Debug.DeathRolls)
+-- so dev aging can't accidentally kill a test character; AgeService reads
+-- this instead of the frozen Config value once it needs to roll a death.
+
+local mortal = Config.Debug.DeathRolls
+
+function DevService.IsMortal(): boolean
+	return mortal
+end
+
 -- ==================== Tokenizer ====================
 -- Splits on whitespace; a "double-quoted section" is kept as one token, so
 -- multi-word city names and epithets don't need any other escaping.
@@ -247,6 +259,7 @@ local SNAPSHOT_KEY_ORDER = {
 	"saveScope",
 	"freshSave",
 	"timeScale",
+	"mortal",
 	"sessionSeconds",
 }
 
@@ -288,6 +301,7 @@ local function buildSnapshot(target: Player): { [string]: any }
 		saveScope = Config.Debug.SaveScope,
 		freshSave = Config.Debug.FreshSave,
 		timeScale = DevService.GetTimeScale(),
+		mortal = DevService.IsMortal(),
 		sessionSeconds = if started then math.floor(os.clock() - started) else "n/a",
 	}
 end
@@ -579,6 +593,18 @@ register("timescale", "<n> - set the runtime time scale (n > 0)", function(_call
 	timeScale = n
 	timeScaleChangedBindable:Fire(timeScale)
 	return string.format("TimeScale: %s -> %s", tostring(old), tostring(timeScale))
+end)
+
+register("mortal", "on|off - toggle whether birthdays can roll a death (BUG-20)", function(_caller, args)
+	local mode = args[1] and args[1]:lower()
+	if mode == "on" then
+		mortal = true
+	elseif mode == "off" then
+		mortal = false
+	else
+		return "usage: .mortal on|off"
+	end
+	return string.format("Mortal: %s", tostring(mortal))
 end)
 
 register("fresh", "[player] - wipe the save and reload the character", function(caller, args)

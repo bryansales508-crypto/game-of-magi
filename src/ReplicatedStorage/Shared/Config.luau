@@ -19,6 +19,11 @@ Config.Debug = {
 	LogLevel = if Config.IsStudio then "Debug" else "Info",
 	-- Speeds up aging and day/night for tests; 1 = real time.
 	TimeScale = 1,
+	-- BUG-20 (Bryan, design): off by default in Studio, so dev aging
+	-- (.age/.birthday) never accidentally kills a test character; always
+	-- on live. DevService.IsMortal() is the runtime override (.mortal
+	-- on|off), same pattern as TimeScale, since Config is frozen.
+	DeathRolls = not Config.IsStudio,
 }
 
 Config.Data = {

@@ -5,6 +5,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
@@ -20,6 +21,7 @@ local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
+local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
@@ -309,6 +311,38 @@ local function testDevService(results: { Check })
 	local ok, nonDevReply = pcall(DevService.Dispatch, fakePlayer, ".cmd")
 	DevService.IsDev = realIsDev
 	expect(results, "DevService: Dispatch gives a non-dev no reply", ok and nonDevReply == nil)
+
+	-- BUG-20: .mortal on|off flips the runtime flag, mirroring .timescale.
+	local realMortal = DevService.IsMortal()
+	DevService.Dispatch(fakePlayer, ".mortal on")
+	expect(results, "DevService: .mortal on sets IsMortal true", DevService.IsMortal() == true)
+	DevService.Dispatch(fakePlayer, ".mortal off")
+	expect(results, "DevService: .mortal off sets IsMortal false", DevService.IsMortal() == false)
+	local restoreCommand = if realMortal then ".mortal on" else ".mortal off"
+	DevService.Dispatch(fakePlayer, restoreCommand)
+end
+
+-- BUG-11/BUG-18: the two Studio-only compatibility shims at the old
+-- Character.HeightHandler/AgeHandler paths must resolve to the exact same
+-- module as the new AgeService path (Lua caches require by ModuleScript,
+-- so `require`ing the shim - which itself just returns require(new path) -
+-- returns the identical table, not a copy).
+local function testCompatShims(results: { Check })
+	local Character = ServerScriptService:FindFirstChild("Character")
+	local heightHandlerShim = Character and Character:FindFirstChild("HeightHandler")
+	local ageHandlerShim = Character and Character:FindFirstChild("AgeHandler")
+
+	expect(results, "Compat shim: Character.HeightHandler exists", heightHandlerShim ~= nil)
+	expect(results, "Compat shim: Character.AgeHandler exists", ageHandlerShim ~= nil)
+
+	if heightHandlerShim then
+		local ok, shimmed = pcall(require, heightHandlerShim)
+		expect(results, "Compat shim: Character.HeightHandler resolves to AgeService.HeightHandler", ok and shimmed == HeightHandler)
+	end
+	if ageHandlerShim then
+		local ok, shimmed = pcall(require, ageHandlerShim)
+		expect(results, "Compat shim: Character.AgeHandler resolves to AgeService.AgeHandler", ok and shimmed == AgeHandler)
+	end
 end
 
 -- M2-06: the shared rank/alignment/epithet data modules are pure, so
@@ -564,6 +598,7 @@ function SelfTestService:Start()
 		testCharacterService(collected)
 		testAgeService(collected)
 		testHealthService(collected)
+		testCompatShims(collected)
 		return collected
 	end)
 

@@ -267,10 +267,25 @@ local function onBirthday(player: Player, data: Data): boolean
 		return false
 	end
 
+	-- BUG-20 (Bryan, design): with mortality off (Studio default), the
+	-- death roll is skipped entirely - not rolled-then-discarded - so dev
+	-- aging (.age/.birthday, and natural aging while it's off) can never
+	-- kill a test character; the non-fatal heartbeat/pulse still plays
+	-- every birthday from DeathStart either way. `.heart fatal` bypasses
+	-- this (ForceHeartAttack never calls onBirthday).
 	local chance = AgeService.DeathChance(data.Age.Years)
-	local fatal = math.random() < chance
+	local fatal = DevService.IsMortal() and math.random() < chance
 	Remotes.Server.Fire("HeartAttack", player, data.Age.Years, fatal)
-	log:Info(string.format("%s has a heart attack at age %d (fatal=%s, chance=%.2f)", player.Name, data.Age.Years, tostring(fatal), chance))
+	log:Info(
+		string.format(
+			"%s has a heart attack at age %d (fatal=%s, chance=%.2f, mortal=%s)",
+			player.Name,
+			data.Age.Years,
+			tostring(fatal),
+			chance,
+			tostring(DevService.IsMortal())
+		)
+	)
 
 	if not fatal then
 		return false
@@ -347,6 +362,10 @@ function AgeService:Init()
 	-- BUG-15: `.age`/`.age+` used to only change the number; resize and
 	-- grey hair right away too instead of waiting for the next birthday.
 	DevService.OnAgeChanged(function(player: Player, data: Data)
+		-- BUG-17: this hook resized/greyed hair but never set the Age
+		-- attribute itself, so the menu's age line stayed stale until the
+		-- next birthday (onBirthday sets it directly; this path didn't).
+		player:SetAttribute("Age", data.Age.Years)
 		resizeCharacter(player, data)
 		local character = player.Character
 		if character then

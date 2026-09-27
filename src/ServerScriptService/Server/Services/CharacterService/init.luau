@@ -312,6 +312,79 @@ local function setCollisionGroup(character: Model)
 	end
 end
 
+-- BUG-19: the old AppearanceController built its SoundsTable/ParticleTable
+-- from `:GetDescendants()`, so it found these regardless of which subfolder
+-- they actually live in (RF/reference/m2-studio-dump.md section 3: VFX's
+-- children are split across HitEffects/RukhEffects/StatusEffects/
+-- MiscEffects; SFX has its own subfolders like UISounds). A flat
+-- `container:FindFirstChild(name)` (immediate children only) found none of
+-- them. Resolved once at Init (recursively, by name) instead of per spawn:
+-- cheaper, and lets a missing asset warn once at boot instead of once per
+-- player who ever spawns.
+local SFX_NAMES = {
+	"CoinReward",
+	"BlockBroken",
+	"Parry",
+	"QuickDash",
+	"LightHitSound1",
+	"LightHitSound2",
+	"LightHitSound3",
+	"MissSound1",
+	"MissSound2",
+	"MissSound3",
+	"LightHitSoundFin",
+	"BlockSound1",
+	"BlockSound2",
+}
+-- Cancel is a Highlight (RF/VFX/MiscEffects), not a ParticleEmitter, but it
+-- clones and parents the same way.
+local VFX_NAMES = { "HitParticle", "Cancel", "BlockParticle", "BlockBreakParticle", "Confusion", "Sparks1", "Sparks2" }
+
+local resolvedAssets: { [string]: Instance } = {}
+local sfxRoot: Instance? = nil
+local assetsResolved = false
+
+local function resolveSoundsAndParticles()
+	if assetsResolved then
+		return
+	end
+	assetsResolved = true
+
+	local sfx = ReplicatedFirst:WaitForChild("SFX", WAIT_TIMEOUT)
+	local vfx = ReplicatedFirst:WaitForChild("VFX", WAIT_TIMEOUT)
+	if sfx == nil or vfx == nil then
+		log:Error("ReplicatedFirst.SFX/VFX missing; every spawn will be missing sounds/particles")
+		return
+	end
+	sfxRoot = sfx
+
+	for _, name in SFX_NAMES do
+		local found = sfx:FindFirstChild(name, true)
+		if found then
+			resolvedAssets[name] = found
+		else
+			log:Warn(string.format("missing SFX asset %s (searched recursively under ReplicatedFirst.SFX)", name))
+		end
+	end
+	for _, name in VFX_NAMES do
+		local found = vfx:FindFirstChild(name, true)
+		if found then
+			resolvedAssets[name] = found
+		else
+			log:Warn(string.format("missing VFX asset %s (searched recursively under ReplicatedFirst.VFX)", name))
+		end
+	end
+end
+
+local function cloneNamed(name: string, parent: Instance)
+	local template = resolvedAssets[name]
+	if template then
+		local clone = template:Clone()
+		clone.Parent = parent
+	end
+	-- A missing name already warned once, at boot, in resolveSoundsAndParticles.
+end
+
 local function attachSoundsAndParticles(character: Model)
 	local torso = character:FindFirstChild("Torso")
 	if not (torso and torso:IsA("BasePart")) then
@@ -319,33 +392,16 @@ local function attachSoundsAndParticles(character: Model)
 		return
 	end
 
-	local sfx = ReplicatedFirst:WaitForChild("SFX", WAIT_TIMEOUT)
-	local vfx = ReplicatedFirst:WaitForChild("VFX", WAIT_TIMEOUT)
-	if sfx == nil or vfx == nil then
-		log:Error("ReplicatedFirst.SFX/VFX missing; skipping sounds/particles")
-		return
-	end
-
-	local function cloneNamed(container: Instance, name: string, parent: Instance)
-		local template = container:FindFirstChild(name)
-		if template then
-			local clone = template:Clone()
-			clone.Parent = parent
-		else
-			log:Warn(string.format("missing SFX/VFX asset %s", name))
-		end
-	end
-
 	for _, name in { "CoinReward", "BlockBroken", "Parry", "QuickDash" } do
-		cloneNamed(sfx, name, torso)
+		cloneNamed(name, torso)
 	end
 	for i = 1, 3 do
-		cloneNamed(sfx, "LightHitSound" .. i, torso)
-		cloneNamed(sfx, "MissSound" .. i, torso)
+		cloneNamed("LightHitSound" .. i, torso)
+		cloneNamed("MissSound" .. i, torso)
 	end
-	cloneNamed(sfx, "LightHitSoundFin", torso)
-	cloneNamed(sfx, "BlockSound1", torso)
-	cloneNamed(sfx, "BlockSound2", torso)
+	cloneNamed("LightHitSoundFin", torso)
+	cloneNamed("BlockSound1", torso)
+	cloneNamed("BlockSound2", torso)
 
 	local centerAttachment = Instance.new("Attachment")
 	centerAttachment.Name = "CenterHook"
@@ -358,18 +414,22 @@ local function attachSoundsAndParticles(character: Model)
 		headAttachment.Parent = head
 	end
 
-	cloneNamed(vfx, "HitParticle", torso)
-	cloneNamed(vfx, "Cancel", character)
-	cloneNamed(vfx, "BlockParticle", torso)
-	cloneNamed(vfx, "BlockBreakParticle", torso)
+	cloneNamed("HitParticle", torso)
+	cloneNamed("Cancel", character)
+	cloneNamed("BlockParticle", torso)
+	cloneNamed("BlockBreakParticle", torso)
 	local hairAttachment = head and head:FindFirstChild("HairAttachment")
 	if hairAttachment then
-		cloneNamed(vfx, "Confusion", hairAttachment)
+		cloneNamed("Confusion", hairAttachment)
 	end
-	cloneNamed(vfx, "Sparks1", centerAttachment)
-	cloneNamed(vfx, "Sparks2", centerAttachment)
+	cloneNamed("Sparks1", centerAttachment)
+	cloneNamed("Sparks2", centerAttachment)
 
-	local steps = sfx:FindFirstChild("Steps")
+	if sfxRoot == nil then
+		return
+	end
+
+	local steps = sfxRoot:FindFirstChild("Steps")
 	if steps then
 		for _, sound in steps:GetChildren() do
 			local clone = sound:Clone()
@@ -380,7 +440,7 @@ local function attachSoundsAndParticles(character: Model)
 	local soundsFolder = Instance.new("Folder")
 	soundsFolder.Name = "SoundsFolder"
 	soundsFolder.Parent = torso
-	local osts = sfx:FindFirstChild("OSTs")
+	local osts = sfxRoot:FindFirstChild("OSTs")
 	if osts then
 		for _, track in osts:GetChildren() do
 			local clone = track:Clone()
@@ -629,6 +689,9 @@ function CharacterService:Init()
 end
 
 function CharacterService:Start()
+	-- Resolved here, not Init() (Init must not yield; WaitForChild can).
+	resolveSoundsAndParticles()
+
 	PlayerService.Ready:Connect(function(player: Player, character: Model)
 		local data = DataService.Get(player)
 		if data == nil then
