@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 1 (Foundation): built, reviewed and playtested; waiting for Bryan's gate approval** (see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build, Milestone 2 (A life)** (M1 gate passed 2026-09-27; see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -42,8 +42,8 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 
 | Milestone | Scope (TRIAGE #) | Status |
 | --- | --- | --- |
-| M1 Foundation | Layout, data service (#1), remotes, join pipeline (#2), dev commands (#21), debug tools (#29), data wipe, parks and removals | **planned** |
-| M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | todo |
+| M1 Foundation | Layout, data service (#1), remotes, join pipeline (#2), dev commands (#21), debug tools (#29), data wipe, parks and removals | **done (gate passed 2026-09-27)** |
+| M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | **planning** |
 | M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | todo |
 | M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | todo |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
