@@ -75,3 +75,5 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 
 ### M1 follow-ups noted by reviews
 - selene: `roblox.yml` committed 2026-09-27 so cloud checks include style. Local selene on M1-02 code: see commit for counts.
+- **Merge order for M1:** server branch (M1-03 + M1-04S + M1-05S) merges BEFORE the client branch (M1-04C + M1-05C). The new LoadController fires `ClientReady`, not the old `MainScreen`, so the old server scripts hang until M1-04S lands. (REVIEW-M1-04C)
+- M1-04C: rename the unused `character` param to `_character` in LoadController (selene warning). Fold into the next client follow-up.
