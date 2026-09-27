@@ -39,8 +39,6 @@ local log = Log.new("MovementService")
 
 local WALK_SPEED = 16
 local RUN_SPEED = WALK_SPEED * Combat.Run.speedMult
-local LOW_HEALTH_WALK_FLOOR = 0.25 -- old SYSTEMS 8: "a quarter walk"
-local LOW_HEALTH_RUN_FLOOR = 0.5 -- old SYSTEMS 8: "half run"
 
 -- Statuses that cancel/forbid Run and Dash (StatusService names, not the
 -- client-facing attribute names).
@@ -83,10 +81,16 @@ end
 -- Old SYSTEMS 8: health scales the "stable" base speed between a floor
 -- (0 health) and the full baseline (full health) - half of run, a
 -- quarter of walk. `ratio` is Health/MaxHealth, clamped to [0, 1].
+--
+-- BUG-23 (M3-FIX-S): the floor used to be a flat 0.5/0.25 constant, not
+-- derived from `top` - correct by coincidence while walking (top is 1.0,
+-- so a quarter of it IS 0.25), but wrong while running: half of
+-- Combat.Run.speedMult (1.75) is 0.875, not the old hardcoded 0.5. The
+-- self-test caught this (LowHealthMult(true, 0) was 0.5, not 0.875).
 function MovementService.LowHealthMult(running: boolean, ratio: number): number
 	local clamped = math.clamp(ratio, 0, 1)
-	local floor = if running then LOW_HEALTH_RUN_FLOOR else LOW_HEALTH_WALK_FLOOR
 	local top = if running then Combat.Run.speedMult else 1.0
+	local floor = if running then top / 2 else top / 4
 	return floor + (top - floor) * clamped
 end
 
