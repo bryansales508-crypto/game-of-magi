@@ -285,13 +285,24 @@ Earlier output already in the console (not from these sessions) showed "You must
 | Combat (combo chain etc.) | **Not finished** | Combat is work in progress; H6 and similar are "unfinished", not regressions |
 | Menu line cut off | Because the age number is huge | P3 is caused by M10 (runaway age), not the layout |
 
+**More confirmations from Bryan (2026-09-26):**
+
+| Topic | Bryan's answer | Effect on findings |
+|---|---|---|
+| Gender picker | **Works on a fresh save** | H4 drops to **low**: it works, but a server Script reading GUI clicks is unusual and fragile |
+| Dash and run | Work in the open | Fine (H10's "needs a punch first" still stands) |
+| Region music | Works; **volume feels finicky** | Feel note; ties to L21 (SoundController fades) |
+| Ocean | **Replace all the wave scripts with one script that drives every ocean part** | M17: Bryan's direction for Triage |
+| Saving in Studio | Feels finicky | Matches C1, H1 and M20. The save system needs review |
+| Same item, different colour | Wearing **black** harem pants blocks buying **white** ones | **Confirms the L12 "already owned" bug:** the check compares item type, not colour. Raised to **medium** (M22) |
+
+| ID | Severity | System | Where | What's wrong | Plain |
+|---|---|---|---|---|---|
+| M22 | medium | Market | `SSS/MISC/MarketHandler.luau:117-125` | The "already owned" check for shirts and pants compares only the clothing template ID, not the colour, so a different colour of the same item counts as a match | You can't buy white harem pants while wearing black ones |
+
 ### Still unconfirmed
-- The gender picker on a fresh save (Bryan remembers it working)
-- Dash and run in the open
-- Regions and music
 - Dev commands in play
-- Ocean lag over time
-- Buying the same shirt in a different colour
+- Ocean lag over time (moot if the ocean is replaced with one script)
 
 ---
 
