@@ -1,0 +1,6 @@
+Read-only connectivity check for the Game of Magi repo. Do not edit, commit or push anything.
+1) Run `git remote -v` and `git branch --show-current` and report both.
+2) Run `git log --oneline -1` and report it.
+3) Report the first line of docs/TASKS.md.
+4) Run `git ls-remote --heads origin` and report whether it succeeds (this proves you can reach GitHub).
+Reply in four short lines, then stop.

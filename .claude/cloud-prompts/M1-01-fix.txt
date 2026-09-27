@@ -1,0 +1,14 @@
+Your M1-01 prompt reached you garbled (a quoting bug on our side, sorry). Your branch has the default.project.json ServerStorage/Parked node, which is correct, but the task also needs the pieces below. Please add them on the SAME branch you already pushed, then push again. Your last commit must start with: DONE M1-01:
+
+1. Replace each .gitkeep you added with a file named init.meta.json whose whole content is the JSON object with one key, className, set to the string Folder. That tells Rojo each directory is a Folder. Do this in src/ServerScriptService/Server/Services, src/StarterPlayer/StarterPlayerScripts/Client/Controllers, src/ReplicatedStorage/Shared and src/ServerStorage/Parked. Delete the .gitkeep files.
+
+2. Create src/ServerScriptService/Server/Main.server.luau, the server bootstrap:
+- Find every ModuleScript under the sibling Folder script.Parent.Services, sorted by name so the order is deterministic, and require each one.
+- Call :Init() on every module that has it, in sequence, each wrapped in pcall. On failure, warn with the module name and keep going.
+- Then call :Start() on every module that has it, each in its own task.spawn, also pcall-wrapped.
+- It must work with zero modules.
+- Add a short header comment stating the contract: Init sets up state and must not yield; Start may yield and may use other services.
+
+3. Create src/StarterPlayer/StarterPlayerScripts/Client/Main.client.luau: the same bootstrap for the client, loading from the sibling Folder Controllers.
+
+Style: modern Luau, --!strict where it type-checks, task.* only, no globals, warn is fine here. Don't touch any other file. Reply with BRANCH and commit hash.

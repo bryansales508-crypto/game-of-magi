@@ -1,0 +1,8 @@
+You are the reviewer for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/reviewer.md` exactly. Your task is **REVIEW-M1-02**: review the server-builder's work for task M1-02 (shared core). The task spec is in `.claude/cloud-prompts/M1-02.txt` and the M1 plan is in `docs/TASKS.md`.
+
+Steps:
+1. `git fetch origin claude/m1-02-shared-core-wpgjrq` and review `git diff main...origin/claude/m1-02-shared-core-wpgjrq` (10 files, ~770 lines: Config, Log, Validate, Remotes, NetService, SelfTestService, scripts/check.sh, selene.toml, .luaurc).
+2. Check out that branch and run `bash scripts/check.sh`. Report its exact error counts. If the tools fail to download, say so and review by reading.
+3. Review against the spec in M1-02.txt, then in this priority order: (a) security: can a client bypass argument validation or the per-player rate limit, can it send a non-table/odd type, can a Function handler leak an error to the client, NaN/inf handling; (b) bugs and race conditions: server Init order, client waiting for `ReplicatedStorage.Net`, Invoke timeout leaking threads, rate-limit state on PlayerRemoving; (c) memory leaks; (d) `--!strict` correctness and any raw `print` outside Log; (e) readability. Note anything the spec asked for that is missing.
+4. Write your report to `docs/reviews/M1-02.md`: verdict first line (`PASS` or `CHANGES NEEDED`), check.sh counts, then findings with severity, file:line, what's wrong, and a one-line fix, then a 3-line plain-language summary for Bryan. Keep it under 80 lines.
+5. Commit ONLY that file on a new branch from main with the message `DONE REVIEW-M1-02: PASS` or `DONE REVIEW-M1-02: CHANGES NEEDED`, and push the branch. Never push main, never edit any other file.

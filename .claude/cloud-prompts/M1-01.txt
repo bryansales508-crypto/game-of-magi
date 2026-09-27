@@ -1,0 +1,24 @@
+You are the server-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/server-builder.md` exactly. Your task is **M1-01: new folder layout** (see its row and the "M1 Foundation: plan" in `docs/TASKS.md`).
+
+Git: create branch `m1/M1-01-layout` from `main`, commit there, and push only that branch (`git push origin m1/M1-01-layout`). Never push main, never merge, never force-push. Don't edit `docs/`. Your LAST commit message must start with `DONE M1-01:`.
+
+Files you own (create exactly these, nothing else):
+1. `src/ServerScriptService/Server/Main.server.luau`: the server bootstrap. It finds every ModuleScript under a sibling Folder `script.Parent.Services`, sorted by name so the order is deterministic, and requires each one.
+   - It calls `:Init()` on every module that has it, in sequence, each wrapped in pcall. On failure it `warn`s with the module name and continues.
+   - It then calls `:Start()` on every module that has it, each in its own `task.spawn`, also pcall-wrapped.
+   - It must work with zero modules.
+   - Give it a short header comment stating the contract: Init sets up state and must not yield; Start may yield and may use other services.
+2. `src/ServerScriptService/Server/Services/init.meta.json`: `{"className": "Folder"}`
+3. `src/StarterPlayer/StarterPlayerScripts/Client/Main.client.luau`: the same bootstrap for the client, loading from a sibling Folder `Controllers`.
+4. `src/StarterPlayer/StarterPlayerScripts/Client/Controllers/init.meta.json`: `{"className": "Folder"}`
+5. `src/ReplicatedStorage/Shared/init.meta.json`: `{"className": "Folder"}`
+6. `src/ServerStorage/Parked/init.meta.json`: `{"className": "Folder"}`
+7. `default.project.json`: add a ServerStorage node that maps ONLY the Parked folder. It must not map the whole service, because ServerStorage holds Bryan's animation saves, which must not be touched:
+   `"ServerStorage": { "$className": "ServerStorage", "Parked": { "$path": "src/ServerStorage/Parked" } }`
+   Change nothing else in that file. Keep it valid JSON in the existing style.
+
+ServerScriptService and StarterPlayerScripts are already mapped as directories, so Server/ and Client/ sync automatically. Don't touch any other existing file.
+
+Style: modern Luau, `--!strict` where it type-checks cleanly, `task.*` only, no globals. There's no shared Log module yet, so `warn` is fine in these two bootstrap files.
+
+Reply in a compact report: BRANCH, commit hash, files changed, and anything odd you hit (clone, auth, push) word for word.

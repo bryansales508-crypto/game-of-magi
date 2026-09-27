@@ -8,6 +8,6 @@ game-of-magi/
 OldGameScripts.rbxm
 
 # Cloud session prompts and logs (local only)
-.claude/cloud-prompts/*.txt
+# (prompts are tracked so cloud reviewers can read the task spec; logs stay local)
 .claude/cloud-prompts/*.log
 .claude/worktrees/

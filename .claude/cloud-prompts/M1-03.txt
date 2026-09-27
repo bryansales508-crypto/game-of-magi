@@ -1,0 +1,49 @@
+You are the server-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/server-builder.md` exactly. Your task is **M1-03: DataService** (see its row and the "M1 Foundation: plan" in `docs/TASKS.md`, `docs/DESIGN.md` sections 3, 3a and 5, `docs/SYSTEMS.md` section 1 for the OLD save shape, and TRIAGE #1).
+
+Git: work on the branch your session starts on (create one from main if you're on main). Never push main, never merge, never force-push. Your LAST commit message must start with `DONE M1-03:`. Run `bash scripts/check.sh` and get the new code to 0 errors before you finish.
+
+Already on main from M1-02: `ReplicatedStorage/Shared/{Config,Log,Validate,Remotes}.luau`, `Server/Services/{NetService,SelfTestService}.luau`, and `Server/Main.server.luau` which calls Init() then Start() on every module in `Server/Services`. Use `Config.Data.StoreName` ("GameOfMagi_v1"), `Config.Data.SchemaVersion`, `Config.Debug.SaveScope`, `Config.Debug.FreshSave`, and `Log`.
+
+## What to build
+
+1. **Vendor ProfileStore** (loleris / MadStudioRoblox, MIT) unchanged into `src/ServerScriptService/Server/Packages/ProfileStore.luau`. Fetch it with curl from the official GitHub repo (`MadStudioRoblox/ProfileStore`, file `ProfileStore.luau`). Add a 3-line header comment with the source URL, version/commit and license. Make sure `default.project.json` syncs it (ServerScriptService is mapped by `$path`, so a new folder should just work; verify with the sourcemap that check.sh builds).
+
+2. **`src/ReplicatedStorage/Shared/SaveSchema.luau`**: the save template (schema v1) and the list of migrations. Keep it data-only and commented so Bryan can read it. Fields:
+   ```
+   Version = 1
+   Character = { FirstName = "", Gender = 0, Race = 2, Kingdom = 1, SkinTone = 0,
+                 HairColor = {R=0,G=0,B=0}, EyeColor = 1, FaceBase = 1, MouthShape = 1,
+                 Height = 10, GrowthProfile = "" }          -- same meanings as the old Stats (SYSTEMS.md section 1)
+   Age = { Years = 13, TimePassed = 0, ProgToAge = 0 }       -- TimePassed is set to os.time() on first load
+   Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" }   -- DESIGN 3a
+   Bounty = 0
+   Economy = { Copper = 20, Silver = 0, Gold = 0 }
+   Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} }   -- item code strings
+   Family = {}    -- reserved, DESIGN section 3
+   Magic = {}     -- reserved
+   Meta = { Created = 0, LastSeen = 0, Lives = 1 }
+   ```
+   `SaveSchema.Template` (deep-copied per player by ProfileStore), `SaveSchema.Migrations = { [1] = function(data) ... end }` (empty body for v1, with a comment showing how v2 would be added), and `SaveSchema.Migrate(data)` which runs migrations from `data.Version + 1` up to `Config.Data.SchemaVersion`. Missing template keys are filled by ProfileStore's Reconcile; call it before Migrate.
+
+3. **`src/ServerScriptService/Server/Services/DataService.luau`** (Init/Start service):
+   - One ProfileStore named `Config.Data.StoreName`; profile key `Config.Debug.SaveScope .. "_" .. userId` so Studio play tests never touch live saves. When `Config.Debug.FreshSave` is true (Studio only), use `ProfileStore.Mock` so every run starts from the template and nothing persists. Also fall back to `.Mock` if the DataStore API is unavailable in Studio (pcall around the first call, log a Warn).
+   - On PlayerAdded: `StartSessionAsync` with the player's Cancel (leave = cancel). If it fails or the player left, kick with the friendly message "Your save couldn't be loaded. Please rejoin in a moment." On success: `AddUserId`, `Reconcile`, `SaveSchema.Migrate`, set `Meta.Created` (if 0), `Meta.LastSeen`, `Age.TimePassed` (if 0), then build the legacy bridge (below), then fire `DataService.Loaded` for that player. `OnSessionEnd` kicks the player (session stolen or store down) and tears down the bridge.
+   - On PlayerRemoving: `EndSession` (ProfileStore saves on end). Handle players already present at Start. ProfileStore already binds to close and finishes saves; confirm that in its source and note it in a comment rather than duplicating it.
+   - Public API (typed, `--!strict`):
+     `DataService.Get(player): Data?` (the live table or nil), `DataService.WaitFor(player, timeout: number?): Data?`, `DataService.IsLoaded(player): boolean`, `DataService.Loaded: RBXScriptSignal` (fires with the player once the bridge is up), `DataService.Wipe(player)` (resets Data to a fresh template in place, re-runs the first-load setup, refreshes the bridge; used by M1-05's dev command), `DataService.Save(player)` (ProfileStore Save, for dev use).
+   - Every failure is logged through Log, never thrown to callers.
+
+4. **Legacy bridge**, in a separate module `src/ServerScriptService/Server/Services/LegacyBridge.luau` (NOT a service; DataService requires it; make sure Main.server.luau skips it or that it has no Init/Start, whichever the bootstrap supports). Until M2-M6 rebuild the old systems, the old scripts must keep working. FIRST read the two old save scripts (`src/ServerScriptService/Datastore/MainStore2/init.server.luau` and `OnCharacterStore2.server.luau`) and copy their exact Value names, classes, folder layout (`player.Stats`, `player.OnCharacter` with `Clothes`, `Currency`, `Hats`, `Inventory`, `Position`), and the flags `player.LoadedOC` then `player.Loaded`. Then:
+   - `LegacyBridge.Build(player, data)`: creates those folders and Values from `data` with this mapping: Stats.{Race,HairColor,FirstName,Kingdom,EyeColor,FaceBase,MouthShape,Gender,Age,Height,GrowthProfile,SkinTone,TimePassed,ProgToAge} from the Character/Age fields (Stats.Age = Age.Years); `Stats.MaxMagoi` = `Progress.Magoi` (old health code reads it); `Stats.Hunger` = 5 constant (parked). OnCharacter: Clothes.Clothing_Shirt/Clothing_Pants = Gear.Shirt/Pants; Currency.Copper/Silver/Gold = Economy; Hats.HatSpot1..3 = Gear.Hats[1..3]; Inventory.Row1/Row2 = ";"-joined Gear.Inventory (Row2 = ""). Sets LoadedOC then Loaded, in that order.
+   - Two-way: old scripts WRITE to these Values (aging writes Age/ProgToAge/TimePassed, the shop writes Clothes/Hats/Currency, the gender picker writes Gender, etc.). Connect `.Changed` on each mirrored Value and write the new value back into `data` through the same mapping. Guard against echo loops with a "mirroring" flag. `LegacyBridge.Refresh(player, data)` pushes data to the Values (used after Wipe). `LegacyBridge.Destroy(player)` disconnects everything (called on leave).
+   - Add a top-of-file comment: "TEMPORARY. Deleted in the last milestone that stops using player.Stats / player.OnCharacter."
+
+5. **Remove the old save scripts** (approved: TRIAGE #1 rebuild): delete the folder `src/ServerScriptService/Datastore/` (MainStore2, OnCharacterStore2, CurrentStore.txt, its meta). Grep `src/` for anything else that reads `CurrentStore` or the `Datastore` folder and report it; don't edit files you don't own.
+
+6. **Self-test:** add a `DataService` block to `SelfTestService` (you may edit that one file): with a fake data table, check that `SaveSchema.Migrate` bumps Version and that the bridge mapping is symmetric (Build, change a Value, data updated; change data, Refresh, Value updated). Use a temporary Folder as a stand-in player if the bridge only needs a parent Instance; if it needs a real Player, test the pure mapping functions instead.
+
+7. **Docs:** you may edit `docs/SYSTEMS.md` **section 1 only**: replace it with the new save system (store, key, schema v1 fields, migrations, Studio scope, FreshSave, the bridge and its mapping, what happens on load failure). Keep Bryan's plain-language style. Don't touch any other section.
+
+Style: `--!strict` in every new file, `task.*` only, no globals, no raw print (Log only), small modules with brief comments. Do not build the join pipeline, spawn, or dev commands (M1-04/M1-05).
+
+Reply in a compact report: BRANCH, commit hash, files added/changed/removed, ProfileStore version vendored, check.sh counts, anything in src/ that still references the old stores, and the exact Output lines the playtester should expect on server start.
