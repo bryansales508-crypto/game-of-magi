@@ -1,0 +1,11 @@
+You are the server-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/server-builder.md` exactly. Your task is **M2-06: shared data** (see `docs/M2-PLAN.md` and `docs/DESIGN.md` section 3a). This session will get M2-01, M2-02 and M2-03 as follow-ups afterwards.
+
+Git: work on the branch your session starts on (create one from main if you're on main). Never push main, never merge, never force-push. LAST commit starts with `DONE M2-06:`. Run `bash scripts/check.sh` to 0 errors.
+
+Create, data-only, `--!strict`, frozen tables, brief comments so Bryan can edit numbers:
+1. `src/ReplicatedStorage/Shared/Data/Ranks.luau`: the ladder from DESIGN 3a with the x6 thresholds: `{ {magoi=0, title="Street Rat"}, {300,"Wanderer"}, {600,"Adventurer"}, {1500,"Renowned"}, {2400,"Hero"}, {4200,"Legend"}, {6000,"King/Queen"} }` (as proper tables), `Ranks.rankFor(magoi: number): (index: number, title: string)`, `Ranks.titleFor(magoi, gender: number)` which renders "King" or "Queen" for gender 1/2 (and "King/Queen" for 0), `Ranks.nextThreshold(magoi): number?`.
+2. `src/ReplicatedStorage/Shared/Data/Alignment.luau`: `Alignment.alignmentFor(goldRukh: number, blackRukh: number): "White" | "Gold" | "Black" | "GoldBlack"` with `MinDeeds = 5` (below that: White) and `Lean = 0.65` (one side >= 65% of all deeds: that side; otherwise GoldBlack). Also `Alignment.label(alignment)` -> "White Rukh", "Gold Rukh", "Black Rukh", "Gold & Black Rukh".
+3. `src/ReplicatedStorage/Shared/Data/Epithets.luau`: the full banks from DESIGN 3a, keyed `[rankTitle][alignment]` (Street Rat has one bank used for all alignments; "Prince/Princess" and "Son/Daughter" entries become two entries or a `{male=..., female=...}` pair, your call, documented). `Epithets.bankFor(rankTitle, alignment, gender): {string}` and `Epithets.pick3(rankTitle, alignment, gender, exclude: {string}?): {string}` (random 3 distinct).
+4. A `Data` block in `SelfTestService`: rankFor boundaries (299 -> Street Rat, 300 -> Wanderer, 6000 -> King/Queen), alignmentFor (0/0 White, 10/0 Gold, 3/7 Black, 5/5 GoldBlack, 2/1 White), every bank has >= 4 entries, pick3 returns 3 distinct.
+
+Reply with BRANCH, commit hash, files, check.sh counts.

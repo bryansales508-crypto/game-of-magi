@@ -30,6 +30,11 @@ Scope from the approved TRIAGE: character creation (#3), aging with visible agin
 - Player attributes set by the server: `Age`, `MaxHealth`, `Health`, `Block`, `MaxBlock`, `Rank` (title string), `Epithet`, `Alignment`, `Kingdom`, `HeightStuds`, `Lives`.
 - Remote `Died` (server → client, `cause: string`): the client plays the scene, then fires `RukhSceneDone` (client → server, no args, rate 2/60s); the server respawns the fresh life on that, or after a 30 s timeout.
 
+## Bryan's additions (approved 2026-09-27)
+
+- **Old-age death is styled as a heart attack.** From 60, EVERY online birthday shows a short heart-attack moment: a heartbeat sound and a red screen pulse for about a second, then it passes. When the death roll lands, the moment plays differently (slower, heavier beats, the screen darkens and stays) with a clear message that the character did not survive it this time, and then the return-to-the-Rukh scene starts.
+- **The AfterLife model:** Bryan has the old model and puts it in Studio at `ReplicatedFirst.AfterLife` (Rojo leaves that container alone). `RukhController` uses it when present (camera `AfterlifeCamera`, `AfterlifeSpawnBlock`, as the old script did) and falls back to the simple stand-in when absent.
+
 **Legacy bridge:** stays. After M2 it still feeds `Stats`/`OnCharacter` Values for the market, missions, items and combat until M3–M5 rebuild them.
 
 **Save format changes (SYSTEMS.md §1 gets updated):** none to the schema. `Meta.Lives` increments on death. `Age.TimePassed` is now the last online tick, used for offline aging.

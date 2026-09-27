@@ -80,3 +80,17 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 - M2 note (REVIEW-M1-04S F6, AUDIT M9): `AppearanceController:81` spins forever if the player leaves before Ready. Left as is for M1 (file is rebuilt in M2 #3).
 - Lead approved after the fact (REVIEW-M1-04S F5): the builder's comment-only edits to vendored `Packages/ProfileStore.luau`; indentation restored in the fix round.
 - REVIEW-M1-05S notes (self-test non-dev, position "n/a", shared spawn constant): fixed and merged.
+
+### M2 A life: plan (approved by Bryan 2026-09-27; details in docs/M2-PLAN.md)
+
+Bryan's additions: old-age death styled as a heart attack (every online birthday from 60: heartbeat + red pulse, then it passes; a fatal roll plays heavier and ends in the return-to-the-Rukh scene). Bryan supplies the old `AfterLife` model at `ReplicatedFirst.AfterLife` in Studio; the scene falls back to a stand-in without it.
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M2-06 | Shared data: Ranks, Alignment, Epithets (DESIGN 3a) | server-builder | in progress (cloud) | rankFor/alignmentFor/pick3 pass the self-test |
+| M2-01 | CharacterService: appearance from the save, `CreateCharacter` remote, gender-matched names, fixes M8/P4/L2/L6/L3 | server-builder | queued (same session) | New life shows the creation screen once; look identical to before; two players share one collision group |
+| M2-02 | AgeService: 30 min/year (60 s Studio), offline 2/day capped at 59, growth kept, grey hair, heart-attack birthdays from 60, death roll, new life with Lives+1 | server-builder | queued | `.birthday` ages and resizes; `.heart` / `.heart fatal` drive the client; a fatal roll ends in a fresh 13-year-old with Lives+1 |
+| M2-03 | HealthService: max HP from height and rank, real regen tiers, block refill; attributes for the HUD/menu | server-builder | queued | Height/rank change MaxHealth; `.tier` changes regen; bars follow |
+| M2-04 | Client: CreationController, MenuController (rank/epithet/alignment, fixed stat line, live preview), HudController | client-builder | in progress (cloud) | Same look; M menu shows the new fields; creation works through the remote |
+| M2-05 | Client: RukhController (heart attack pulses, fatal message, return-to-the-Rukh scene with AfterLife or stand-in) | client-builder | queued (same session) | `.heart` passes in ~1 s; `.heart fatal` plays the scene and respawns fresh |
+| M2-07 | PLAYTEST.md M2 scenarios and the M2 playtest | lead + playtester | todo | All scenarios pass |
