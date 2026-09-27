@@ -11,6 +11,7 @@ local Validate = require(ReplicatedStorage.Shared.Validate)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local LegacyBridge = require(script.Parent.LegacyBridge)
+local PlayerService = require(script.Parent.PlayerService)
 
 local log = Log.new("SelfTest")
 
@@ -232,6 +233,37 @@ local function testDataService(results: { Check })
 	end
 end
 
+-- M1-04S: the join state machine is pure (no Player needed), so every
+-- transition is exercised directly.
+local function testPlayerService(results: { Check })
+	local NextJoinState = PlayerService.NextJoinState
+
+	expect(results, "PlayerService: CharacterPlaced moves Loading to Loaded", NextJoinState("Loading", "CharacterPlaced") == "Loaded")
+	expect(results, "PlayerService: ClientReady moves Loaded to Ready", NextJoinState("Loaded", "ClientReady") == "Ready")
+	expect(
+		results,
+		"PlayerService: ClientReady is ignored while Loading",
+		NextJoinState("Loading", "ClientReady") == "Loading"
+	)
+	expect(
+		results,
+		"PlayerService: CharacterPlaced does nothing once already Loaded",
+		NextJoinState("Loaded", "CharacterPlaced") == "Loaded"
+	)
+	expect(
+		results,
+		"PlayerService: CharacterPlaced does nothing once Ready",
+		NextJoinState("Ready", "CharacterPlaced") == "Ready"
+	)
+	expect(results, "PlayerService: Respawn resets Loaded back to Loading", NextJoinState("Loaded", "Respawn") == "Loading")
+	expect(results, "PlayerService: Respawn resets Ready back to Loading", NextJoinState("Ready", "Respawn") == "Loading")
+	expect(
+		results,
+		"PlayerService: full sequence Loading -> Loaded -> Ready",
+		NextJoinState(NextJoinState("Loading", "CharacterPlaced"), "ClientReady") == "Ready"
+	)
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -246,6 +278,7 @@ function SelfTestService:Start()
 		testValidators(collected)
 		testRemoteWrapper(collected)
 		testDataService(collected)
+		testPlayerService(collected)
 		return collected
 	end)
 

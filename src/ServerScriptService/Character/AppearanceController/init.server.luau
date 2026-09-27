@@ -5,7 +5,6 @@ local agehandler = require(game.ServerScriptService.Character.AgeHandler)
 local assets = require(game.ReplicatedFirst.Assets)
 local ItemHandler = require(game.ServerScriptService.Character.ItemHandler)
 
-local loadEvent = game.ReplicatedStorage.Remotes.MiscRemotes.MainScreen
 local assets = require(game.ReplicatedFirst.Assets)
 
 -- Functions
@@ -68,15 +67,17 @@ game.Players.PlayerAdded:Connect(function(player) -- TODO: The values have to fr
 		-- Wait for Values
 		while player:WaitForChild("Loaded").Value == false do task.wait() end
 		
-		local loading = true -- loading through main screen
+		local loading = player:GetAttribute("JoinState") ~= "Ready" -- loading until PlayerService says the join pipeline is done
 		local loadCon
 
-		loadCon = loadEvent.OnServerEvent:Connect(function(LoadPly)
-			if LoadPly == player then
+		if loading then
+			loadCon = player:GetAttributeChangedSignal("JoinState"):Connect(function()
+				if player:GetAttribute("JoinState") == "Ready" then
 					loading = false
 					loadCon:Disconnect()
-			end
-		end)
+				end
+			end)
+		end
 		repeat task.wait() until loading == false
 
 		-- chara variables

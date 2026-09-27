@@ -27,12 +27,19 @@ export type PackedArgs = { n: number, [number]: any }
 
 local Remotes = {}
 
--- Declare every remote here, once. Kept empty except for the self-test remote.
+-- Declare every remote here, once.
 Remotes.Definitions = {
 	DebugPing = {
 		kind = "Event",
 		args = { Validate.string({ maxLen = 50 }) },
 		rate = { count = 5, per = 1 },
+	},
+	-- M1-04S: fired by the client once its loading screen is done. PlayerService
+	-- ignores it unless the player's JoinState is already "Loaded".
+	ClientReady = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 10 },
 	},
 } :: { [string]: RemoteDef }
 

@@ -59,18 +59,25 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 ---
 
-## 2. Join flow (loading screen → spawn)
+## 2. Join flow (loading screen → spawn) — rebuilt M1-04
 
-**What it does.** Coordinates the order things happen in when a character spawns. Many scripts wait on the markers below.
+**What it does now.** One `PlayerService` (`SSS/Server/Services/PlayerService.luau`) coordinates the whole join, on the server, through a single Player attribute instead of the old one-shot remote race (AUDIT H3/P1/M9: the old flow could hang, or spawn ~326 studs from Qarzin, if the `MainScreen` fire was ever missed).
 
-1. `SCS/Scripts/Load` (client) shows a loading screen, fades it, then fires **`MiscRemotes.MainScreen`** to the server.
-2. `SSS/Character/AppearanceController` and `SSS/Character/LocationHandler` each wait for that `MainScreen` fire before continuing.
-3. AppearanceController builds the character (section 3) and sets `character.AppearenceLoaded = true`.
-4. LocationHandler then teleports the character to its saved position, or to `Workspace.MAP.Spawns.QarzinSpawn` if there is none (always, for now).
-5. `SSS/Character/Protection` kicks the player if `AppearenceLoaded` isn't true within 30 seconds.
-6. Once `AppearenceLoaded` is true, other scripts set up: `EffectsService` makes `character.Effects`, `InteractionsDesign` makes `character.IntFold`, `RegionHandlerPart2` makes `character.RegionInfo`.
+**The state:** a string attribute on the Player, **`JoinState`**, one of `"Loading"`, `"Loaded"`, `"Ready"`. It's set again to `"Loading"` on every respawn, not just the first spawn. Because it's an attribute (not a one-time event), anything can just read the current value or watch `GetAttributeChangedSignal("JoinState")` — there's no window where a script that starts waiting late misses the signal.
 
-**Remotes:** `MiscRemotes.MainScreen` (client → server, no arguments).
+1. **PlayerAdded** (and any player already in the game when the server starts): `JoinState = "Loading"`, then the server waits for that player's save to finish loading (`DataService.WaitFor`). If the save never loads, DataService has already kicked the player (section 1) and PlayerService has nothing further to do.
+2. **CharacterAdded** (every spawn, including respawns): `JoinState = "Loading"` again. PlayerService waits for `HumanoidRootPart` (10s timeout, logs an error and gives up placing the character if it never appears — it does **not** hang or kick), then immediately pivots the whole character to `Workspace.MAP.Spawns.QarzinSpawn`, raised 3 studs so it doesn't clip into the spawn part. A saved position isn't used yet (AUDIT L4) — every spawn goes to Qarzin, same as today. Once the character is placed and the save is loaded, `JoinState = "Loaded"`.
+3. **The client says it's done:** the client's loading screen fires the new remote **`ClientReady`** (`Net.ClientReady`, event, no arguments, rate-limited to 3 per 10s) once it's finished showing/fading. PlayerService ignores this unless `JoinState` is currently `"Loaded"` (so a stray or repeated fire can't skip ahead). When accepted: `JoinState = "Ready"`, and `PlayerService.Ready` fires with the player and character — this is the signal later systems (M2+) should wait on instead of `MainScreen`.
+4. **Stuck loading:** if a character is still `"Loading"` 120 seconds after it spawned, PlayerService logs one warning and keeps waiting. It never kicks — the old 30-second kick during character creation (`Protection.server.luau`) was itself a bug (H3) and is gone by design.
+5. **Leaving mid-load:** every wait loop in PlayerService re-checks `player.Parent` on each iteration and exits if the player is gone, so quitting during any stage never leaves a thread running (AUDIT M9).
+
+**Public API:** `PlayerService.GetState(player)`, `.IsReady(player)`, `.WaitForReady(player, timeout?)` (returns the character once `JoinState == "Ready"`, or `nil` on timeout/leave), `.Ready` (fires `(player, character)`).
+
+**The old scripts, bridged.** Character creation itself isn't rebuilt until M2, so `AppearanceController` still runs the same appearance-building code it always did — it just waits on `JoinState == "Ready"` now instead of the `MainScreen` remote (checks the current attribute first, then `GetAttributeChangedSignal`, so it can't miss a fast transition). It still sets `character.AppearenceLoaded = true` at the end, so every other old script that waits on `AppearenceLoaded` (`EffectsService`, `InteractionsDesign`, `RegionHandlerPart2`, the HUD, `Health`, `Animate`, footsteps, and more) keeps working unchanged.
+
+**Removed:** `LocationHandler.server.luau` (PlayerService now places the character — TRIAGE #2) and `Protection.server.luau` (the 30s kick; by design, gone). **Not removed** (out of this task's scope): the old client `SCS/Scripts/Load/init.client.luau` still fires `MiscRemotes.MainScreen` — M1-04C replaces it with a `LoadController` that fires `ClientReady` instead, same look.
+
+**Remotes:** `Net.ClientReady` (client → server, no arguments, 3 per 10s). The old `MiscRemotes.MainScreen` still exists (untouched) but nothing on the server listens to it anymore.
 
 ---
 
