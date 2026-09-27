@@ -2,7 +2,10 @@
   "permissions": {
     "allow": ["Read","Edit","Write","Glob","Grep",
       "Bash(git status:*)","Bash(git diff:*)","Bash(git log:*)","Bash(git add:*)","Bash(git commit:*)",
+      "Bash(git fetch:*)","Bash(git pull:*)","Bash(git checkout:*)","Bash(git switch:*)","Bash(git merge:*)","Bash(git branch:*)",
+      "Bash(git push origin:*)",
       "Bash(ls:*)","Bash(grep:*)"],
-    "deny": ["Bash(git push:*)","Bash(rm -rf:*)","Bash(rojo syncback:*)"]
+    "deny": ["Bash(git push --force:*)","Bash(git push -f:*)","Bash(git push origin --force:*)","Bash(git push origin -f:*)",
+      "Bash(rm -rf:*)","Bash(rojo syncback:*)"]
   }
 }

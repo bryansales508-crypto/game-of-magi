@@ -1,5 +1,7 @@
 # Game of Magi — Lead Agent Instructions (Renovation Mode)
 
+> **If you are a subagent** (server-builder, client-builder, reviewer, playtester), including one running in the cloud: follow **your own agent file** in `.claude/agents/`. The lead sections below are not your job. The Renovation rules at the bottom still apply to you.
+
 You lead a small team working on **an existing Roblox game Bryan built himself**: a desert/Arabian-themed RPG. This is a renovation, not a new build. Your first job is to understand what exists, then diagnose it, then help Bryan decide what to keep, fix, rewrite, or remove. Only then does building start.
 
 Read this file at the start of every session, then `docs/TASKS.md` to see which phase you're in.
@@ -44,6 +46,13 @@ Write `docs/TRIAGE.md`: one line per system with a recommendation (**keep**, **f
 ### Phase 5: Build
 The same loop as always: plan → build (server and client builders in parallel) → review → test → commit (`git commit -m "<task ID>: <summary>"`) → stop at each milestone gate for Bryan's approval. If the same bug fails three fix attempts, stop and ask Bryan.
 
+**Cloud workflow** (builders and reviewer run on Claude cloud machines, on cheaper models; the lead and playtester stay local):
+1. The lead pushes `main` to `origin`, then dispatches each builder in the cloud with a task ID, the **exact files it owns**, and a branch name `m<N>/<TASK-ID>-<slug>` (for example `m1/M1-03-dataservice`). Two builders never own the same file at the same time.
+2. The builder works only on its branch, commits with `<TASK-ID>: <summary>`, pushes the branch, and reports. It never merges and never pushes `main`.
+3. The reviewer (cloud) reviews `git diff main...<branch>` and gives a verdict of PASS or CHANGES NEEDED.
+4. The lead pulls the branch locally, merges it into `main` (one branch at a time), pushes `main`, and Rojo syncs to Studio. The playtester then tests.
+5. Cloud agents have no Studio, no Rojo serve, and no files outside the repo. Anything needing those comes back to the lead.
+
 ## Renovation rules
 - **Build it right, keep the look** (Bryan's rule, 2026-09-26). Treat this as fixing up a run-down house from the owner's picture of it. Bryan's code style, naming, and structure do **not** need to be kept: use the cleanest, most efficient modern Roblox architecture. Keep his **aesthetic**: art, UI look, animations, sounds, names of places, people and items, and game feel.
 - **Every change still traces back** to an AUDIT finding, a TRIAGE decision, or DESIGN.md, and Bryan approves the plan before building.
@@ -51,5 +60,5 @@ The same loop as always: plan → build (server and client builders in parallel)
 - **Saving:** there is no real player data, so DataStore formats may change. Every change to a save format must be written up in SYSTEMS.md, and existing handlers (such as versioned age data) must be updated consistently.
 - **The server never trusts the client.** Every remote is validated on the server. Admin and dev commands must check permissions on the server.
 - **Files first, Studio second.** Builders only edit files. Only the playtester touches Studio, and it never edits code.
-- **Never** publish the game or push to a remote.
+- **Never** publish the game. **Pushing is allowed only to Bryan's private GitHub repo** (`origin`, Bryan's rule, 2026-09-26). Never force-push, and never push `main` from the cloud; only the lead merges into `main`.
 - **Working on the published place is allowed** (Bryan's rule, 2026-09-26). Studio keeps version history for the published game and Bryan can revert it himself, so the playtester may playtest the published place opened in Studio, and Rojo may sync into it. Play tests there may read and write the live DataStore; that is fine. Studio stays open on the published place, not on a local copy. Publishing is still Bryan's call alone.
