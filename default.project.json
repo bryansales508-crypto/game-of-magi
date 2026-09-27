@@ -49,6 +49,12 @@
     "ServerScriptService": {
       "$path": "src/ServerScriptService"
     },
+    "ServerStorage": {
+      "$className": "ServerStorage",
+      "Parked": {
+        "$path": "src/ServerStorage/Parked"
+      }
+    },
     "StarterGui": {
       "$className": "StarterGui",
       "HUD": {
