@@ -111,6 +111,19 @@ Remotes.Definitions = {
 		args = { Validate.string({ maxLen = 32 }) },
 		rate = { count = 1, per = 5 },
 	},
+	-- M3-03: CombatService. Intentions only - the client never reports
+	-- what it hit (C2); the server runs its own hit-check at the move's
+	-- hit time.
+	Attack = {
+		kind = "Event",
+		args = {},
+		rate = { count = 6, per = 1 },
+	},
+	Block = {
+		kind = "Event",
+		args = { Validate.boolean() },
+		rate = { count = 4, per = 1 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

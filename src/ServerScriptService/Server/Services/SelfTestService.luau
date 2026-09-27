@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
+local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
@@ -26,6 +27,7 @@ local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
+local CombatService = require(script.Parent.CombatService)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
@@ -755,6 +757,147 @@ local function testMovementService(results: { Check })
 	end
 end
 
+-- M3-03: CombatService's pure combo/facing/block-decision helpers, the
+-- hit-check geometry against fake models parented in Workspace (spatial
+-- queries only find parts actually in the DataModel), knockout at 0 HP,
+-- and a stunned character's Attack being rejected. Block's meter-drain
+-- (HealthService.SpendBlock) needs a real Player and is exercised by the
+-- playtester instead - ResolveBlock's own pure test below covers the
+-- decision logic that path feeds into.
+local function testCombatService(results: { Check })
+	do
+		expect(results, "CombatService: NextComboStep continues within the window", CombatService.NextComboStep(1, 0.9, 100, 100.5) == 2)
+		expect(
+			results,
+			"CombatService: NextComboStep resets once the window has passed",
+			CombatService.NextComboStep(2, 0.9, 100, 101.5) == 1
+		)
+		expect(results, "CombatService: NextComboStep resets with no prior hit", CombatService.NextComboStep(2, 0.9, nil, 100) == 1)
+	end
+
+	do
+		expect(
+			results,
+			"CombatService: IsFacingAttacker true when the target looks back at the attacker",
+			CombatService.IsFacingAttacker(Vector3.new(0, 0, -1), Vector3.new(0, 0, 2), Vector3.new(0, 0, 0))
+		)
+		expect(
+			results,
+			"CombatService: IsFacingAttacker false when the target faces away",
+			not CombatService.IsFacingAttacker(Vector3.new(0, 0, 1), Vector3.new(0, 0, 2), Vector3.new(0, 0, 0))
+		)
+	end
+
+	do
+		expect(results, "CombatService: ResolveBlock parries when not on cooldown", CombatService.ResolveBlock(true, false, true) == "Parried")
+		expect(
+			results,
+			"CombatService: ResolveBlock (AUDIT H5) falls back to a held block on parry cooldown",
+			CombatService.ResolveBlock(true, true, true) == "Blocked"
+		)
+		expect(results, "CombatService: ResolveBlock holds while the meter lasts", CombatService.ResolveBlock(false, false, true) == "Blocked")
+		expect(
+			results,
+			"CombatService: ResolveBlock breaks once the meter is empty",
+			CombatService.ResolveBlock(false, false, false) == "BlockBroken"
+		)
+	end
+
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestCombatService"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+
+		model.Parent = scratch
+		return model
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestAttacker", Vector3.new(500, 5, 0), Vector3.new(500, 5, 1))
+		local move = Combat.move("Fist", 1) :: Combat.Move
+
+		local inRange = buildFakeCombatant("SelfTestInRange", Vector3.new(500, 5, 3), Vector3.new(500, 5, 4))
+		local outOfRange = buildFakeCombatant("SelfTestOutOfRange", Vector3.new(500, 5, 50), Vector3.new(500, 5, 51))
+		local behind = buildFakeCombatant("SelfTestBehind", Vector3.new(500, 5, -3), Vector3.new(500, 5, -4))
+
+		expect(results, "CombatService: FindTarget finds a combatant in range", CombatService.FindTarget(attacker, move) == inRange)
+
+		inRange:Destroy()
+		expect(
+			results,
+			"CombatService: FindTarget finds neither an out-of-range nor a behind-the-attacker combatant",
+			CombatService.FindTarget(attacker, move) == nil
+		)
+
+		outOfRange:Destroy()
+		behind:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestKnockoutAttacker", Vector3.new(600, 5, 0), Vector3.new(600, 5, 1))
+		local target = buildFakeCombatant("SelfTestKnockoutTarget", Vector3.new(600, 5, 3), Vector3.new(600, 5, 0))
+		StatusService.Register(target)
+
+		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
+		targetHumanoid.Health = 3 -- less than Jab's 5 damage
+
+		local jab = Combat.move("Fist", 1) :: Combat.Move
+		CombatService.ApplyHit(attacker, target, jab, 1)
+
+		expect(results, "CombatService: a lethal hit knocks out instead of killing", targetHumanoid.Health == 1)
+		expect(results, "CombatService: knockout applies the Knocked status", StatusService.Has(target, "Knocked"))
+
+		StatusService.Unregister(target)
+		target:Destroy()
+		attacker:Destroy()
+	end
+
+	do
+		local character = Instance.new("Model")
+		character.Parent = scratch
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.Parent = character
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = character
+
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		StatusService.Apply(character, "Stun", 5)
+
+		CombatService.Attack(character)
+		expect(
+			results,
+			"CombatService: Attack while stunned is rejected",
+			(character:GetAttribute("NextAttackAt") :: number) == 0
+		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	scratch:Destroy()
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -777,6 +920,7 @@ function SelfTestService:Start()
 		testHealthService(collected)
 		testStatusService(collected)
 		testMovementService(collected)
+		testCombatService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

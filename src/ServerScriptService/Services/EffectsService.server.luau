@@ -134,19 +134,17 @@ local function truestunFunc(chara, NPC, remove)
 	end
 end
 
+-- M3-03: this used to also create/destroy the "TrueStun" marker itself.
+-- CombatService now applies TrueStun through StatusService directly
+-- (StatusService.Apply(target, "TrueStun", Combat.Block.breakStun)) in the
+-- exact same block-break moment that adds this BlockBroken marker, so
+-- doing it here too just made a second, orphaned "TrueStun" Instance
+-- sitting next to StatusService's own one. This is presentation only now.
 local function blockbrokenFunc(chara, NPC, remove)
 	if not remove then
-		local truestunInt = Instance.new("StringValue") -- creating a truestun input
-		truestunInt.Name = "TrueStun"
-		truestunInt.Parent = chara.Effects
-
 		chara.Torso:FindFirstChild("BlockBroken"):Play() -- sound
 		chara.Torso:FindFirstChild("BlockBreakParticle"):Emit(15) -- particle
 		chara.Head.HairAttachment.Confusion:Emit(5)
-	else
-		if chara.Effects:FindFirstChild("TrueStun") then
-			chara.Effects:FindFirstChild("TrueStun"):Destroy() -- removing truestun
-		end
 	end
 end
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
