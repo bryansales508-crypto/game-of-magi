@@ -1,5 +1,5 @@
 --!strict
--- Dev tools: an F8 status overlay and an F9 command panel. Both just send
+-- Dev tools: an F8 status overlay and an F7 command panel. Both just send
 -- text through DevCommand and render whatever the server sends back
 -- (DevReply/DevState); the server alone decides who is a dev (DevService,
 -- M1-05S) -- a non-dev who opens either one just gets no replies.
@@ -173,7 +173,7 @@ function DevController:Start()
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.F8)
 
-	-- ==================== F9 dev panel ====================
+	-- ==================== F7 dev panel ====================
 
 	local panelFrame = newInstance("Frame", {
 		Name = "Panel",
@@ -358,9 +358,9 @@ function DevController:Start()
 		end
 		setPanelVisible(not panelVisible)
 		return Enum.ContextActionResult.Sink
-	end, false, Enum.KeyCode.F9)
+	end, false, Enum.KeyCode.F7)
 
-	log:Info("dev overlay (F8) and dev panel (F9) ready")
+	log:Info("dev overlay (F8) and dev panel (F7) ready")
 end
 
 return DevController
