@@ -9,6 +9,10 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
 local Validate = require(ReplicatedStorage.Shared.Validate)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
+local LegacyBridge = require(script.Parent.LegacyBridge)
+local PlayerService = require(script.Parent.PlayerService)
+local DevService = require(script.Parent.DevService)
 
 local log = Log.new("SelfTest")
 
@@ -155,6 +159,136 @@ local function testRemoteWrapper(results: { Check })
 	end
 end
 
+-- M1-03: a fake Data table exercises SaveSchema.Migrate's version bump, and
+-- a temporary Folder stands in for a Player (LegacyBridge only needs an
+-- Instance to parent the mirrored Values under; it never touches
+-- Player-specific members).
+local function testDataService(results: { Check })
+	do
+		local data = ({ Version = 0 } :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: Migrate bumps Version to the current schema version", data.Version == Config.Data.SchemaVersion)
+	end
+
+	do
+		local data: SaveSchema.Data = {
+			Version = 1,
+			Character = {
+				FirstName = "Test",
+				Gender = 1,
+				Race = 2,
+				Kingdom = 1,
+				SkinTone = 1,
+				HairColor = { R = 0.5, G = 0.5, B = 0.5 },
+				EyeColor = 1,
+				FaceBase = 1,
+				MouthShape = 1,
+				Height = 1,
+				GrowthProfile = "",
+			},
+			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+			Bounty = 0,
+			Economy = { Copper = 20, Silver = 0, Gold = 0 },
+			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
+			Family = {},
+			Magic = {},
+			Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+		}
+
+		local standIn = Instance.new("Folder")
+		local fakePlayer = (standIn :: any) :: Player
+
+		local built = pcall(function()
+			LegacyBridge.Build(fakePlayer, data)
+		end)
+		expect(results, "LegacyBridge: Build doesn't error", built)
+
+		local firstNameValue: StringValue? = nil
+		if built then
+			local statsFolder = standIn:FindFirstChild("Stats")
+			local child = statsFolder and statsFolder:FindFirstChild("FirstName")
+			if child and child:IsA("StringValue") then
+				firstNameValue = child
+			end
+		end
+		expect(results, "LegacyBridge: Build creates Stats.FirstName", firstNameValue ~= nil)
+
+		if firstNameValue then
+			local value = firstNameValue :: StringValue
+			expect(results, "LegacyBridge: Build pushes data onto the Value", value.Value == "Test")
+
+			value.Value = "Changed"
+			task.wait()
+			expect(results, "LegacyBridge: a Value change writes back into data", data.Character.FirstName == "Changed")
+
+			data.Character.FirstName = "FromData"
+			LegacyBridge.Refresh(fakePlayer, data)
+			expect(results, "LegacyBridge: Refresh pushes data back onto the Value", value.Value == "FromData")
+		end
+
+		if built then
+			LegacyBridge.Destroy(fakePlayer)
+		end
+		standIn:Destroy()
+	end
+end
+
+-- M1-04S: the join state machine is pure (no Player needed), so every
+-- transition is exercised directly.
+local function testPlayerService(results: { Check })
+	local NextJoinState = PlayerService.NextJoinState
+
+	expect(results, "PlayerService: CharacterPlaced moves Loading to Loaded", NextJoinState("Loading", "CharacterPlaced") == "Loaded")
+	expect(results, "PlayerService: ClientReady moves Loaded to Ready", NextJoinState("Loaded", "ClientReady") == "Ready")
+	expect(
+		results,
+		"PlayerService: ClientReady is ignored while Loading",
+		NextJoinState("Loading", "ClientReady") == "Loading"
+	)
+	expect(
+		results,
+		"PlayerService: CharacterPlaced does nothing once already Loaded",
+		NextJoinState("Loaded", "CharacterPlaced") == "Loaded"
+	)
+	expect(
+		results,
+		"PlayerService: CharacterPlaced does nothing once Ready",
+		NextJoinState("Ready", "CharacterPlaced") == "Ready"
+	)
+	expect(results, "PlayerService: Respawn resets Loaded back to Loading", NextJoinState("Loaded", "Respawn") == "Loading")
+	expect(results, "PlayerService: Respawn resets Ready back to Loading", NextJoinState("Ready", "Respawn") == "Loading")
+	expect(
+		results,
+		"PlayerService: full sequence Loading -> Loaded -> Ready",
+		NextJoinState(NextJoinState("Loading", "CharacterPlaced"), "ClientReady") == "Ready"
+	)
+end
+
+-- M1-05S: DevService.IsDev is always true in Studio (where self-tests run),
+-- so the admin-list check is tested directly via IsAdminUserId instead.
+-- Dispatch itself is exercised with a fake player table, the same trick
+-- used by the Remotes self-test above.
+local function testDevService(results: { Check })
+	expect(results, "DevService: Bryan's UserId is an admin", DevService.IsAdminUserId(27938432))
+	expect(results, "DevService: an unlisted UserId is not an admin", not DevService.IsAdminUserId(1))
+
+	local fakePlayer = ({ Name = "SelfTestDev", UserId = 27938432 } :: any) :: Player
+
+	local cmdReply = DevService.Dispatch(fakePlayer, ".cmd")
+	expect(results, "DevService: .cmd from a dev returns the command list", cmdReply ~= nil and cmdReply:find("Dev commands:") ~= nil)
+
+	local unknownReply = DevService.Dispatch(fakePlayer, ".notarealcommand")
+	expect(
+		results,
+		"DevService: an unknown command still replies with help",
+		unknownReply ~= nil and unknownReply:find("Unknown command") ~= nil
+	)
+
+	local notACommand = DevService.Dispatch(fakePlayer, "just chatting")
+	expect(results, "DevService: a non-command chat line gets no reply", notACommand == nil)
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -168,6 +302,9 @@ function SelfTestService:Start()
 		local collected: { Check } = {}
 		testValidators(collected)
 		testRemoteWrapper(collected)
+		testDataService(collected)
+		testPlayerService(collected)
+		testDevService(collected)
 		return collected
 	end)
 

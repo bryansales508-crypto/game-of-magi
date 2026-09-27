@@ -26,8 +26,17 @@ Config.Data = {
 	SchemaVersion = 1,
 }
 
+-- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.
+-- A player also counts as a dev when Config.Debug.Enabled (Studio) is true;
+-- see DevService.IsDev.
+Config.Dev = {
+	Admins = { 27938432 },
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
+table.freeze(Config.Dev.Admins)
+table.freeze(Config.Dev)
 table.freeze(Config)
 
 return Config

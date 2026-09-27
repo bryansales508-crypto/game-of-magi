@@ -6,69 +6,80 @@ Paths are shortened: `SSS` = ServerScriptService, `RS` = ReplicatedStorage, `RF`
 
 ---
 
-## 1. Saving and loading (DataStore)
+## 1. Saving and loading (DataStore) — rebuilt M1-03
 
-**What it does.** When a player joins, two server scripts load their save, build folders of Value objects under the player, and fill in defaults for new players. Any change to one of those Values marks the player "dirty"; every 60 seconds dirty players are saved. Players are also saved when they leave and when the server shuts down.
+**What it does now.** One `DataService` (`SSS/Server/Services/DataService.luau`) owns one save per player, on top of the vendored **ProfileStore** library (`SSS/Server/Packages/ProfileStore.luau`, MadStudio/loleris, Apache 2.0, unchanged). ProfileStore session-locks each save (so two servers can never load and save the same profile at once), retries loading, and saves on leave and on server shutdown (it binds to `game:BindToClose` itself).
 
-| | Stats (`MainStore2`) | OnCharacter (`OnCharacterStore2`) |
+**Store and key.** Store name `Config.Data.StoreName` (`"GameOfMagi_v1"`, a new store — the old `"GameOfMagi_v0.01am"` data is not read by the new code). Key: `Config.Debug.SaveScope .. "_" .. userId`, where `SaveScope` is `"Studio"` in Studio and `"Live"` in a published server — so play tests in Studio can never touch or corrupt a live save. `Config.Debug.FreshSave` (Studio only) forces every session onto `ProfileStore.Mock` instead: nothing persists, and every run starts from a brand-new template. DataService also falls back to `.Mock` on its own, for the rest of that server's life, if the very first real `StartSessionAsync` call throws (DataStore API unavailable, e.g. testing offline).
+
+**Schema (v1)**, defined in `RS/Shared/SaveSchema.luau` as `SaveSchema.Template`, deep-copied per profile by ProfileStore:
+```
+Version   number                            -- schema version; SaveSchema.Migrate walks old saves up to Config.Data.SchemaVersion
+
+Character = { FirstName, Gender, Race, Kingdom, SkinTone, HairColor {R,G,B},
+              EyeColor, FaceBase, MouthShape, Height, GrowthProfile }   -- same fields/meanings as the old Stats shape below
+Age       = { Years, TimePassed, ProgToAge }   -- TimePassed set to os.time() on first load
+Progress  = { Magoi, GoldRukh, BlackRukh, Epithet }   -- DESIGN.md section 3a
+Bounty    number
+Economy   = { Copper, Silver, Gold }
+Gear      = { Shirt, Pants, Hats {3 slots}, Inventory {item code list} }
+Family    table   -- reserved, empty
+Magic     table   -- reserved, empty
+Meta      = { Created, LastSeen, Lives }
+```
+Missing keys on an existing save are filled in by `Profile:Reconcile()` before `SaveSchema.Migrate` runs, so a migration can assume its own version's shape already exists.
+
+**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use).
+
+**If loading fails or the player leaves mid-load:** the player is kicked with "Your save couldn't be loaded. Please rejoin in a moment." A session stolen by another server, or the DataStore going down mid-session, kicks the player the same way (ProfileStore's `OnSessionEnd`).
+
+**The legacy bridge** (`SSS/Server/Services/LegacyBridge.luau`, **temporary** — deleted once M2–M6 stop needing it). Old scripts (M2 onward, not yet rebuilt) still read and write `player.Stats` and `player.OnCharacter` directly, so on load DataService builds those exact folders and Value objects from the real save, and mirrors changes both ways:
+
+| Old Value | Mirrors | Direction |
 |---|---|---|
-| File | `SSS/Datastore/MainStore2/init.server.luau` | `SSS/Datastore/MainStore2/OnCharacterStore2.server.luau` |
-| Folder it builds | `player.Stats` | `player.OnCharacter` (with subfolders `Clothes`, `Currency`, `Hats`, `Inventory`, and a `Position` value) |
-| "Done loading" flag | `player.Loaded` (waits for `LoadedOC` first) | `player.LoadedOC` |
-| If loading fails | Kicks the player and blocks saving (`BadData` marker) | Only warns; carries on with an empty table |
-| Save call | `SetAsync` | `UpdateAsync` (ignores the old value) |
+| `Stats.Race`, `.Kingdom`, `.EyeColor`, `.FaceBase`, `.MouthShape`, `.SkinTone`, `.HairColor`, `.FirstName`, `.GrowthProfile`, `.Height` | `Character.*` (same names) | two-way |
+| `Stats.Gender` | `Character.Gender` | two-way |
+| `Stats.Age` | `Age.Years` | two-way |
+| `Stats.TimePassed`, `.ProgToAge` | `Age.TimePassed`, `.ProgToAge` | two-way |
+| `Stats.MaxMagoi` | `Progress.Magoi` | one-way (data → Value); nothing currently active writes it back (the only old writer, `LevelHandler`, is parked) |
+| `Stats.Hunger` | fixed at `5` | one-way (parked, TRIAGE K1) |
+| `OnCharacter.Clothes.Clothing_Shirt/Pants` | `Gear.Shirt`/`Pants` | two-way |
+| `OnCharacter.Currency.Copper/Silver/Gold` | `Economy.*` | two-way |
+| `OnCharacter.Hats.HatSpot1..3` | `Gear.Hats[1..3]` | two-way |
+| `OnCharacter.Inventory.Row1` | `Gear.Inventory`, `;`-joined | two-way |
+| `OnCharacter.Inventory.Row2` | fixed at `""` | one-way (nothing ever wrote it) |
+| `OnCharacter.Position` | fixed at `(0,0,0)` | inert — created (like the old code did) but never read from or written to the save; new spawns always go to Qarzin — see section 2 |
+| `player.LoadedOC`, then `player.Loaded` | — | set once, in that order, after the folders above are populated |
 
-**DataStore name:** the value of `SSS.Datastore.CurrentStore` (a StringValue), currently `"GameOfMagi_v0.01am"`.
-**Key:** `player.UserId`, used by **both** scripts.
+**Also mirrored, one-way (data → old GUI/sound), not part of the table above:** the coin purse HUD (`PlayerGui.Currency.Bank.CoinPurse.Copper/Silver/Gold.Text`) is set from `Economy.*` on load and on every change, and the `CoinReward` sound plays on every change — exactly what the old `OnCharacterStore2` did, since nothing else updates that display now.
 
-**Stats data shape** (saved table):
-```
-Race          int   1 Fanalis, 2 Human, 3 Imuchakk, 4 Magician, 5 Magi (new players: always 2, Human, for now)
-HairColor     {R, G, B}  0–1 floats (random for new players)
-FirstName     string (random from Assets.FirstNames.sindria.male)
-Kingdom       int   (always 1 for now)
-MaxMagoi      int   (by race: 1 / 10 / 10 / 100 / 1000; used as EXP)
-EyeColor      int 1–5,  FaceBase int 1–2,  MouthShape int 1–6
-Gender        int   0 = not chosen yet, then set by the gender picker
-Age           int   starts at 13
-Height        number  10 = "not rolled yet" sentinel, then a real height (~0.75–1.25)
-GrowthProfile string  "v1|startHeight|adultHeight|spurtAge|fatEnd" (see Aging)
-SkinTone      int   0 until chosen
-TimePassed    int   os.time() of the last aging tick
-ProgToAge     int   seconds banked toward the next birthday
-Hunger        number  starts at 5
-```
+**Depends on:** `RS/Shared/Config`, `RS/Shared/Log`, `RS/Shared/SaveSchema`, `SSS/Server/Packages/ProfileStore`.
+**Depended on by:** every old script that reads `player.Stats` / `player.OnCharacter` / `player.Loaded` / `player.LoadedOC` (unchanged, via the bridge), and every M1-04+ system that will call `DataService.Get`/`WaitFor` directly instead.
 
-**OnCharacter data shape:**
-```
-Clothing_Shirt, Clothing_Pants   item code string, e.g. "S|Short Sleeve Rags|35,35,35" (see Items)
-Copper, Silver, Gold             int (new players: 20 Copper)
-HatSpot1..3                      item code string or ""
-Row1, Row2                       string: inventory rows, ";"-separated item codes read by the menu (nothing writes them yet)
-Position                         not saved (code is commented out); new spawns go to Qarzin
-```
-
-**⚠ Both scripts write to the same DataStore under the same key.** Each saves only its own table, so whichever saves last overwrites the other's data. For example, Stats saving can erase your coins, and OnCharacter saving can erase your age.
-
-**Depends on:** `RF.Assets` (first names), `SSS.Character.ItemHandler` (required but not used), `RS.Modules.AssetID` (required but not used).
-**Depended on by:** almost everything. Scripts wait on `player.Loaded`, `player.Stats`, and `player.OnCharacter`.
-
-**Disabled:** `SSS/Datastore/StatManipulation` is switched off. It requires a `DataStore2` module that doesn't exist, and its body is all commented out (an older chat-command and backup idea).
+**Removed:** the old `SSS/Datastore/` folder (`MainStore2/init.server.luau`, `MainStore2/OnCharacterStore2.server.luau`, `CurrentStore.txt`) — TRIAGE #1, approved. **Not removed** (out of this task's scope): `SSS/DevCommandHandler.luau` (M1-05) still opens two DataStores directly by name (`"Mainstore2"`, `"OnCharacterStore2"` — note these don't even match the old `CurrentStore` value, so that code path looks already-dead); M1-05 should point it at `DataService` instead.
 
 ---
 
-## 2. Join flow (loading screen → spawn)
+## 2. Join flow (loading screen → spawn) — rebuilt M1-04
 
-**What it does.** Coordinates the order things happen in when a character spawns. Many scripts wait on the markers below.
+**What it does now.** One `PlayerService` (`SSS/Server/Services/PlayerService.luau`) coordinates the whole join, on the server, through a single Player attribute instead of the old one-shot remote race (AUDIT H3/P1/M9: the old flow could hang, or spawn ~326 studs from Qarzin, if the `MainScreen` fire was ever missed).
 
-1. `SCS/Scripts/Load` (client) shows a loading screen, fades it, then fires **`MiscRemotes.MainScreen`** to the server.
-2. `SSS/Character/AppearanceController` and `SSS/Character/LocationHandler` each wait for that `MainScreen` fire before continuing.
-3. AppearanceController builds the character (section 3) and sets `character.AppearenceLoaded = true`.
-4. LocationHandler then teleports the character to its saved position, or to `Workspace.MAP.Spawns.QarzinSpawn` if there is none (always, for now).
-5. `SSS/Character/Protection` kicks the player if `AppearenceLoaded` isn't true within 30 seconds.
-6. Once `AppearenceLoaded` is true, other scripts set up: `EffectsService` makes `character.Effects`, `InteractionsDesign` makes `character.IntFold`, `RegionHandlerPart2` makes `character.RegionInfo`.
+**The state:** a string attribute on the Player, **`JoinState`**, one of `"Loading"`, `"Loaded"`, `"Ready"`. It's set again to `"Loading"` on every respawn, not just the first spawn. Because it's an attribute (not a one-time event), anything can just read the current value or watch `GetAttributeChangedSignal("JoinState")` — there's no window where a script that starts waiting late misses the signal.
 
-**Remotes:** `MiscRemotes.MainScreen` (client → server, no arguments).
+1. **PlayerAdded** (and any player already in the game when the server starts, including one whose character already auto-spawned before PlayerService's listeners connected): `JoinState = "Loading"`.
+2. **CharacterAdded** (every spawn, including respawns): `JoinState = "Loading"` again. PlayerService waits for `HumanoidRootPart` (10s timeout, logs an error and gives up placing the character if it never appears — it does **not** hang or kick), then immediately pivots the whole character to `Workspace.MAP.Spawns.QarzinSpawn`, raised half the spawn part's own height plus a margin so it doesn't clip regardless of the part's size. A saved position isn't used yet (AUDIT L4) — every spawn goes to Qarzin, same as today. Once the character is placed and the save is loaded (`DataService.WaitFor`; if the save never loads, DataService has already kicked the player and PlayerService has nothing further to do), `JoinState = "Loaded"`.
+3. **CharacterRemoving** (fires just before the *next* CharacterAdded, on death or a dev `.fresh`): `JoinState = "Loading"` immediately, so nothing can read a stale `"Ready"`/`"Loaded"` left over from the life that just ended — a real risk since Roblox doesn't guarantee the order server scripts hear CharacterRemoving vs. CharacterAdded.
+4. **The client says it's done:** the client's loading screen fires the new remote **`ClientReady`** (`Net.ClientReady`, event, no arguments, rate-limited to 3 per 10s) once it's finished showing/fading. PlayerService ignores this unless `JoinState` is currently `"Loaded"` (so a stray or repeated fire can't skip ahead), and unless the character is still there. When accepted: `JoinState = "Ready"`, and `PlayerService.Ready` fires with the player and character — this is the signal later systems (M2+) should wait on instead of `MainScreen`.
+5. **Stuck loading:** if a character is still `"Loading"` 120 seconds after it spawned, PlayerService logs one warning and keeps waiting. It never kicks — the old 30-second kick during character creation (`Protection.server.luau`) was itself a bug (H3) and is gone by design.
+6. **Leaving mid-load:** every wait loop in PlayerService re-checks `player.Parent` on each iteration and exits if the player is gone, so quitting during any stage never leaves a thread running (AUDIT M9).
+
+**Public API:** `PlayerService.GetState(player)`, `.IsReady(player)`, `.WaitForReady(player, timeout?)` (returns the character once `JoinState == "Ready"`, or `nil` on timeout/leave), `.Ready` (fires `(player, character)`). `IsReady`/`WaitForReady` check that the "Ready" state still belongs to the player's *current* character (not one from a life that just ended), on top of the `JoinState` attribute itself.
+
+**The old scripts, bridged.** Character creation itself isn't rebuilt until M2, so `AppearanceController` still runs the same appearance-building code it always did — it just waits on `JoinState == "Ready"` now instead of the `MainScreen` remote (checks the current attribute first, then `GetAttributeChangedSignal`, so it can't miss a fast transition). It still sets `character.AppearenceLoaded = true` at the end, so every other old script that waits on `AppearenceLoaded` (`EffectsService`, `InteractionsDesign`, `RegionHandlerPart2`, the HUD, `Health`, `Animate`, footsteps, and more) keeps working unchanged.
+
+**Removed:** `LocationHandler.server.luau` (PlayerService now places the character — TRIAGE #2) and `Protection.server.luau` (the 30s kick; by design, gone). **Not removed** (out of this task's scope): the old client `SCS/Scripts/Load/init.client.luau` still fires `MiscRemotes.MainScreen` — M1-04C replaces it with a `LoadController` that fires `ClientReady` instead, same look.
+
+**Remotes:** `Net.ClientReady` (client → server, no arguments, 3 per 10s). The old `MiscRemotes.MainScreen` still exists (untouched) but nothing on the server listens to it anymore.
 
 ---
 
@@ -290,21 +301,38 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 
 ---
 
-## 16. Dev commands
+## 16. Dev commands — rebuilt M1-05
 
-**What it does.** Chat commands for the developer only. Permission is checked on the server by **UserId** (`27938432`) inside `DevCommandHandler.Execute`.
+**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen.
+
+**Permission.** A player is a dev if their UserId is in `Config.Dev.Admins` (`27938432`, Bryan — the same UserId the old handler checked), **or** `Config.Debug.Enabled` is true (Studio: everyone testing there is a dev). Checked on the server before anything else runs. A non-dev gets no reply at all (so they can't tell a real command from an unknown one) and one `Log:Warn` per player per minute, not per command.
+
+**Commands** (all start with `.`; `[player]` defaults to the caller and matches by display name or username prefix, case-insensitive — ambiguous replies with the candidates):
 
 | Command | Effect |
 |---|---|
-| `.cmd` | lists commands |
-| `.<field> <player> <number>` | sets a value |
-| `.<field>+ <player> <number>` | adds to it |
+| `.cmd` | lists every command with one-line help |
+| `.state [player]` | sends a state snapshot to the caller over `DevState` and logs the same snapshot as a readable block in Output |
+| `.watch on\|off` | streams `DevState` to the caller every second |
+| `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency |
+| `.age <years> [player]`, `.age+ <n>` | set or add to `Age.Years` |
+| `.magoi <n> [player]`, `.magoi+ <n>` | set or add to `Progress.Magoi` |
+| `.rukh <gold> <black> [player]` | sets both Rukh tallies |
+| `.bounty <n> [player]` | sets `Bounty` |
+| `.epithet <text> [player]` | sets `Progress.Epithet` (quote multi-word text) |
+| `.tp <city>` | teleports the caller's character to a spawn point (matches `Workspace.MAP.Spawns` children case-insensitively, with or without the `Spawn` suffix — `.tp qarzin` finds `QarzinSpawn`) |
+| `.cities` | lists the spawn points that exist |
+| `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
+| `.fresh [player]` | `DataService.Wipe`, then reloads the character (kick-free) |
+| `.save [player]` | saves now |
 
-Fields: `silvercoin`, `coppercoin`, `goldcoin`, `age`, `height`, `hunger`, `maxmagoi`, `exp` (a placeholder; `Exp` doesn't exist yet). For an online player it edits the live Value, so saving picks it up. For an offline player it writes straight to the DataStore.
+Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 
-**⚠** The offline path writes to DataStores named `"Mainstore2"` and `"OnCharacterStore2"`. The game actually saves to `"GameOfMagi_v0.01am"`, so offline edits never reach the real save.
+**The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, sessionSeconds`. A system that isn't built yet (rank, until M4) sends `"n/a"`.
 
-**Files:** `SSS/DevCommandHandler.luau`, `SSS/DevCommandChatListener.server.luau`.
+**Remotes:** `Net.DevCommand` (client → server, one string, 5/s), `Net.DevReply` (server → client, one string), `Net.DevState` (server → client, one table).
+
+**Removed:** `SSS/DevCommandHandler.luau` and `SSS/DevCommandChatListener.server.luau` (TRIAGE #21) — the old offline path wrote to DataStores named `"Mainstore2"`/`"OnCharacterStore2"`, which never matched the real save name, so offline edits never worked; the new tools only ever write through `DataService`.
 
 ---
 
