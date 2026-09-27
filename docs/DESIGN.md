@@ -33,7 +33,7 @@ Around the loop, the long arc: **age 13 → adulthood → old age (60+) → deat
 | **Missions** | Delivery (works) | Keep Delivery as the starter tier. Add **Bounty Hunting** as the rank-gated next tier (Bryan's choice): crimes such as knocking out and robbing a courier put a **bounty** on you. A **bounty board in the cities** shows the wanted, so good (or evil) players can find the crooks and put them down for the reward. Carriage Escort comes later. |
 | **Combat** | Fist PvP works; the server trusts the client; combo unfinished; test dagger | A **server-authoritative** fist, finishing the combo chain and the block-break feel. Weapons you **buy** use the same system. |
 | **Items** | Clothes, hats, cloaks | Keep. Add weapons and gear as items with a simple code, so the old game's rarity and enchantment idea can return with magic. |
-| **World** | Qarzin plus 6 cities on trade routes; region music | Keep. One client-side ocean script. **Day/night cycle** from the old game (cheap, adds a lot). |
+| **World** | Qarzin plus 6 cities on trade routes; region music | Keep. One client-side ocean script. **Day/night cycle** from the old game, **and the cities react to it** (Bryan): lamps, torches and fires light at dusk and go out at dawn. |
 
 ## 3a. Rank, Rukh and epithets (approved by Bryan, 2026-09-26)
 
@@ -51,7 +51,9 @@ Rank measures **status**, like Sinbad's rise from a fisherman's son to King of S
 | 700 | Legend | |
 | 1,000 | King / Queen | (actually founding a kingdom stays parked) |
 
-**Magoi income:** about 10 per Delivery (more with modifiers); 25–50 per bounty turned in, scaled by the bounty. One life lasts about 4–5 h (5 min per year, 13 → 60+), and reaching King/Queen should take most of a life.
+**Magoi income:** about 10 per Delivery (more with modifiers); 25–50 per bounty turned in, scaled by the bounty.
+
+**Pacing note:** at Bryan's final rate of **30 min per year**, one life (13 → 60+) is about 23.5 h of play, and reaching King/Queen should take most of a life. So the Magoi thresholds above scale **×6** with the income unchanged: 0 / 300 / 600 / 1,500 / 2,400 / 4,200 / 6,000. The table keeps the original ratios, and the exact numbers are data, tuned in playtests.
 
 **Layer 2: Rukh alignment.** From Magi's Rukh morality, this is a mix, not a single scale. Two hidden tallies:
 - **Gold Rukh:** good deeds (deliveries, turning in bounties, …)
@@ -102,5 +104,5 @@ Stored in `ServerStorage/Parked`, so they never run or distract:
 1. **Scope of this renovation:** foundation + character life + rank + economy + Delivery + one new mission tier. Right size? **Bryan: yes, this scope is right (2026-09-26).**
 2. Which mission tier comes next: Carriage Escort or Bounty Hunting? **Bryan: Bounty Hunting, with a place where players can find the wanted crooks and put them down.**
 3. How much Magoi per mission, and the rank thresholds? **Bryan: approved; see section 3a (ladder reworked into status titles with Rukh epithets).**
-4. Real time per in-game year? **5 minutes (a life lasts about 4–5 h). Bryan approved the rank pacing built on this.**
-5. Day/night: in or out?
+4. Real time per in-game year? **Bryan changed this to 30 minutes per year** (debug builds use a shorter value). Aging and progression should both be slow. A life of 13 → 60 is about **23.5 h of play**, so the rank thresholds in 3a scale up to match (see the note there).
+5. Day/night: in or out? **Bryan: in, with the cities reacting (lights and fires at night).**
