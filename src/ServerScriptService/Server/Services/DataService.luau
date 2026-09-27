@@ -33,12 +33,22 @@ local KICK_MESSAGE = "Your save couldn't be loaded. Please rejoin in a moment."
 local rootStore = ProfileStoreLib.New(Config.Data.StoreName, SaveSchema.Template)
 
 -- Flips to true (and stays true) the moment a real StartSessionAsync call
--- errors, or immediately if Config.Debug.FreshSave is set: every following
--- session in this server uses ProfileStore.Mock instead (nothing persists,
--- every run starts fresh). Studio play tests should never touch live saves.
-local useMock = Config.Debug.FreshSave
+-- errors in Studio, or immediately if Config.Debug.FreshSave is set (also
+-- Studio only): every following session in this server then uses
+-- ProfileStore.Mock instead (nothing persists, every run starts fresh).
+-- Studio play tests should never touch live saves. This must never happen
+-- on a live server: a live server that silently switched to Mock would
+-- serve every later player a blank save that's never written, with nothing
+-- telling them (REVIEW-M1-03 H1) — a live StartSessionAsync error is a real
+-- outage and gets a kick instead (see startSession below).
+local useMock = Config.Debug.FreshSave and Config.IsStudio
 
 local profiles: { [Player]: Profile } = {}
+-- Sessions currently being started, so PlayerAdded firing twice for the same
+-- player (once directly, once via Start()'s catch-up loop for a player who
+-- joined just before Start ran) only ever runs the pipeline once
+-- (REVIEW-M1-03 L6).
+local loading: { [Player]: boolean } = {}
 
 local loadedBindable = Instance.new("BindableEvent")
 
@@ -77,14 +87,23 @@ local function startSession(player: Player): Profile?
 	local ok, profile, err = attemptStartSession(key, cancelled)
 
 	if not ok and not useMock then
-		log:Warn(
-			string.format(
-				"StartSessionAsync errored (%s); falling back to ProfileStore.Mock for the rest of this server's session",
-				err or "unknown error"
+		if Config.IsStudio then
+			log:Warn(
+				string.format(
+					"StartSessionAsync errored (%s); falling back to ProfileStore.Mock for the rest of this server's session (Studio only)",
+					err or "unknown error"
+				)
 			)
-		)
-		useMock = true
-		ok, profile, err = attemptStartSession(key, cancelled)
+			useMock = true
+			ok, profile, err = attemptStartSession(key, cancelled)
+		else
+			-- Never fall back to Mock on a live server: that would silently
+			-- serve every later player a blank save that's never written
+			-- (REVIEW-M1-03 H1). A live StartSessionAsync error is an
+			-- outage; kick and let the player rejoin once it clears.
+			log:Error(string.format("StartSessionAsync errored for %s: %s", player.Name, err or "unknown error"))
+			return nil
+		end
 	end
 
 	if not ok then
@@ -102,11 +121,19 @@ local function kick(player: Player)
 end
 
 local function onPlayerAdded(player: Player)
+	if profiles[player] ~= nil or loading[player] then
+		-- Already loaded, or already loading (PlayerAdded firing while
+		-- Start()'s catch-up loop is also handling this same player).
+		return
+	end
+	loading[player] = true
+
 	local profile = startSession(player)
 
 	if profile == nil then
 		-- Either the load failed, or the player left while it was loading
 		-- (StartSessionAsync's Cancel condition), which also returns nil.
+		loading[player] = nil
 		kick(player)
 		return
 	end
@@ -115,6 +142,7 @@ local function onPlayerAdded(player: Player)
 		-- Rare race: the player left in the moment between StartSessionAsync
 		-- returning and this check running. End the session instead of
 		-- building a bridge for a player who's already gone.
+		loading[player] = nil
 		profile:EndSession()
 		return
 	end
@@ -125,8 +153,10 @@ local function onPlayerAdded(player: Player)
 
 	local data = profile.Data
 	local now = os.time()
-	if data.Meta.Created == 0 then
+	local firstLoad = data.Meta.Created == 0
+	if firstLoad then
 		data.Meta.Created = now
+		SaveSchema.NewLife(data)
 	end
 	data.Meta.LastSeen = now
 	if data.Age.TimePassed == 0 then
@@ -134,9 +164,11 @@ local function onPlayerAdded(player: Player)
 	end
 
 	profiles[player] = profile
+	loading[player] = nil
 
 	profile.OnSessionEnd:Connect(function()
 		profiles[player] = nil
+		loading[player] = nil
 		LegacyBridge.Destroy(player)
 		kick(player)
 	end)
@@ -166,24 +198,58 @@ function DataService.IsLoaded(player: Player): boolean
 	return profiles[player] ~= nil
 end
 
+-- Event-driven, not a per-frame poll (REVIEW-M1-03 L8): suspends the
+-- calling thread and resumes it from DataService.Loaded, PlayerRemoving, or
+-- a task.delay timeout, whichever comes first.
 function DataService.WaitFor(player: Player, timeout: number?): Data?
 	local existing = DataService.Get(player)
 	if existing then
 		return existing
 	end
 
-	local deadline = if timeout then os.clock() + timeout else nil
-	while profiles[player] == nil do
-		if not player:IsDescendantOf(Players) then
-			return nil
-		end
-		if deadline and os.clock() >= deadline then
-			return nil
-		end
-		task.wait()
+	if not player:IsDescendantOf(Players) then
+		return nil
 	end
 
-	return DataService.Get(player)
+	local callingThread = coroutine.running()
+	local settled = false
+
+	local loadedConnection: RBXScriptConnection
+	local removingConnection: RBXScriptConnection
+	local timeoutThread: thread? = nil
+
+	local function settle(result: Data?)
+		if settled then
+			return
+		end
+		settled = true
+		loadedConnection:Disconnect()
+		removingConnection:Disconnect()
+		if timeoutThread then
+			task.cancel(timeoutThread)
+		end
+		task.spawn(callingThread, result)
+	end
+
+	loadedConnection = DataService.Loaded:Connect(function(loadedPlayer: Player)
+		if loadedPlayer == player then
+			settle(DataService.Get(player))
+		end
+	end)
+
+	removingConnection = Players.PlayerRemoving:Connect(function(leavingPlayer: Player)
+		if leavingPlayer == player then
+			settle(nil)
+		end
+	end)
+
+	if timeout then
+		timeoutThread = task.delay(timeout, function()
+			settle(nil)
+		end)
+	end
+
+	return coroutine.yield() :: Data?
 end
 
 local function deepCopy(value: any): any
@@ -220,6 +286,7 @@ function DataService.Wipe(player: Player)
 		data[key] = deepCopy(value)
 	end
 	SaveSchema.Migrate(data :: Data)
+	SaveSchema.NewLife(data :: Data)
 
 	local now = os.time()
 	data.Meta.Created = now

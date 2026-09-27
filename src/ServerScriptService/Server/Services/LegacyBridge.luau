@@ -46,15 +46,21 @@ type Rig = {
 	hat3: StringValue,
 	row1: StringValue,
 	row2: StringValue,
+	position: Vector3Value,
 	loadedOC: BoolValue,
 	loaded: BoolValue,
 	connections: { RBXScriptConnection },
 }
 
 local rigs: { [Player]: Rig } = {}
--- True while LegacyBridge itself is writing Values from data, so the
--- Value.Changed handlers below know to ignore the echo instead of writing
--- the same value straight back into data (or, worse, looping).
+-- True while LegacyBridge itself is writing Values from data. Under
+-- Roblox's default Deferred signal behavior, a Value's .Changed handler
+-- doesn't run until after this flag is already back to false (mirroring
+-- only helps the immediate-signal-behavior case), so the real defense
+-- against writing an echo straight back into data is each watcher below
+-- comparing the new value against what's already there before writing
+-- (REVIEW-M1-03 L7). Kept anyway: it's still correct when it does apply,
+-- and it's what marks a write as "ours" if that's ever needed later.
 local mirroring: { [Player]: boolean } = {}
 
 local function joinInventory(items: { string }): string
@@ -66,6 +72,47 @@ local function splitInventory(joined: string): { string }
 		return {}
 	end
 	return string.split(joined, ";")
+end
+
+local COIN_GUI_TIMEOUT = 5
+
+-- Old OnCharacterStore2 kept the coin purse HUD text in sync itself (it was
+-- the only thing that ever wrote it), on both the initial load and every
+-- later change, plus a CoinReward sound on change (REVIEW-M1-03 M5).
+-- Bounded WaitForChild (old code's was unbounded) so a missing/renamed GUI
+-- can't hang the bridge the way the old MainScreen wait used to (H3).
+local function coinPurseLabel(player: Player, coin: "Copper" | "Silver" | "Gold"): TextLabel?
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if playerGui == nil then
+		return nil
+	end
+	local currency = playerGui:WaitForChild("Currency", COIN_GUI_TIMEOUT)
+	if currency == nil then
+		return nil
+	end
+	local bank = currency:FindFirstChild("Bank")
+	local purse = bank and bank:FindFirstChild("CoinPurse")
+	local label = purse and purse:FindFirstChild(coin)
+	if label and label:IsA("TextLabel") then
+		return label
+	end
+	return nil
+end
+
+local function updateCoinPurseText(player: Player, coin: "Copper" | "Silver" | "Gold", amount: number)
+	local label = coinPurseLabel(player, coin)
+	if label then
+		label.Text = tostring(amount)
+	end
+end
+
+local function playCoinRewardSound(player: Player)
+	local character = player.Character
+	local torso = character and character:FindFirstChild("Torso")
+	local sound = torso and torso:FindFirstChild("CoinReward")
+	if sound and sound:IsA("Sound") then
+		sound:Play()
+	end
 end
 
 -- Pushes `data` onto every mirrored Value (data -> Value direction). Used
@@ -98,6 +145,9 @@ local function pushToInstances(player: Player, rig: Rig, data: Data)
 	rig.copper.Value = data.Economy.Copper
 	rig.silver.Value = data.Economy.Silver
 	rig.gold.Value = data.Economy.Gold
+	updateCoinPurseText(player, "Copper", data.Economy.Copper)
+	updateCoinPurseText(player, "Silver", data.Economy.Silver)
+	updateCoinPurseText(player, "Gold", data.Economy.Gold)
 	rig.hat1.Value = data.Gear.Hats[1] or ""
 	rig.hat2.Value = data.Gear.Hats[2] or ""
 	rig.hat3.Value = data.Gear.Hats[3] or ""
@@ -128,77 +178,134 @@ local function connectAll(player: Player, data: Data, rig: Rig)
 	end
 
 	watch(rig.race, function(v: number)
-		data.Character.Race = v
+		if data.Character.Race ~= v then
+			data.Character.Race = v
+		end
 	end)
 	watch(rig.hairColor, function(v: Color3)
-		data.Character.HairColor = { R = v.R, G = v.G, B = v.B }
+		local hairColor = data.Character.HairColor
+		if hairColor.R ~= v.R or hairColor.G ~= v.G or hairColor.B ~= v.B then
+			data.Character.HairColor = { R = v.R, G = v.G, B = v.B }
+		end
 	end)
 	watch(rig.firstName, function(v: string)
-		data.Character.FirstName = v
+		if data.Character.FirstName ~= v then
+			data.Character.FirstName = v
+		end
 	end)
 	watch(rig.kingdom, function(v: number)
-		data.Character.Kingdom = v
+		if data.Character.Kingdom ~= v then
+			data.Character.Kingdom = v
+		end
 	end)
 	watch(rig.eyeColor, function(v: number)
-		data.Character.EyeColor = v
+		if data.Character.EyeColor ~= v then
+			data.Character.EyeColor = v
+		end
 	end)
 	watch(rig.faceBase, function(v: number)
-		data.Character.FaceBase = v
+		if data.Character.FaceBase ~= v then
+			data.Character.FaceBase = v
+		end
 	end)
 	watch(rig.gender, function(v: number)
-		data.Character.Gender = v
+		if data.Character.Gender ~= v then
+			data.Character.Gender = v
+		end
 	end)
 	watch(rig.age, function(v: number)
-		data.Age.Years = v
+		if data.Age.Years ~= v then
+			data.Age.Years = v
+		end
 	end)
 	watch(rig.height, function(v: number)
-		data.Character.Height = v
+		if data.Character.Height ~= v then
+			data.Character.Height = v
+		end
 	end)
 	watch(rig.growthProfile, function(v: string)
-		data.Character.GrowthProfile = v
+		if data.Character.GrowthProfile ~= v then
+			data.Character.GrowthProfile = v
+		end
 	end)
 	watch(rig.mouthShape, function(v: number)
-		data.Character.MouthShape = v
+		if data.Character.MouthShape ~= v then
+			data.Character.MouthShape = v
+		end
 	end)
 	watch(rig.skinTone, function(v: number)
-		data.Character.SkinTone = v
+		if data.Character.SkinTone ~= v then
+			data.Character.SkinTone = v
+		end
 	end)
 	watch(rig.timePassed, function(v: number)
-		data.Age.TimePassed = v
+		if data.Age.TimePassed ~= v then
+			data.Age.TimePassed = v
+		end
 	end)
 	watch(rig.progToAge, function(v: number)
-		data.Age.ProgToAge = v
+		if data.Age.ProgToAge ~= v then
+			data.Age.ProgToAge = v
+		end
 	end)
 
 	watch(rig.shirt, function(v: string)
-		data.Gear.Shirt = v
+		if data.Gear.Shirt ~= v then
+			data.Gear.Shirt = v
+		end
 	end)
 	watch(rig.pants, function(v: string)
-		data.Gear.Pants = v
+		if data.Gear.Pants ~= v then
+			data.Gear.Pants = v
+		end
 	end)
+	-- Currency also keeps the old coin purse HUD text and CoinReward sound
+	-- in sync (REVIEW-M1-03 M5): old OnCharacterStore2 did both on every
+	-- change, and nothing else does it now that script is gone.
 	watch(rig.copper, function(v: number)
-		data.Economy.Copper = v
+		if data.Economy.Copper ~= v then
+			data.Economy.Copper = v
+			updateCoinPurseText(player, "Copper", v)
+			playCoinRewardSound(player)
+		end
 	end)
 	watch(rig.silver, function(v: number)
-		data.Economy.Silver = v
+		if data.Economy.Silver ~= v then
+			data.Economy.Silver = v
+			updateCoinPurseText(player, "Silver", v)
+			playCoinRewardSound(player)
+		end
 	end)
 	watch(rig.gold, function(v: number)
-		data.Economy.Gold = v
+		if data.Economy.Gold ~= v then
+			data.Economy.Gold = v
+			updateCoinPurseText(player, "Gold", v)
+			playCoinRewardSound(player)
+		end
 	end)
 	watch(rig.hat1, function(v: string)
-		data.Gear.Hats[1] = v
+		if data.Gear.Hats[1] ~= v then
+			data.Gear.Hats[1] = v
+		end
 	end)
 	watch(rig.hat2, function(v: string)
-		data.Gear.Hats[2] = v
+		if data.Gear.Hats[2] ~= v then
+			data.Gear.Hats[2] = v
+		end
 	end)
 	watch(rig.hat3, function(v: string)
-		data.Gear.Hats[3] = v
+		if data.Gear.Hats[3] ~= v then
+			data.Gear.Hats[3] = v
+		end
 	end)
 	watch(rig.row1, function(v: string)
-		data.Gear.Inventory = splitInventory(v)
+		if joinInventory(data.Gear.Inventory) ~= v then
+			data.Gear.Inventory = splitInventory(v)
+		end
 	end)
-	-- MaxMagoi, Hunger and Row2 are one-way (see pushToInstances): nothing
-	-- legitimate writes them today, so there's nothing to watch back.
+	-- MaxMagoi, Hunger, Row2 and Position are one-way (see pushToInstances)
+	-- or inert: nothing legitimate writes them today, so there's nothing to
+	-- watch back.
 end
 
 local LegacyBridge = {}
@@ -335,6 +442,15 @@ function LegacyBridge.Build(player: Player, data: Data)
 	row2.Name = "Row2"
 	row2.Parent = inventory
 
+	-- The old OnCharacterStore2 always created this (unconditionally, before
+	-- its per-field loop), but its load/save/Changed handling was entirely
+	-- commented out, so it just sat at the engine default (0,0,0) and was
+	-- never read back into the save. Kept here, inert, for parity with any
+	-- old script that still expects to find it (REVIEW-M1-03 M4).
+	local position = Instance.new("Vector3Value")
+	position.Name = "Position"
+	position.Parent = onCharacter
+
 	local loadedOC = Instance.new("BoolValue")
 	loadedOC.Name = "LoadedOC"
 	loadedOC.Value = false
@@ -372,6 +488,7 @@ function LegacyBridge.Build(player: Player, data: Data)
 		hat3 = hat3,
 		row1 = row1,
 		row2 = row2,
+		position = position,
 		loadedOC = loadedOC,
 		loaded = loaded,
 		connections = {},

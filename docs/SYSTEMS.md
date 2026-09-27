@@ -48,9 +48,10 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 | `OnCharacter.Hats.HatSpot1..3` | `Gear.Hats[1..3]` | two-way |
 | `OnCharacter.Inventory.Row1` | `Gear.Inventory`, `;`-joined | two-way |
 | `OnCharacter.Inventory.Row2` | fixed at `""` | one-way (nothing ever wrote it) |
+| `OnCharacter.Position` | fixed at `(0,0,0)` | inert — created (like the old code did) but never read from or written to the save; new spawns always go to Qarzin — see section 2 |
 | `player.LoadedOC`, then `player.Loaded` | — | set once, in that order, after the folders above are populated |
 
-`Position` is not part of the bridge (the old code that saved it was already commented out; new spawns always go to Qarzin — see section 2).
+**Also mirrored, one-way (data → old GUI/sound), not part of the table above:** the coin purse HUD (`PlayerGui.Currency.Bank.CoinPurse.Copper/Silver/Gold.Text`) is set from `Economy.*` on load and on every change, and the `CoinReward` sound plays on every change — exactly what the old `OnCharacterStore2` did, since nothing else updates that display now.
 
 **Depends on:** `RS/Shared/Config`, `RS/Shared/Log`, `RS/Shared/SaveSchema`, `SSS/Server/Packages/ProfileStore`.
 **Depended on by:** every old script that reads `player.Stats` / `player.OnCharacter` / `player.Loaded` / `player.LoadedOC` (unchanged, via the bridge), and every M1-04+ system that will call `DataService.Get`/`WaitFor` directly instead.

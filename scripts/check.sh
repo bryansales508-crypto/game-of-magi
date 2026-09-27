@@ -15,6 +15,17 @@
 #   - src/StarterPlayer/StarterPlayerScripts/Client
 #   - src/ReplicatedStorage/Shared
 #
+# luau-lsp analyze also ignores two paths that sit inside those targets (or
+# get required by something inside them) but aren't "the new code" either:
+# Server/Packages (vendored third-party libraries; --!nocheck at the top of
+# each one already opts out, but its own diagnostics still leak into
+# `analyze`'s file list otherwise) and ReplicatedFirst/Assets (Bryan's old
+# game-data module, pulled in transitively by Shared/SaveSchema.luau; its
+# pre-existing type errors belong to its own M2 rebuild, not this check).
+# selene doesn't need the same treatment: its lints are silenced inline
+# with `-- selene: allow(...)` in Packages, and it never analyzes Assets at
+# all since nothing in TARGETS requires it in a way selene follows.
+#
 # Usage: scripts/check.sh
 
 set -euo pipefail
@@ -107,6 +118,8 @@ luau_lsp_exit=0
 luau-lsp analyze \
 	--sourcemap="$SOURCEMAP" \
 	--defs="$TOOLS_DIR/globalTypes.d.luau" \
+	--ignore="**/Server/Packages/**" \
+	--ignore="**/ReplicatedFirst/Assets/**" \
 	"${TARGETS[@]}" > "$luau_lsp_raw" 2>&1 || luau_lsp_exit=$?
 # Normalize away the absolute-vs-relative path and the optional
 # "[game/Instance/Path]" sourcemap annotation before deduping, since the
