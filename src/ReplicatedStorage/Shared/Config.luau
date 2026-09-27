@@ -145,6 +145,22 @@ Config.Npc = {
 	Animations = { Walk = "", Run = "", Flinch = "" },
 }
 
+-- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
+-- Emitters are exactly the ParticleEmitter names under
+-- ReplicatedFirst.VFX.RukhEffects; Bryan can rename, add or remap any of
+-- these lists freely without touching RankController. EmitRate multiplies
+-- every cloned emitter's own Rate (1 = whatever Bryan authored in Studio).
+Config.Rukh = {
+	FlutterSeconds = 4,
+	EmitRate = 1,
+	Emitters = {
+		White = { "SpecialRukh1", "SpecialRukh2", "SpecialRukh3" },
+		Gold = { "Rukh1", "Rukh2", "Rukh3" },
+		Black = { "DepravityRukh1", "DepravityRukh2", "DepravityRukh3" },
+		GoldBlack = { "Rukh1", "Rukh2", "DepravityRukh1", "DepravityRukh2" },
+	},
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
@@ -162,6 +178,12 @@ table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
 table.freeze(Config.Npc)
+table.freeze(Config.Rukh.Emitters.White)
+table.freeze(Config.Rukh.Emitters.Gold)
+table.freeze(Config.Rukh.Emitters.Black)
+table.freeze(Config.Rukh.Emitters.GoldBlack)
+table.freeze(Config.Rukh.Emitters)
+table.freeze(Config.Rukh)
 table.freeze(Config)
 
 return Config
