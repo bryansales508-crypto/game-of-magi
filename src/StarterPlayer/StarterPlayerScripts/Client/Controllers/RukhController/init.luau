@@ -13,6 +13,11 @@
 --   Player:GetAttribute("Dying") is true for the duration of the fatal
 --   sequence -- informational on the server's side; this controller
 --   drives entirely off the HeartAttack remote's own `fatal` argument.
+--
+-- Only one heart-attack pulse or death scene is ever active at a time
+-- (REVIEW-M2-05 #1/#2): a fresh HeartAttack, and a respawn mid-sequence,
+-- both cancel whatever's currently running -- gui, sound, camera, frozen
+-- input, clones -- through the shared generation/cleanup pair below.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -37,9 +42,41 @@ local GOLD = Color3.fromRGB(223, 193, 112)
 
 local RukhController = {}
 
+-- ==================== shared generation/cleanup ====================
+
+local activeGeneration = 0
+local activeCleanup: (() -> ())? = nil
+
+local function runActiveCleanup()
+	local cleanup = activeCleanup
+	activeCleanup = nil
+	if cleanup then
+		local results = table.pack(pcall(cleanup))
+		if not results[1] then
+			log:Warn("cleanup failed: " .. tostring(results[2]))
+		end
+	end
+end
+
+-- Cancels whatever's running (pulse or scene) and returns a fresh
+-- generation number for the caller's own run.
+local function startGeneration(): number
+	activeGeneration += 1
+	runActiveCleanup()
+	return activeGeneration
+end
+
+local function isCurrent(myGeneration: number): boolean
+	return activeGeneration == myGeneration
+end
+
 -- ==================== heartbeat sound ====================
 
-local function playHeartbeatSound()
+-- FIX (REVIEW-M2-05 #3): a fallback destroy in case the placeholder
+-- asset never loads and Sound.Ended never fires.
+local HEARTBEAT_FALLBACK_DESTROY = 5
+
+local function playHeartbeatSound(): Sound
 	local sound = Instance.new("Sound")
 	sound.Name = "Heartbeat"
 	sound.SoundId = Config.Sfx.Heartbeat
@@ -48,6 +85,10 @@ local function playHeartbeatSound()
 	sound.Ended:Connect(function()
 		sound:Destroy()
 	end)
+	task.delay(HEARTBEAT_FALLBACK_DESTROY, function()
+		sound:Destroy()
+	end)
+	return sound
 end
 
 -- ==================== full-screen pulse frame ====================
@@ -81,21 +122,53 @@ end
 -- transparency 1 -> 0.55 -> 0.9 -> 0.5 -> 1 over about 1.2 s, in time with
 -- a heartbeat Sound played twice. Then it passes: everything removed, no
 -- message."
-local function playNonFatalPulse()
+local function playNonFatalPulse(myGeneration: number)
+	if not isCurrent(myGeneration) then
+		return
+	end
+
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
+	if not isCurrent(myGeneration) then
+		return
+	end
+
 	local gui, frame = newPulseGui(900, Color3.fromRGB(170, 0, 0), 1)
 	gui.Parent = playerGui
 
+	-- FIX (REVIEW-M2-05 #1/#2): whoever cancels this generation (a new
+	-- HeartAttack, or a respawn) tears down this gui and any sound this
+	-- pulse has started that hasn't self-destroyed yet.
+	local sounds: { Sound } = {}
+	activeCleanup = function()
+		gui:Destroy()
+		for _, sound in sounds do
+			sound:Destroy()
+		end
+	end
+
 	local segment = 1.2 / 4
 
-	playHeartbeatSound()
+	table.insert(sounds, playHeartbeatSound())
 	tweenFrame(frame, { BackgroundTransparency = 0.55 }, segment)
+	if not isCurrent(myGeneration) then
+		return
+	end
 	tweenFrame(frame, { BackgroundTransparency = 0.9 }, segment)
-	playHeartbeatSound()
+	if not isCurrent(myGeneration) then
+		return
+	end
+	table.insert(sounds, playHeartbeatSound())
 	tweenFrame(frame, { BackgroundTransparency = 0.5 }, segment)
+	if not isCurrent(myGeneration) then
+		return
+	end
 	tweenFrame(frame, { BackgroundTransparency = 1 }, segment)
+	if not isCurrent(myGeneration) then
+		return
+	end
 
 	gui:Destroy()
+	activeCleanup = nil
 end
 
 -- "three slower, heavier beats (about 2.5 s) while the red deepens to
@@ -110,18 +183,41 @@ local FATAL_BEATS = {
 	{ dip = 0.15, hold = 0.05 },
 }
 
-local function playFatalPulse()
+local function playFatalPulse(myGeneration: number)
+	if not isCurrent(myGeneration) then
+		return
+	end
+
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
+	if not isCurrent(myGeneration) then
+		return
+	end
+
 	local gui, frame = newPulseGui(950, FATAL_START_COLOR, 1)
 	gui.Parent = playerGui
+
+	-- Same cancellation contract as the non-fatal pulse above.
+	local sounds: { Sound } = {}
+	activeCleanup = function()
+		gui:Destroy()
+		for _, sound in sounds do
+			sound:Destroy()
+		end
+	end
 
 	local segment = (2.5 / #FATAL_BEATS) / 2
 
 	for beatIndex, beat in FATAL_BEATS do
 		local color = FATAL_START_COLOR:Lerp(FATAL_END_COLOR, beatIndex / #FATAL_BEATS)
-		playHeartbeatSound()
+		table.insert(sounds, playHeartbeatSound())
 		tweenFrame(frame, { BackgroundTransparency = beat.dip, BackgroundColor3 = color }, segment)
+		if not isCurrent(myGeneration) then
+			return
+		end
 		tweenFrame(frame, { BackgroundTransparency = beat.hold }, segment)
+		if not isCurrent(myGeneration) then
+			return
+		end
 	end
 
 	local message = Instance.new("TextLabel")
@@ -138,25 +234,15 @@ local function playFatalPulse()
 	message.Parent = gui
 
 	task.wait(2)
+	if not isCurrent(myGeneration) then
+		return
+	end
 
 	gui:Destroy()
+	activeCleanup = nil
 end
 
 -- ==================== return-to-the-Rukh scene ====================
-
-local sceneGeneration = 0
-local activeCleanup: (() -> ())? = nil
-
-local function endScene()
-	local cleanup = activeCleanup
-	activeCleanup = nil
-	if cleanup then
-		local results = table.pack(pcall(cleanup))
-		if not results[1] then
-			log:Warn("scene cleanup failed: " .. tostring(results[2]))
-		end
-	end
-end
 
 -- WipeHandlerPart2's character-golden-neon setup, unchanged.
 local function applyRukhAppearance(chara: Model)
@@ -248,10 +334,10 @@ local function attachRukhEffects(chara: Model, corePosition: Vector3): { Instanc
 	return created
 end
 
-local function playRukhScene()
-	sceneGeneration += 1
-	local myGeneration = sceneGeneration
-	endScene()
+local function playRukhScene(myGeneration: number)
+	if not isCurrent(myGeneration) then
+		return
+	end
 
 	local character = player.Character
 	if not character then
@@ -262,10 +348,6 @@ local function playRukhScene()
 	if not humanoid or not rootPart then
 		log:Warn("no Humanoid/HumanoidRootPart; skipping the Rukh scene")
 		return
-	end
-
-	local function stillActive(): boolean
-		return sceneGeneration == myGeneration
 	end
 
 	local cleanupFns: { () -> () } = {}
@@ -313,6 +395,10 @@ local function playRukhScene()
 		local spawnBlock = clone:FindFirstChild("AfterlifeSpawnBlock") :: BasePart?
 		if afterlifeCameraPart then
 			camera.CFrame = afterlifeCameraPart.CFrame
+			-- FIX (REVIEW-M2-05 #4): WipeHandlerPart2 also pointed the
+			-- CameraSubject at AfterlifeCamera; harmless under
+			-- Scriptable, kept for parity.
+			camera.CameraSubject = afterlifeCameraPart
 		end
 		if spawnBlock then
 			rootPart.CFrame = spawnBlock.CFrame
@@ -330,7 +416,7 @@ local function playRukhScene()
 		corePosition = rootPart.Position + lookVector * 15
 	end
 
-	if not stillActive() then
+	if not isCurrent(myGeneration) then
 		return
 	end
 
@@ -365,14 +451,14 @@ local function playRukhScene()
 	end)
 
 	task.wait(4)
-	if not stillActive() then
+	if not isCurrent(myGeneration) then
 		return
 	end
 
 	local fadeTween = TweenService:Create(fade, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.In), { BackgroundTransparency = 0 })
 	fadeTween:Play()
 	fadeTween.Completed:Wait()
-	if not stillActive() then
+	if not isCurrent(myGeneration) then
 		return
 	end
 
@@ -388,8 +474,8 @@ function RukhController:Init() end
 
 function RukhController:Start()
 	player.CharacterAdded:Connect(function()
-		sceneGeneration += 1
-		endScene()
+		activeGeneration += 1
+		runActiveCleanup()
 	end)
 
 	Remotes.Client.On("HeartAttack", function(age: any, fatal: any)
@@ -397,13 +483,23 @@ function RukhController:Start()
 			log:Warn("HeartAttack: unexpected payload")
 			return
 		end
+
+		-- FIX (REVIEW-M2-05 #1): starting a new generation cancels
+		-- whatever pulse/scene is currently running, so a second
+		-- HeartAttack can never stack overlays/sounds/labels.
+		local myGeneration = startGeneration()
+
 		if fatal then
 			task.spawn(function()
-				playFatalPulse()
-				playRukhScene()
+				playFatalPulse(myGeneration)
+				if isCurrent(myGeneration) then
+					playRukhScene(myGeneration)
+				end
 			end)
 		else
-			task.spawn(playNonFatalPulse)
+			task.spawn(function()
+				playNonFatalPulse(myGeneration)
+			end)
 		end
 	end)
 
