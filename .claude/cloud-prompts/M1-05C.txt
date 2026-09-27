@@ -1,0 +1,17 @@
+Follow-up task **M1-05C: the dev panel and F8 debug overlay** (see M1-05 in `docs/TASKS.md`, TRIAGE #29). Same rules: stay on your branch, never push main, check.sh at 0 errors, LAST commit starts with `DONE M1-05C:`. `git fetch origin main && git merge origin/main` first.
+
+## Contract with the server (the server-builder builds DevService in M1-05S; do not build server code). Net remotes, defined by the server-builder in `Shared/Remotes.luau` (you don't edit that file):
+- `DevCommand` (client -> server, one string <= 200 chars): a command line as typed in chat, e.g. `.age 40`.
+- `DevReply` (server -> client, one string): the result text.
+- `DevState` (server -> client, one table): a flat snapshot `{ name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position = {x, y, z}, saveScope, freshSave, timeScale, sessionSeconds }`, streamed once per second after the client sends `.watch on`, plus once on `.state`. Any key may be a placeholder string like "n/a".
+- The server decides who is a dev. The client never gates anything; if a non-dev opens the panel they just get no replies. Do not show the panel by default; it's opened with a key.
+
+## What to build (one controller: `src/StarterPlayer/StarterPlayerScripts/Client/Controllers/DevController/init.luau`, Init/Start, loaded by `Client/Main.client.luau`)
+1. **Debug overlay (F8 toggles):** a small semi-transparent panel in the top-left, monospace text, one line per snapshot key in the order above, updated from `DevState`. On open it fires `.watch on`; on close `.watch off`. Nothing else on screen moves.
+2. **Dev panel (F9 toggles):** a compact panel with a TextBox (Enter sends the line through `DevCommand`; keeps the last 20 lines of replies in a scrolling log above it; Up/Down recall history) and a row of quick buttons that send fixed commands: `.state`, `.fresh`, `.age+ 10`, `.magoi+ 100`, `.coins+ 100`, `.tp qarzin`, `.timescale 10`, `.timescale 1`. Use `ContextActionService` for the keys so they don't fight the game's input.
+3. Build the UI in code (no rbxm), under one ScreenGui in PlayerGui named `DevGui` with `ResetOnSpawn = false`, `DisplayOrder` high. Keep it plain and readable, dark background, light text; this is a tool, not part of Bryan's game look, but it must not clash with his HUD (read `src/StarterGui/HUD/HudFrame.rbxm` is binary; just keep to the top-left and top-right corners).
+4. Log through `Shared/Log`. Clean up connections on the controller's own teardown if any.
+
+Style: `--!strict`, `task.*` only, no globals, no raw print (Log only), small and readable.
+
+Reply in a compact report: BRANCH, commit hash, files added/changed, check.sh counts, and the keys/buttons so the lead can paste them into docs/PLAYTEST.md.
