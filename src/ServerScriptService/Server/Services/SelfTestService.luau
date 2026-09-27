@@ -12,6 +12,7 @@ local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local LegacyBridge = require(script.Parent.LegacyBridge)
 local PlayerService = require(script.Parent.PlayerService)
+local DevService = require(script.Parent.DevService)
 
 local log = Log.new("SelfTest")
 
@@ -264,6 +265,30 @@ local function testPlayerService(results: { Check })
 	)
 end
 
+-- M1-05S: DevService.IsDev is always true in Studio (where self-tests run),
+-- so the admin-list check is tested directly via IsAdminUserId instead.
+-- Dispatch itself is exercised with a fake player table, the same trick
+-- used by the Remotes self-test above.
+local function testDevService(results: { Check })
+	expect(results, "DevService: Bryan's UserId is an admin", DevService.IsAdminUserId(27938432))
+	expect(results, "DevService: an unlisted UserId is not an admin", not DevService.IsAdminUserId(1))
+
+	local fakePlayer = ({ Name = "SelfTestDev", UserId = 27938432 } :: any) :: Player
+
+	local cmdReply = DevService.Dispatch(fakePlayer, ".cmd")
+	expect(results, "DevService: .cmd from a dev returns the command list", cmdReply ~= nil and cmdReply:find("Dev commands:") ~= nil)
+
+	local unknownReply = DevService.Dispatch(fakePlayer, ".notarealcommand")
+	expect(
+		results,
+		"DevService: an unknown command still replies with help",
+		unknownReply ~= nil and unknownReply:find("Unknown command") ~= nil
+	)
+
+	local notACommand = DevService.Dispatch(fakePlayer, "just chatting")
+	expect(results, "DevService: a non-command chat line gets no reply", notACommand == nil)
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -279,6 +304,7 @@ function SelfTestService:Start()
 		testRemoteWrapper(collected)
 		testDataService(collected)
 		testPlayerService(collected)
+		testDevService(collected)
 		return collected
 	end)
 

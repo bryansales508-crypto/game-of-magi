@@ -41,6 +41,26 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 3, per = 10 },
 	},
+	-- M1-05S: dev tools. DevService.Run also accepts the same command line
+	-- through Player.Chatted; the remote just gives the dev panel a path
+	-- that doesn't depend on the chat window.
+	DevCommand = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 200 }) },
+		rate = { count = 5, per = 1 },
+	},
+	-- Server -> client only; DevService never registers a handler for
+	-- either, so a client calling these back just gets rate-limited/dropped.
+	DevReply = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 10 },
+	},
+	DevState = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 10 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

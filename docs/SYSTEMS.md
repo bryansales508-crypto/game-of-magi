@@ -300,21 +300,38 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 
 ---
 
-## 16. Dev commands
+## 16. Dev commands — rebuilt M1-05
 
-**What it does.** Chat commands for the developer only. Permission is checked on the server by **UserId** (`27938432`) inside `DevCommandHandler.Execute`.
+**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen.
+
+**Permission.** A player is a dev if their UserId is in `Config.Dev.Admins` (`27938432`, Bryan — the same UserId the old handler checked), **or** `Config.Debug.Enabled` is true (Studio: everyone testing there is a dev). Checked on the server before anything else runs. A non-dev gets no reply at all (so they can't tell a real command from an unknown one) and one `Log:Warn` per player per minute, not per command.
+
+**Commands** (all start with `.`; `[player]` defaults to the caller and matches by display name or username prefix, case-insensitive — ambiguous replies with the candidates):
 
 | Command | Effect |
 |---|---|
-| `.cmd` | lists commands |
-| `.<field> <player> <number>` | sets a value |
-| `.<field>+ <player> <number>` | adds to it |
+| `.cmd` | lists every command with one-line help |
+| `.state [player]` | sends a state snapshot to the caller over `DevState` and logs the same snapshot as a readable block in Output |
+| `.watch on\|off` | streams `DevState` to the caller every second |
+| `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency |
+| `.age <years> [player]`, `.age+ <n>` | set or add to `Age.Years` |
+| `.magoi <n> [player]`, `.magoi+ <n>` | set or add to `Progress.Magoi` |
+| `.rukh <gold> <black> [player]` | sets both Rukh tallies |
+| `.bounty <n> [player]` | sets `Bounty` |
+| `.epithet <text> [player]` | sets `Progress.Epithet` (quote multi-word text) |
+| `.tp <city>` | teleports the caller's character to a spawn point (matches `Workspace.MAP.Spawns` children case-insensitively, with or without the `Spawn` suffix — `.tp qarzin` finds `QarzinSpawn`) |
+| `.cities` | lists the spawn points that exist |
+| `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
+| `.fresh [player]` | `DataService.Wipe`, then reloads the character (kick-free) |
+| `.save [player]` | saves now |
 
-Fields: `silvercoin`, `coppercoin`, `goldcoin`, `age`, `height`, `hunger`, `maxmagoi`, `exp` (a placeholder; `Exp` doesn't exist yet). For an online player it edits the live Value, so saving picks it up. For an offline player it writes straight to the DataStore.
+Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 
-**⚠** The offline path writes to DataStores named `"Mainstore2"` and `"OnCharacterStore2"`. The game actually saves to `"GameOfMagi_v0.01am"`, so offline edits never reach the real save.
+**The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, sessionSeconds`. A system that isn't built yet (rank, until M4) sends `"n/a"`.
 
-**Files:** `SSS/DevCommandHandler.luau`, `SSS/DevCommandChatListener.server.luau`.
+**Remotes:** `Net.DevCommand` (client → server, one string, 5/s), `Net.DevReply` (server → client, one string), `Net.DevState` (server → client, one table).
+
+**Removed:** `SSS/DevCommandHandler.luau` and `SSS/DevCommandChatListener.server.luau` (TRIAGE #21) — the old offline path wrote to DataStores named `"Mainstore2"`/`"OnCharacterStore2"`, which never matched the real save name, so offline edits never worked; the new tools only ever write through `DataService`.
 
 ---
 
