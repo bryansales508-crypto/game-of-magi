@@ -1,94 +1,90 @@
 # TRIAGE
 
-**Status: DRAFT, waiting for Bryan.** Every line needs Bryan's approve, veto or change. Nothing is built or removed until it is approved.
+**Status: REVISED DRAFT (2026-09-26), waiting for Bryan's approval.** This follows Bryan's new rule ("build it right, keep the look") and the approved DESIGN.md. Once approved, it becomes the Phase 5 milestones in TASKS.md.
 
-**How to read this:**
-- **Keep:** leave it as is.
-- **Fix:** repair it in place, in Bryan's style.
-- **Rewrite:** rebuild it, because fixing costs more than starting over.
-- **Remove:** delete it.
+**Calls:**
 
-Each line cites the findings in AUDIT.md. Per Bryan's direction, a system is judged by what it was **meant** to do. Much of the code is left over from the previous game, and the save data is debug-only and can be wiped.
+| Call | Meaning |
+|---|---|
+| **Rebuild** | Rewrite on the new foundation (see DESIGN.md §5). It keeps what the system was meant to do and all its art, UI, animations, sounds and text, and it fixes its AUDIT findings along the way. Approving a Rebuild line also approves deleting the old scripts it replaces. |
+| **Keep** | Leave as it is (it may move to the new folder layout). |
+| **New** | Doesn't exist yet; comes from DESIGN.md. |
+| **Park** | Move to `ServerStorage/Parked`. It never runs or reaches players, and stays for later. |
+| **Remove** | Delete it. |
+
+Save data is debug-only and will be wiped. Much of the old code is left over from the previous game.
 
 ## Systems
 
-| # | System | Call | Why | Findings |
+| # | System | Call | What happens | Findings / source |
 |---|---|---|---|---|
-| 1 | Saving (Stats and OnCharacter) | **fix** | The two save scripts erase each other and have no safety net. Fixing them is small once each has its own key: separate keys (or one merged key), a bad-load guard on both, cleanup when players leave, save retries, one save per player at shutdown, and wiping the debug data. | C1, H1, H2, M20, L19 |
-| 2 | Join flow (loading → spawn) | **fix** | The one-time "loading done" signal can be missed, which leaves players stuck or spawned in the wrong place. The 30-second kick also counts time spent picking a gender. | H3, P1, M9 |
-| 3 | Spawn location | **fix** | Should spawn at `QarzinSpawn`; the saved-position path would error if it were ever turned on. | P1, L4 |
-| 4 | Character creation and appearance | **fix** | Works, but needs these fixes:<br>• female characters get male names<br>• skin template names/colours don't match<br>• one collision group per player hits Roblox's cap<br>• magician eye colours can't appear<br>• move the gender picker to a client GUI plus the existing `GenderSelected` remote, with server checks, so it isn't a fragile server-script-reads-clicks setup | L3, P4, M8, L2, H4, L6 |
-| 5 | Aging and growth | **fix** | The age math works. Needed: set `SECONDS_PER_YEAR` back to its real value (the comment says 5 min) and **build death from old age**, which was always intended. That makes the huge ages and the cut-off menu line go away. | M10, P3, L5 |
-| 6 | Items, clothing and hats (ItemHandler) | **keep** | Works in play; no real findings. | none |
-| 7 | Market and currency (MarketHandler) | **fix** | Needed:<br>• agree on what a Gold coin is worth<br>• compare prices in the same unit<br>• "already owned" must check colour too (black pants block white)<br>• add convert messages for all coins | M15, M22, L12 |
-| 8 | Qarzin clothes shop (Workspace) | **fix** | Needed:<br>• mannequin hover should show only for the player hovering (not intended for everyone)<br>• every rack sells the same pants<br>• colours should be white, **tan** and black, per the design | L12 |
-| 9 | Delivery missions | **fix** | Works end to end and matches the design. Needed:<br>• server checks on the chosen city<br>• the interception money exploit and its crashes<br>• server loops that never end<br>• client connection pile-up<br>• Heavy Cargo slow sticking<br>• broken route names<br>• hook up the intended route history and city personality<br>• a real success streak | H7, H8, H9, M12, M13, M14, M21, L14, L15 |
-| 10 | Movement and speed | **fix** | Needed:<br>• dash shouldn't need a first punch<br>• server cooldown on dash and run<br>• low-health slow should apply right away and fully restore<br>• merge the 4 pasted copies of the speed maths | H10, M4, M6, D2 |
-| 11 | Combat (server side) | **fix** | PvP works but trusts the client. Needed:<br>• server checks on range, cooldown and attacker state for hits and blocks<br>• blocking must protect at low health<br>• parry pose cap<br>• hits on a weapon or package must find the character<br>• stop leaks on respawn | C2, H5, M1, M2, M3/P2, M5, M18 |
-| 12 | Combat (client side, PhysicalHandler) | **fix** | Unfinished by design, so this is **foundation only**:<br>• stun and cooldown checks that are set up but never read<br>• stacked listeners multiplying hits and combo counts<br>• small leaks<br>Finishing the combo chain and the block-break "feel" is design work for later. | H6, L11 |
-| 13 | Royal Dagger auto-equip | **remove** | Bryan: test code. The weapon system itself (WeaponHandler) stays. | L7 |
-| 14 | Effects (status markers) | **fix** | The marker system works. It needs safer handling when markers vanish mid-hit, and should hook up before early markers are added. | M18 |
-| 15 | Health and block regen | **fix** | Growing taller never adds health (wrong branch name); the regen tiers don't change the rate; block bar refill takes about 12.5 minutes. | M11, L8 |
-| 16 | Regions and music | **fix** | Works. Needed: music fades (they cut instantly), `CutDown` targets the wrong child, one-song playlists spin forever, and Bryan's "volume feels finicky". | L21 |
-| 17 | Footsteps | **fix** | Needed: server rate limit on the Footstep remote, a connection that piles up on every step, a nil-raycast error, and small Animate hook bugs. | M7, L10 |
-| 18 | Hunger | **keep (question)** | The HUD shows hunger, but the drain script is switched off and would leak if switched on. **Open question 2.** | L17 |
-| 19 | HUD | **fix** | The `game.Loaded` waits don't actually wait. Otherwise fine. | L9 |
-| 20 | Character menu (M) | **keep** | Works. The cut-off line is caused by runaway age (fixed by #5). The inventory lookup is latent until inventory is built. The black preview diamond is noted for later. | P3, L13 |
-| 21 | Backpack / hotbar | **keep** | Customized Roblox backpack; works. | none |
-| 22 | NPCs (training dummies) | **fix** | Needed:<br>• punches hit the player's weapon and stall the server<br>• the Target dummy chases too far<br>• it never restarts after losing its target | P2, M19 |
-| 23 | Dev commands | **fix** | The permission check is correct. Needed: offline edits go to the wrong DataStore, confirmations don't show in chat, a duplicate parse call. | L1 |
-| 24 | Collisions | **keep** | Works. One unreachable branch, trivial. | L18 |
-| 25 | Ocean | **rewrite** | Bryan's direction: replace the 766 per-part scripts with **one client-side script** that animates every ocean part. That also removes the lag and connection growth. | M17 |
-| 26 | Code hygiene (whole game) | **fix** | One sweep: remove debug prints, swap deprecated `spawn`/`wait`/`delay`/`:connect`, add `local` to accidental globals, drop unused requires. Style stays Bryan's. | L20, D1, D2, D4 |
+| 1 | Saving | **Rebuild** | One data service with one key and a versioned table. Session lock, retries, saves at shutdown, a bad-load guard, cleanup when players leave. The save layout covers rank/Magoi, Rukh tallies, epithet, bounty and age, and leaves room for family and magic. The debug data is wiped. | C1, H1, H2, M20, L19 · Bryan: one key |
+| 2 | Join flow and spawn | **Rebuild** | One ordered join pipeline on the server (load save → build character → place at Qarzin spawn → ready), with no one-time signals to miss. No 30-second kick while in character creation. | H3, P1, M9, L4 |
+| 3 | Character creation and appearance | **Rebuild** | Same faces, skins, hair, FalseHead and starter rags. The gender/skin picker becomes a client screen plus one checked remote. Names match gender; skin templates fixed; one shared collision group. | H4, L2, L3, P4, M8, L6 |
+| 4 | Aging, visible aging and death | **Rebuild** + **New** | Keep the growth-spurt maths (AgeHandler is good). 30 min per year while online (shorter for testing); offline aging at 2 years per real day that stops at 59. Visible aging from adulthood (grey hair, wrinkles). From 60, a rising chance of death at each online birthday, then the **return-to-the-Rukh** scene, then a fresh character. | M10, L5 · DESIGN §3 |
+| 5 | Items and clothing codes | **Keep** (extend) | Item codes and equipping work. They move into the new layout and get extended with weapons and gear. | · DESIGN §3 |
+| 6 | Currency and market | **Rebuild** + **New** | One fixed conversion rate, a **money changer**, prices that move with supply and demand, an "already owned" check that includes colour, messages for every coin. | M15, M22 · DESIGN §3 |
+| 7 | Qarzin clothes shop | **Rebuild** | Moves out of Workspace into synced code. Hover highlight only for the player hovering. Every rack sells its own pants. Colours are white/tan/black by rarity. | L12 |
+| 8 | Delivery missions | **Rebuild** | Same missions, cities, modifiers, lore and interception. The server checks city and route, there are no endless loops, no money printing, and no crash cases. Route history and city personality drive modifiers, and there's a real success streak. It grants **Magoi**; interception adds **Black Rukh** and a **bounty**. | H7, H8, H9, M12, M13, M14, M21, L14, L15 |
+| 9 | Movement and speed | **Rebuild** | One speed-modifier system for players and NPCs. Dash works without a first punch; server cooldowns; low-health slow applies immediately and restores fully. | H10, M4, M6, D2 |
+| 10 | Combat (server) | **Rebuild** | The server decides every hit: range, cooldown, attacker state, blocking and parry windows, block HP cap, and hitting a weapon or pack finds the character. No leaks on respawn. | C2, H5, M1, M2, M3/P2, M5 |
+| 11 | Combat (client) | **Rebuild** | Keeps your animations and feel. Input sends intentions only, with stun and cooldown respected and no stacked listeners. Finishing the combo chain and the block-break feel are tuned with Bryan during this milestone. | H6, L11 · Bryan: combat unfinished |
+| 12 | Royal Dagger auto-equip | **Remove** | Test code. Weapons are bought instead (#6). | L7 · Bryan |
+| 13 | Status effects (Hit, Stun, Knocked, …) | **Rebuild** | One status service; safe when markers vanish mid-hit. | M18 |
+| 14 | Health and block regen | **Rebuild** | Folded into the combat and status services. Height adds health; regen tiers really change the rate; the block bar refills at a sane speed. | M11, L8 |
+| 15 | Regions and music | **Rebuild** | Keeps all music, playlists and the city banner. Region detection by position instead of touch; working fades; volume consistent across tracks. | L21 · Bryan: volume finicky |
+| 16 | Footsteps | **Rebuild** | Played on each client locally (sounds and sand prints), so there's no per-step remote. | M7, L10 |
+| 17 | HUD | **Keep** look, **Rebuild** scripts | Health and block bars keep their look. The hunger bar is parked. | L9 · Bryan: hunger parked |
+| 18 | Character menu (M) | **Keep** look, **Rebuild** script | Shows rank, epithet and Rukh alignment. Age and height display correctly. | P3, L13 · DESIGN §3a |
+| 19 | Backpack / hotbar | **Keep** | Works. | |
+| 20 | Training dummies (NPCs) | **Rebuild** | Moves into synced code. Punches find the player, the chase gives up at range, and they restart after losing a target. | P2, M19 |
+| 21 | Dev commands | **Rebuild** | On the new data service. Keeps the UserId permission check; offline edits reach the real save; confirmations show in chat. Adds testing commands (set age, rank, Rukh, bounty). | L1 |
+| 22 | Collisions | **Keep** | Moves into the new layout. | L18 |
+| 23 | Ocean | **Rebuild** | **One client-side script** animates every ocean part. The 766 wave scripts are deleted. | M17 · Bryan |
+| 24 | Code hygiene | covered | The rebuild drops the deprecated APIs, globals, debug prints and unused requires. | L20, D1, D2, D4 |
+| 25 | Rank, Rukh alignment and epithets | **New** | Magoi → rank ladder; Gold/Black tallies → alignment; choose 1 of 3 epithets at each rank-up; Rukh flutter effect. | DESIGN §3a |
+| 26 | Bounty Hunting | **New** | Crimes put a bounty on you. A **bounty board** in the cities lists the wanted. Knocking out a wanted player and turning them in pays coin and Magoi and adds Gold Rukh. Unlocks at Adventurer. | DESIGN §3 |
+| 27 | Day/night and city lights | **New** | Lighting cycle; city lamps, torches and fires light at dusk and go out at dawn. | DESIGN §3 · Bryan |
+| 28 | Weapons and gear for sale | **New** | The Rathole blacksmith and gear with real stats, bought with coin. | DESIGN §3 |
 
-## Remove list (dead code and leftovers from the previous game)
+## Park (to `ServerStorage/Parked`)
 
-Nothing here is deleted until Bryan approves each line. The **?** lines are ones where intent is unclear; each is an open question.
+| # | What | Why |
+|---|---|---|
+| K1 | Hunger: `Fear&Hunger` script and the HUD hunger bar | Bryan: unfinished, not in this version |
+| K2 | Magic leftovers: `SpellRemotes`, `BorgActivation`, `RubbleHandler`, `CameraShaker` | Bryan: magic comes back later; keep out of the way |
+| K3 | `LevelHandler` (old hero/villain Magoi rewards) | Reference for rank and Rukh; replaced by #25 |
 
-| # | What | Call | Why |
-|---|---|---|---|
-| R1 | `RS/Modules/Combat/LightCombat`, `BasicSwordCombat` | **remove** | Old server-side combat; nothing uses them; they require a module that doesn't exist |
-| R2 | `RS/Modules/DashHandler` | **remove** | Required but never called; wrong asset path. The dash lives in InteractionsHandler |
-| R3 | `RS/Modules/AssetID` | **remove** | Never called; uses a proxy site that's been shut down |
-| R4 | `SSS/Datastore/StatManipulation` | **remove** | Disabled; broken require; body fully commented out |
-| R5 | Desert Lair Tunnel code in `RegionHandlerPart1` | **remove** | Bryan: the tunnel doesn't exist (D5) |
-| R6 | `RF/Tools/.../UniversalToolBar/LocalScript` | **remove** | Empty stub |
-| R7 | `RF.Objects.MissionWagon.Cradle.Seat.Script` (Studio-only) | **remove** | Never runs; nothing uses the wagon or its "Driver" value |
-| R8 | Empty scripts: `Workspace.Qarzin.QarzinEconomy`, `MaterialService.Tool.LocalScript` (Studio-only) | **remove** | Empty. (The misplaced Tool in MaterialService is a question for Bryan) |
-| R9 | `RS/Modules/RubbleHandler`, `RS/Modules/CameraShaker` | **remove?** | Unused now; could be for future magic or impact effects. **Open question 3** |
-| R10 | `RS/Modules/LevelHandler` | **remove?** | Unused; reads stats that don't exist (`Depravity`, `LovedByRukh`). The design says rank comes from Magoi, and this has hero/villain rewards. **Open question 3** |
-| R11 | Unused remotes: the combat/misc ones (`AutoSave`, `Wipe`, `ItemEquip`, `MissionInteraction`, `MissionFinisher`, `SpawnTeleport`, `RegionEntered`, `RegionLeft`, `DeathHandlerPart3`, `CombatMusic*`, `FollowUp`, `RaceSkill`, `Carry`, `SandStormSound`, `Party`, `ClientCommunication`, `Holding`, `GameLoaded`, `GetDamageFunc`, `CombatPress`, `Drop`, `Announcer`, `Cam`, `CameraShake`, `CombatString`, `Gripped`, `BlockBroken`) | **remove?** | Nothing uses them. `GenderSelected` is **kept** for #4. **Open question 3** |
-| R12 | `SpellRemotes` folder and `BorgActivation` | **remove?** | Magic isn't built yet. These could be placeholders for it. **Open question 3** |
+## Remove
 
-## Bryan's decisions (2026-09-26)
+| # | What | Why |
+|---|---|---|
+| R1 | `LightCombat`, `BasicSwordCombat` | Old combat; unused; broken require |
+| R2 | `DashHandler` | Never called; wrong path |
+| R3 | `AssetID` | Never called; dead proxy site |
+| R4 | `StatManipulation` | Disabled; broken; fully commented out |
+| R5 | Desert Lair Tunnel code | Bryan: the tunnel doesn't exist |
+| R6 | `UniversalToolBar` LocalScript stub | Empty |
+| R7 | MissionWagon seat script (Studio-only) | Never runs |
+| R8 | Empty scripts: `Workspace.Qarzin.QarzinEconomy`, `MaterialService.Tool.LocalScript` | Empty (the misplaced Tool itself is left alone) |
+| R9 | Unused non-magic remotes (full list in AUDIT D3 and SYSTEMS "Not in use") | Nothing uses them; the new foundation declares only the remotes it needs |
 
-- **Saving:** one save handler with one key. #1 becomes a **rewrite**: one data service, one key, with the fixes from #1 built in.
-- **Hunger:** not in this version. Remove it from the HUD and **park** the hunger code with the other unfinished work (#18 becomes **park**).
-- **Magic and rank leftovers (R9–R12):** **park** them as placeholders that don't load or clutter the live game. They are not deleted.
-- **Aging:** old-age death starts at 60, with the chance of dying at each birthday rising with age, alongside visible aging (grey hair, wrinkles, etc.). The age script was never finished, so this is part of #5. **On death, the player starts completely fresh.** A family/lineage system comes later, so the save layout should leave room for it without building it.
-- **Style:** Bryan's code style doesn't need to be kept; only his aesthetic does (see CLAUDE.md). The keep/fix calls above get revisited after the design pass, and some "fix" lines may become cleaner rewrites.
+## Milestones (Phase 5)
 
-**Parked work** goes in `ServerStorage/Parked`. Code there never runs and never reaches players, but it stays in the project so it can come back.
+Each milestone ends with a playtest and Bryan's approval before the next starts.
 
-## Open questions (answered)
+1. **Foundation:** the new code layout, data service (#1), remote layer, join pipeline (#2), dev commands (#21), data wipe, and the parks and removals.
+2. **A life:** character creation (#3), aging, visible aging and death (#4), health (#14), menu (#18).
+3. **Combat:** movement (#9), status (#13), server and client combat (#10, #11), training dummies (#20), dagger removal (#12).
+4. **Status and Rukh:** rank, alignment and epithets (#25), HUD (#17).
+5. **Economy and missions:** currency and money changer (#6), clothes shop (#7), weapons and gear (#28), delivery (#8), Bounty Hunting (#26).
+6. **World:** day/night and city lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22).
 
-1. **Saving layout:** give each save script its own key (smallest change), or merge them into one save handler with one key (cleaner, a bit more work)?
-Save handler with one key.
+## Bryan's decisions so far
 
-2. **Hunger:** should hunger drain in this version? If so, fix and switch on the drain script (#18); if not, hide it from the HUD.
-No, it was something I was working on. Let's go ahead and remove HUD and put it wherever we are putting the unfinished work.
-
-3. **Magic and rank leftovers** (R9–R12): remove them, or keep them as placeholders for the magic and rank systems you plan?
-Yes, eventually magic and rank will come back. Let's placehold them, but make sure they don't distract.
-
-4. **Aging speed:** is 5 minutes per year still right? And at what age should old-age death start?
-I imagine it would start at 60, with chance of dying on age up increasing alongside character hair / wrinkles all sorts of stuff. Age script wasn't finished.
-
-## Suggested milestone order (after approval)
-
-1. **Save and security:** #1, #2, #3, and the server checks in #9, #10 and #11 (both criticals first)
-2. **Character:** #4, #5, #15
-3. **Combat and NPCs:** #11, #12, #13, #14, #22
-4. **Economy and missions:** #7, #8, #9
-5. **World and audio:** #16, #17, #25
-6. **Cleanup:** #19, #23, #26, and the approved removals
+- **Saving:** one handler, one key.
+- **Hunger:** parked; its HUD bar comes off.
+- **Magic and rank leftovers:** parked, not deleted.
+- **Old age:** starts at 60, with a rising death chance and visible aging. Death means a fresh start; family comes later.
+- **Style:** build it right, keep the look (CLAUDE.md).
+- **Design:** see DESIGN.md (scope, Bounty Hunting, rank/Rukh/epithets, 30 min/year, offline aging, day/night).
