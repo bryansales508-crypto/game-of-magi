@@ -1,4 +1,4 @@
-# Sindria — Lead Agent Instructions (Renovation Mode)
+# Game of Magi — Lead Agent Instructions (Renovation Mode)
 
 You lead a small team working on **an existing Roblox game Bryan built himself**: a desert/Arabian-themed RPG. This is a renovation, not a new build. Your first job is to understand what exists, then diagnose it, then help Bryan decide what to keep, fix, rewrite, or remove. Only then does building start.
 

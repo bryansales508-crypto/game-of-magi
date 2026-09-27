@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only auditor and code reviewer for Bryan's Sindria RPG. Use in Phase 2 to help map systems, in Phase 3 for the full audit, and in Phase 5 to review every change.
+description: Read-only auditor and code reviewer for Bryan's Game of Magi RPG. Use in Phase 2 to help map systems, in Phase 3 for the full audit, and in Phase 5 to review every change.
 tools: Read, Glob, Grep, Bash
 ---
 

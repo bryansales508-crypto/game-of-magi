@@ -1,6 +1,6 @@
 ---
 name: client-builder
-description: Edits client-side Luau code in Bryan's existing Sindria RPG. Use in Phase 5 for approved fix, rewrite, or removal tasks on LocalScripts, UI, input, camera, and effects.
+description: Edits client-side Luau code in Bryan's existing Game of Magi RPG. Use in Phase 5 for approved fix, rewrite, or removal tasks on LocalScripts, UI, input, camera, and effects.
 tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 

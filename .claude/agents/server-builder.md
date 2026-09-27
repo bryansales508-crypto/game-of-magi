@@ -1,6 +1,6 @@
 ---
 name: server-builder
-description: Edits server-side and shared Luau code in Bryan's existing Sindria RPG. Use in Phase 5 for approved fix, rewrite, or removal tasks on server scripts and shared modules.
+description: Edits server-side and shared Luau code in Bryan's existing Game of Magi RPG. Use in Phase 5 for approved fix, rewrite, or removal tasks on server scripts and shared modules.
 tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
