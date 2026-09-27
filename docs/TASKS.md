@@ -109,3 +109,11 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M3-06 | EffectsController (hit fx, parry/block-break, knockout blind + freeze, ragdoll visuals, dash trail, run zoom) | client-builder | done (merged) | Same sounds and particles as today |
 | M3-07 | PLAYTEST.md M3 scenarios; Bryan plays the feel and tunes numbers; agent runs cheat checks only | Bryan + lead + playtester | agent cheat checks PASS; fix round merged; Bryan does the feel pass later (FOLLOWUPS) | Feel approved by Bryan; every cheat check rejected |
 - **M3 merge gate (REVIEW-M3-02 finding 1):** the server branch removes the old `Running`/`Dash`/`Hit`/`Blocking` remotes, which the old InteractionsHandler and PhysicalHandler index at load. Merge the server branch only once M3-03 (deletes those server scripts) is in, and merge the client branch (M3-05 + M3-06, deletes PhysicalHandler) in the same push. Never sync a half state to Studio.
+
+### M4 Status and Rukh: plan (approved by Bryan 2026-09-27; details in docs/M4-PLAN.md)
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M4-01 | RankService (rank-up detection, pending epithet choice in the save, ChooseEpithet, AddMagoi/AddDeed API, attributes) + schema v2 | server-builder | in progress (cloud) | `.magoi 300` sends RankUp with 3 choices; choice persists across rejoin; bad ChooseEpithet rejected; v1 save migrates to v2 |
+| M4-02 | RankController: Rukh flutter in the alignment colour + epithet card (menu style), origin choice at birth | client-builder | in progress (cloud) | Flutter and card on rank-up; 1/2/3 or click chooses; card returns if a choice is pending at join |
+| M4-03 | PLAYTEST.md M4 scenarios; Bryan plays the moments, agent checks the remote | Bryan + lead + playtester | todo | All pass |
