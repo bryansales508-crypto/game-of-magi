@@ -33,10 +33,16 @@ Config.Dev = {
 	Admins = { 27938432 },
 }
 
+-- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
+Config.Sfx = {
+	Heartbeat = "rbxassetid://102383912898742",
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
 table.freeze(Config.Dev)
+table.freeze(Config.Sfx)
 table.freeze(Config)
 
 return Config
