@@ -79,4 +79,4 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 - M1-04C: rename the unused `character` param to `_character` in LoadController (selene warning). Fold into the next client follow-up.
 - M2 note (REVIEW-M1-04S F6, AUDIT M9): `AppearanceController:81` spins forever if the player leaves before Ready. Left as is for M1 (file is rebuilt in M2 #3).
 - Lead approved after the fact (REVIEW-M1-04S F5): the builder's comment-only edits to vendored `Packages/ProfileStore.luau`; indentation restored in the fix round.
-- M1 fix round (REVIEW-M1-05S, PASS with notes): self-test should call Dispatch with a stubbed non-dev; `position` should be "n/a" with no character; share `SPAWN_RAISE_STUDS` between DevService and PlayerService.
+- REVIEW-M1-05S notes (self-test non-dev, position "n/a", shared spawn constant): fixed and merged.
