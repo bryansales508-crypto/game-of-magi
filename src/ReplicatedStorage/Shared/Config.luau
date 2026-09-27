@@ -33,10 +33,47 @@ Config.Dev = {
 	Admins = { 27938432 },
 }
 
+-- M2-02: aging (DESIGN.md section 3, "Aging while offline"/"Aging and
+-- death"). AgeService multiplies the online tick's banked seconds, and
+-- SceneTimeout's wait, by DevService.GetTimeScale() (a runtime override of
+-- Config.Debug.TimeScale, since Config is frozen); offline aging is always
+-- real time, never scaled.
+Config.Aging = {
+	SecondsPerYear = if Config.IsStudio then 60 else 1800,
+	OfflineYearsPerDay = 2,
+	OfflineAgeCap = 59,
+	AdultAge = 18,
+	-- Hair visibly greys from GreyStart to GreyEnd (CharacterService.applyHairColor).
+	GreyStart = 45,
+	GreyEnd = 70,
+	-- From DeathStart, every online birthday carries a heart-attack moment;
+	-- DeathChance is the odds it's fatal, linearly interpolated between points.
+	DeathStart = 60,
+	DeathChance = {
+		{ 60, 0.05 },
+		{ 65, 0.10 },
+		{ 70, 0.20 },
+		{ 75, 0.35 },
+		{ 80, 0.50 },
+		{ 90, 0.80 },
+		{ 100, 1.0 },
+	},
+	-- How long the server waits for RukhSceneDone before starting the new
+	-- life anyway.
+	SceneTimeout = 30,
+	-- How often the online aging loop ticks, in real seconds.
+	Tick = 10,
+}
+
 table.freeze(Config.Debug)
 table.freeze(Config.Data)
 table.freeze(Config.Dev.Admins)
 table.freeze(Config.Dev)
+for _, point in Config.Aging.DeathChance do
+	table.freeze(point)
+end
+table.freeze(Config.Aging.DeathChance)
+table.freeze(Config.Aging)
 table.freeze(Config)
 
 return Config

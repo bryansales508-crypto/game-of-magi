@@ -297,6 +297,39 @@ function DataService.Wipe(player: Player)
 	log:Info(string.format("Wiped save for %s", player.Name))
 end
 
+-- M2-02: a death's "completely fresh life" (DESIGN.md section 3a). Like
+-- Wipe, but keeps Meta.Lives (incremented) and Meta.Created (the save's
+-- original creation time), since a death isn't the same as a dev reset.
+function DataService.NewLife(player: Player)
+	local profile = profiles[player]
+	if profile == nil then
+		log:Warn(string.format("NewLife requested for %s but no profile is loaded", player.Name))
+		return
+	end
+
+	local data = profile.Data :: any
+	local keepLives = profile.Data.Meta.Lives + 1
+	local keepCreated = profile.Data.Meta.Created
+
+	for key in data do
+		data[key] = nil
+	end
+	for key, value in (SaveSchema.Template :: any) do
+		data[key] = deepCopy(value)
+	end
+	SaveSchema.Migrate(data :: Data)
+	SaveSchema.NewLife(data :: Data)
+
+	local now = os.time()
+	data.Meta.Created = keepCreated
+	data.Meta.LastSeen = now
+	data.Meta.Lives = keepLives
+	data.Age.TimePassed = now
+
+	LegacyBridge.Refresh(player, profile.Data)
+	log:Info(string.format("New life for %s (life #%d)", player.Name, keepLives))
+end
+
 function DataService.Save(player: Player)
 	local profile = profiles[player]
 	if profile == nil then

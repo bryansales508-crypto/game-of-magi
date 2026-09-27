@@ -29,7 +29,7 @@ Meta      = { Created, LastSeen, Lives }
 ```
 Missing keys on an existing save are filled in by `Profile:Reconcile()` before `SaveSchema.Migrate` runs, so a migration can assume its own version's shape already exists.
 
-**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use).
+**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command), `.Save(player)` (manual save, for dev use), `.NewLife(player)` (M2-02: like `Wipe`, but keeps `Meta.Lives` — incremented — and `Meta.Created`; used by `AgeService`'s old-age death).
 
 **If loading fails or the player leaves mid-load:** the player is kicked with "Your save couldn't be loaded. Please rejoin in a moment." A session stolen by another server, or the DataStore going down mid-session, kicks the player the same way (ProfileStore's `OnSessionEnd`).
 
@@ -91,7 +91,9 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 **Remote:** `CreateCharacter` (client → server, `gender: 1|2`, `skin: 1|2|3`, rate 3/10s). Ignored unless the save's `Character.Gender == 0`. Stores `Gender`/`SkinTone`, rolls a **gender-matched** first name from `Assets.FirstNames.sindria.male`/`.female` (AUDIT L3 — the old roll always used the male list, before gender was even chosen), and refreshes the legacy `Stats` mirror. The client sees it worked once the `Gender` attribute goes non-zero.
 
-**Player attributes kept current:** `Gender`, `SkinTone`, `Kingdom`, `FirstName`, `HeightStuds` (`Character.Height` × a nominal 5-stud default rig height — display only, not HeightHandler's own scale), `Lives`.
+**Player attributes kept current:** `Gender`, `SkinTone`, `Kingdom`, `FirstName`, `HeightStuds` (`Character.Height` × a nominal 5-stud default rig height — display only, not HeightHandler's own scale), `Lives`, `Age` (AgeService also keeps this current on every birthday; see section 4).
+
+Applied (not saved) hair colour lerps toward grey from `Config.Aging.GreyStart` to `GreyEnd` (`AgeService.GreyFactor`) — visible aging, section 4. No wrinkle decal exists yet (`-- ART TASK (Bryan)` comment in `applyHairColor`).
 
 **Audit fixes carried in:**
 - **H4** — the gender/skin picker is a client screen plus one server-validated remote, not a server script reading GUI clicks.
@@ -113,15 +115,27 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 ---
 
-## 4. Aging and growth
+## 4. Aging, visible aging and death — rebuilt M2-02
 
-**What it does.** Characters start at 13 and age with real time. Every 10 seconds the server banks elapsed seconds into `ProgToAge` and turns each `SECONDS_PER_YEAR` into a birthday. That constant is **30 seconds** right now, marked `--debug`; the comment says it's meant to be 5 minutes. Growth stops changing at 18. On a birthday (or a fresh spawn) the body is resized: height follows a per-player S-curve growth spurt, and build goes from skinny at 13 toward a random adult build. Hats and cloaks are removed and re-put-on so they fit the new size.
+**What it does.** `AgeService` runs one shared server loop (`Config.Aging.Tick`, 10s) for every loaded player instead of one thread per player. Each tick it banks real elapsed seconds — times `DevService.GetTimeScale()` — into `Age.ProgToAge`, and turns each `Config.Aging.SecondsPerYear` (60s in Studio, 1800s live — DESIGN's 30 min/year) into a birthday. On a birthday: `Age.Years += 1`, the body is resized (height/build follow the per-life S-curve growth profile, hats/cloaks removed and re-equipped to fit — same as before), and the `Age` attribute updates immediately. Resizing also happens on every spawn (not just birthdays), once `AppearenceLoaded` is true (waits for `CharacterService` to finish first, same ordering the old `AgeController` used).
 
-**Growth profile format (versioned):** `"v1|startHeight|adultHeight|spurtAge|fatEnd"`, rolled once and stored in `Stats.GrowthProfile`. `AgeHandler.unpack` rejects anything that isn't `v1`, and the controller re-rolls if the profile is invalid.
+**Offline aging (DESIGN.md section 3).** On `DataService.Loaded` (once per session), `AgeService.OfflineAgingYears` ages the player up to `Config.Aging.OfflineYearsPerDay` (2) per real day away, capped at `Config.Aging.OfflineAgeCap` (59) — **never fatal**. `Age.TimePassed` (the last aging tick, real `os.time()`) is what this and the online loop both measure from.
 
-**Files:** `SSS/Character/AgeController.server.luau` (the loop), `SSS/Character/AgeHandler.luau` (growth math and the profile format), `SSS/Character/HeightHandler.luau` (resizes body parts, joints, attachments and accessories; also holds the per-cloak fit offsets).
-**Depends on:** Stats (`Age`, `Height`, `GrowthProfile`, `TimePassed`, `ProgToAge`), `ItemHandler`, `OnCharacter.Hats`.
-**Depended on by:** Appearance, Items, MissionHandler (requires HeightHandler; the resize calls are commented out), Health (Height adds max health).
+**Visible aging.** Applied hair colour (not the saved `HairColor`) lerps toward grey from `Config.Aging.GreyStart` (45) to `GreyEnd` (70) — `AgeService.GreyFactor(age)`, applied by `CharacterService.applyHairColor` on every build. No wrinkle decal exists in `RF.Assets` yet (flagged `-- ART TASK (Bryan)` in that function).
+
+**Death (DESIGN.md section 3a "Aging and death"; Bryan's heart-attack styling in `docs/M2-PLAN.md`).** From `Config.Aging.DeathStart` (60), every online birthday fires the `HeartAttack` remote (`age`, `fatal`) — the client (M2-05) always shows a short heartbeat/red-pulse moment, heavier and lasting if `fatal`. `fatal` is rolled from `Config.Aging.DeathChance`, linearly interpolated between its `{age, chance}` points (`AgeService.DeathChance`). A fatal roll sets the `Dying` attribute, freezes the humanoid (`WalkSpeed`/`JumpPower`/`JumpHeight` 0), and waits for the client's `RukhSceneDone` remote (or `Config.Aging.SceneTimeout`, 30s, also time-scaled) before starting a **completely fresh life**: `DataService.NewLife` (like `Wipe`, but keeps `Meta.Lives` — incremented — and `Meta.Created`), a fresh growth-profile roll, then `Player:LoadCharacter()`.
+
+**Growth profile format (versioned, unchanged):** `"v1|startHeight|adultHeight|spurtAge|fatEnd"`, rolled once per life (`AgeService`'s `rollFirstGrowth`, moved here from the old `AppearanceController`) and stored in `Character.GrowthProfile`. `AgeHandler.unpack` rejects anything that isn't `v1`; `resizeCharacter` re-rolls if the profile is ever missing/invalid (same defensive fallback the old `sizeCharacter` had).
+
+**Audit fixes:** **M10** (runaway age, no old-age death) — this section is the fix: age is now bounded (offline capped at 59) and old-age death is built. **L5** (`HeightHandler.resize`) — hair accessory parts used to scale by the full body ratio like a torso part; they now follow the head's (smaller, `HEAD_RESPONSE`-scaled) ratio instead, so hair doesn't stretch.
+
+**Dev commands (section 16):** `.birthday [player]`, `.heart [fatal] [player]`.
+
+**Files:** `SSS/Server/Services/AgeService/` (`init.luau` the service; `AgeHandler.luau` growth maths and the profile format, ported to `--!strict`, same numbers; `HeightHandler.luau` resizes body parts, joints, attachments and accessories — also holds the per-cloak fit offsets — ported to `--!strict` with the L5 fix).
+**Removed (TRIAGE #4):** `SSS/Character/AgeController.server.luau`.
+**Repointed:** `SSS/Character/ItemHandler.luau` and `SSS/MISC/MissionHandler/init.server.luau` required the old `Character.HeightHandler`/`Character.AgeHandler` paths; both now require the new `Server.Services.AgeService.HeightHandler`/`.AgeHandler`.
+**Depends on:** `DataService` (`Age`, `Character.Height`/`GrowthProfile`, `NewLife`), `PlayerService.Ready`, `LegacyBridge`, `DevService.GetTimeScale`, `ItemHandler`, `Gear.Hats`.
+**Depended on by:** `CharacterService` (spawn build waits for `AgeService`'s first growth roll to have already happened via `DataService.Loaded`; `applyHairColor` calls `GreyFactor`), Items, Health (Height adds max health, M2-03).
 
 ---
 
@@ -313,7 +327,7 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 
 ## 16. Dev commands — rebuilt M1-05
 
-**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen.
+**What it does now.** One `DevService` (`SSS/Server/Services/DevService.luau`) owns every dev command. Commands arrive two ways — typed in chat (`Player.Chatted`, same leading-`.` style as before) or from the M1-05C dev panel over the new `DevCommand` remote — and both go through the same `DevService.Run`, so there's exactly one place permission and parsing happen. Another service can add its own commands via `DevService.Register`/`.ResolvePlayer` (M2-02's `.birthday`/`.heart`, registered by `AgeService`) instead of `DevService` requiring that service back, since Roblox errors on a cyclic `ModuleScript` require.
 
 **Permission.** A player is a dev if their UserId is in `Config.Dev.Admins` (`27938432`, Bryan — the same UserId the old handler checked), **or** `Config.Debug.Enabled` is true (Studio: everyone testing there is a dev). Checked on the server before anything else runs. A non-dev gets no reply at all (so they can't tell a real command from an unknown one) and one `Log:Warn` per player per minute, not per command.
 
@@ -335,6 +349,8 @@ The two `NPCFetch` copies have the same code but different settings. `npcType = 
 | `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
 | `.fresh [player]` | `DataService.Wipe`, then reloads the character (kick-free) |
 | `.save [player]` | saves now |
+| `.birthday [player]` | forces one birthday tick right now (`AgeService.ForceBirthday`) |
+| `.heart [fatal] [player]` | fires a heart attack right now (`AgeService.ForceHeartAttack`); put `fatal` first to make it lethal |
 
 Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders (and the coin purse HUD, for currency) pick it up immediately — never the Values directly. Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 

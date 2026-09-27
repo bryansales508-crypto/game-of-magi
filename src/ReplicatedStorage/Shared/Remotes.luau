@@ -68,6 +68,22 @@ Remotes.Definitions = {
 		args = { Validate.number({ min = 1, max = 2, integer = true }), Validate.number({ min = 1, max = 3, integer = true }) },
 		rate = { count = 3, per = 10 },
 	},
+	-- M2-02: server -> client only (AgeService never registers a handler,
+	-- so a client calling this back is just dropped). Fired on every
+	-- online birthday from Config.Aging.DeathStart; `fatal` means the
+	-- return-to-the-Rukh scene follows.
+	HeartAttack = {
+		kind = "Event",
+		args = { Validate.number({ min = 0, integer = true }), Validate.boolean() },
+		rate = { count = 1, per = 5 },
+	},
+	-- M2-02: the client sends this once the return-to-the-Rukh scene ends;
+	-- AgeService starts the new life on it (or after Config.Aging.SceneTimeout).
+	RukhSceneDone = {
+		kind = "Event",
+		args = {},
+		rate = { count = 2, per = 60 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

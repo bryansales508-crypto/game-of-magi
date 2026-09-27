@@ -28,6 +28,7 @@ local ItemHandler = require(ServerScriptService.Character.ItemHandler) :: any
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
+local AgeService = require(script.Parent.AgeService)
 local FaceControl = require(script.FaceControl)
 
 local log = Log.new("CharacterService")
@@ -260,14 +261,24 @@ local function buildHitbox(character: Model)
 	hitbox.Parent = character
 end
 
+-- M2-02 visible aging: the applied colour lerps toward grey from
+-- Config.Aging.GreyStart to GreyEnd; the SAVED HairColor never changes
+-- (it's the natural colour, re-applied fresh on every build/birthday).
+local GREY_HAIR = Color3.fromRGB(200, 200, 200)
+
 local function applyHairColor(character: Model, data: Data)
-	local color = Color3.new(data.Character.HairColor.R, data.Character.HairColor.G, data.Character.HairColor.B)
+	local natural = Color3.new(data.Character.HairColor.R, data.Character.HairColor.G, data.Character.HairColor.B)
+	local color = natural:Lerp(GREY_HAIR, AgeService.GreyFactor(data.Age.Years))
 	for _, part in character:GetDescendants() do
 		if part:IsA("BasePart") and part.Name:find("Handle") then
 			part.Color = color
 		end
 	end
 end
+
+-- ART TASK (Bryan): wrinkle decal. RF.Assets has no wrinkle/aged-face
+-- decal yet, so visible aging is hair-only for now; add one to the face
+-- decal tables when it exists and blend it in here by AgeService.GreyFactor.
 
 local function setCollisionGroup(character: Model)
 	for _, part in character:GetChildren() do
@@ -437,6 +448,7 @@ local function setAttributes(player: Player, data: Data)
 	player:SetAttribute("FirstName", data.Character.FirstName)
 	player:SetAttribute("HeightStuds", data.Character.Height * BASE_HUMAN_HEIGHT_STUDS)
 	player:SetAttribute("Lives", data.Meta.Lives)
+	player:SetAttribute("Age", data.Age.Years)
 end
 
 -- Waits until CreateCharacter has been handled (data.Character.Gender ~= 0),

@@ -2,8 +2,8 @@
 local ItemHandler = {}
 
 local assets = require(game.ReplicatedFirst.Assets)
-local hm     = require(game.ServerScriptService.Character.HeightHandler)
-local ageHandle = require(game.ServerScriptService.Character.AgeHandler)
+local hm     = require(game.ServerScriptService.Server.Services.AgeService.HeightHandler)
+local ageHandle = require(game.ServerScriptService.Server.Services.AgeService.AgeHandler)
 
 -- ===== color <-> string ("255,210,129") =====
 local function colorToCode(c)

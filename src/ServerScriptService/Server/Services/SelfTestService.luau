@@ -17,6 +17,8 @@ local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local CharacterService = require(script.Parent.CharacterService)
+local AgeService = require(script.Parent.AgeService)
+local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 
 local log = Log.new("SelfTest")
 
@@ -440,6 +442,43 @@ local function testCharacterService(results: { Check })
 	end
 end
 
+-- M2-02: AgeService's pure helpers and AgeHandler's pack/unpack round-trip.
+local function testAgeService(results: { Check })
+	do
+		expect(results, "AgeService: 10 days away at 13 -> 33", AgeService.OfflineAgingYears(13, 10) == 20)
+		expect(results, "AgeService: 30 days away at 50 -> 59 (capped)", AgeService.OfflineAgingYears(50, 30) == 9)
+		expect(results, "AgeService: 0 days away adds nothing", AgeService.OfflineAgingYears(13, 0) == 0)
+	end
+
+	do
+		local chance = AgeService.DeathChance(62)
+		expect(results, "AgeService: DeathChance interpolates 62 -> 0.07", math.abs(chance - 0.07) < 1e-9)
+		expect(results, "AgeService: DeathChance below the first point clamps to it", AgeService.DeathChance(0) == Config.Aging.DeathChance[1][2])
+		expect(
+			results,
+			"AgeService: DeathChance at/after the last point clamps to it",
+			AgeService.DeathChance(200) == Config.Aging.DeathChance[#Config.Aging.DeathChance][2]
+		)
+	end
+
+	do
+		expect(results, "AgeService: GreyFactor(44) is 0 (before GreyStart)", AgeService.GreyFactor(44) == 0)
+		expect(results, "AgeService: GreyFactor(57.5) is 0.5 (midpoint)", AgeService.GreyFactor(57.5) == 0.5)
+		expect(results, "AgeService: GreyFactor(70) is 1 (at GreyEnd)", AgeService.GreyFactor(70) == 1)
+	end
+
+	do
+		local profileStr, height = AgeHandler.start(13, 2, 1)
+		local profile = AgeHandler.unpack(profileStr)
+		expect(results, "AgeHandler: unpack succeeds on a freshly-packed profile", profile ~= nil)
+		if profile then
+			local roundTripHeight = AgeHandler.heightAt(profile, 13)
+			expect(results, "AgeHandler: unpack round-trip reproduces the starting height", math.abs(roundTripHeight - height) < 0.01)
+		end
+		expect(results, "AgeHandler: unpack rejects a non-v1/garbage string", AgeHandler.unpack("garbage") == nil)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -458,6 +497,7 @@ function SelfTestService:Start()
 		testDevService(collected)
 		testData(collected)
 		testCharacterService(collected)
+		testAgeService(collected)
 		return collected
 	end)
 
