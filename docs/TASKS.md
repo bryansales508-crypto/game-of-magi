@@ -74,4 +74,4 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | M1-08 | Wipe the live debug data (Bryan approved) | lead | todo | Old `GameOfMagi_v0.01am` data no longer loaded; new store in use |
 
 ### M1 follow-ups noted by reviews
-- `selene` can't fetch the Roblox API dump from the cloud (Roblox hosts blocked there). Fix: run `selene generate-roblox-std` locally once and commit `roblox.yml`, so cloud checks include style. (REVIEW-M1-02b, N4)
+- selene: `roblox.yml` committed 2026-09-27 so cloud checks include style. Local selene on M1-02 code: see commit for counts.
