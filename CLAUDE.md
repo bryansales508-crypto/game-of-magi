@@ -45,8 +45,8 @@ Write `docs/TRIAGE.md`: one line per system with a recommendation (**keep**, **f
 The same loop as always: plan → build (server and client builders in parallel) → review → test → commit (`git commit -m "<task ID>: <summary>"`) → stop at each milestone gate for Bryan's approval. If the same bug fails three fix attempts, stop and ask Bryan.
 
 ## Renovation rules
-- **Respect what works.** Don't rewrite or restructure a working system because you'd write it differently. Changes must trace back to an AUDIT finding, a TRIAGE decision, or DESIGN.md.
-- **Match Bryan's style.** Follow his existing naming (for example the `*Handler` modules), folder layout, and patterns unless TRIAGE says to change them.
+- **Build it right, keep the look** (Bryan's rule, 2026-09-26). Treat this as fixing up a run-down house from the owner's picture of it. Bryan's code style, naming, and structure do **not** need to be kept: use the cleanest, most efficient modern Roblox architecture. Keep his **aesthetic**: art, UI look, animations, sounds, names of places, people and items, and game feel.
+- **Every change still traces back** to an AUDIT finding, a TRIAGE decision, or DESIGN.md, and Bryan approves the plan before building.
 - **Nothing is deleted without approval.** Any removal must be on the approved TRIAGE list.
 - **Saving:** there is no real player data, so DataStore formats may change. Every change to a save format must be written up in SYSTEMS.md, and existing handlers (such as versioned age data) must be updated consistently.
 - **The server never trusts the client.** Every remote is validated on the server. Admin and dev commands must check permissions on the server.

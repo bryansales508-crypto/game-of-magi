@@ -60,12 +60,29 @@ Nothing here is deleted until Bryan approves each line. The **?** lines are ones
 | R11 | Unused remotes: the combat/misc ones (`AutoSave`, `Wipe`, `ItemEquip`, `MissionInteraction`, `MissionFinisher`, `SpawnTeleport`, `RegionEntered`, `RegionLeft`, `DeathHandlerPart3`, `CombatMusic*`, `FollowUp`, `RaceSkill`, `Carry`, `SandStormSound`, `Party`, `ClientCommunication`, `Holding`, `GameLoaded`, `GetDamageFunc`, `CombatPress`, `Drop`, `Announcer`, `Cam`, `CameraShake`, `CombatString`, `Gripped`, `BlockBroken`) | **remove?** | Nothing uses them. `GenderSelected` is **kept** for #4. **Open question 3** |
 | R12 | `SpellRemotes` folder and `BorgActivation` | **remove?** | Magic isn't built yet. These could be placeholders for it. **Open question 3** |
 
-## Open questions (asked one at a time)
+## Bryan's decisions (2026-09-26)
+
+- **Saving:** one save handler with one key. #1 becomes a **rewrite**: one data service, one key, with the fixes from #1 built in.
+- **Hunger:** not in this version. Remove it from the HUD and **park** the hunger code with the other unfinished work (#18 becomes **park**).
+- **Magic and rank leftovers (R9–R12):** **park** them as placeholders that don't load or clutter the live game. They are not deleted.
+- **Aging:** old-age death starts at 60, with the chance of dying at each birthday rising with age, alongside visible aging (grey hair, wrinkles, etc.). The age script was never finished, so this is part of #5.
+- **Style:** Bryan's code style doesn't need to be kept; only his aesthetic does (see CLAUDE.md). The keep/fix calls above get revisited after the design pass, and some "fix" lines may become cleaner rewrites.
+
+**Parked work** goes in `ServerStorage/Parked`. Code there never runs and never reaches players, but it stays in the project so it can come back.
+
+## Open questions (answered)
 
 1. **Saving layout:** give each save script its own key (smallest change), or merge them into one save handler with one key (cleaner, a bit more work)?
+Save handler with one key.
+
 2. **Hunger:** should hunger drain in this version? If so, fix and switch on the drain script (#18); if not, hide it from the HUD.
+No, it was something I was working on. Let's go ahead and remove HUD and put it wherever we are putting the unfinished work.
+
 3. **Magic and rank leftovers** (R9–R12): remove them, or keep them as placeholders for the magic and rank systems you plan?
+Yes, eventually magic and rank will come back. Let's placehold them, but make sure they don't distract.
+
 4. **Aging speed:** is 5 minutes per year still right? And at what age should old-age death start?
+I imagine it would start at 60, with chance of dying on age up increasing alongside character hair / wrinkles all sorts of stuff. Age script wasn't finished.
 
 ## Suggested milestone order (after approval)
 
