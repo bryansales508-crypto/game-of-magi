@@ -124,7 +124,17 @@ end
 -- fits: "no" (total wealth across all three coins, converted to Copper,
 -- doesn't reach the price either) or "convert" (it does, just not in this
 -- coin).
+--
+-- REVIEW-M5A-01 L1: a bad `amount` (less than 1, or not a whole number -
+-- an exploit sending Pay(player, "Copper", 0.5, ...) or a negative amount
+-- from a bad caller) is rejected as "no" before anything else runs, and
+-- never touches the wallet - a price is always at least 1 whole coin, so
+-- there's no real purchase a bad amount could ever legitimately be.
 function EconomyService.ApplyPay(data: Data, coin: Coin, amount: number): (boolean, PayFailure?)
+	if amount < 1 or amount ~= math.floor(amount) then
+		return false, "no"
+	end
+
 	if getCoin(data, coin) >= amount then
 		setCoin(data, coin, getCoin(data, coin) - amount)
 		return true, nil

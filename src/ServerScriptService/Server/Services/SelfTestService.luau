@@ -938,11 +938,11 @@ local function fakeEconomyData(copper: number, silver: number, gold: number): Sa
 end
 
 local function testEconomy(results: { Check })
-	-- Bryan's rounding table (M5-PLAN.md Phase 5A, 2026-09-29): the largest
-	-- coin worth more than half the copper amount, rounded half up within
-	-- it. 5,000/6,000 is the sharpest case - both are close to the
-	-- Gold/Silver line, but only 6,000 clears the STRICT half-Gold
-	-- threshold (see Economy.toPrice's own comment).
+	-- Bryan's price-band table (M5-PLAN.md Phase 5A, replaced 2026-09-29:
+	-- bands, not rounding). 200/201 and 10,000/10,001 are the sharpest
+	-- cases - one Copper past a full 100/10,000 is what actually crosses
+	-- into the next band, not a rounding midpoint (see Economy.toPrice's
+	-- own comment).
 	for _, example in Economy.PriceExamples do
 		local coin, amount = Economy.toPrice(example.copper)
 		expect(
@@ -958,7 +958,7 @@ local function testEconomy(results: { Check })
 	-- unused today - see its own comment and GiveCopperValue below).
 	do
 		local coin, amount = Economy.roundReward(5000)
-		expect(results, "Economy: roundReward follows the same rounding rule as toPrice", coin == "Silver" and amount == 50)
+		expect(results, "Economy: roundReward follows the same banding rule as toPrice", coin == "Silver" and amount == 49)
 	end
 
 	-- CanAfford/Pay are exact-coin only: 120 Copper can't pay a 1-Silver
@@ -982,6 +982,23 @@ local function testEconomy(results: { Check })
 		local data = fakeEconomyData(0, 0, 0)
 		local ok, failure = EconomyService.ApplyPay(data, "Silver", 1)
 		expect(results, "EconomyService: ApplyPay against an empty wallet fails as \"no\" (not enough money at all)", not ok and failure == "no")
+	end
+
+	-- REVIEW-M5A-01 L1: a bad amount (less than 1, or not a whole number)
+	-- is rejected as "no" before it ever touches the wallet, even against a
+	-- wallet that could otherwise afford it.
+	do
+		local data = fakeEconomyData(0, 5, 0)
+		local okZero, failureZero = EconomyService.ApplyPay(data, "Silver", 0)
+		expect(results, "EconomyService (L1): ApplyPay rejects an amount below 1", not okZero and failureZero == "no")
+
+		local okNegative, failureNegative = EconomyService.ApplyPay(data, "Silver", -1)
+		expect(results, "EconomyService (L1): ApplyPay rejects a negative amount", not okNegative and failureNegative == "no")
+
+		local okFraction, failureFraction = EconomyService.ApplyPay(data, "Silver", 1.5)
+		expect(results, "EconomyService (L1): ApplyPay rejects a non-integer amount", not okFraction and failureFraction == "no")
+
+		expect(results, "EconomyService (L1): none of the rejected amounts touched the wallet", data.Economy.Silver == 5)
 	end
 
 	-- A payment that CAN be made in the exact coin succeeds and only moves
