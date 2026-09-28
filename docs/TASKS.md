@@ -48,6 +48,7 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | **done (gate passed 2026-09-28; tweaks = Bryan follow-up)** |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
 | M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22), legacy bridge removal | **merged to main 2026-09-29** (M6-01 Opus-reviewed, M6-02 Sonnet PASS, lead fixes at merge); Bryan plays PLAYTEST "M6" A-E, tags city lights, deletes the ocean scripts |
+| **Roadmap** | Restoration scorecard, renumbered milestones M7 close-out, M8 NPCs/tutorial, M9 bounties, M10 weapons, M11 bank/economy, M12 legacy, and the gameplay-loop draft: `docs/ROADMAP.md` (2026-09-29) | for Bryan |
 
 ### M1 Foundation: plan
 
