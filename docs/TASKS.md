@@ -138,6 +138,6 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M5A-01 | `Shared/Data/Economy.luau` (1/100/10,000, whole-coin rounding rule) + `EconomyService` (wallet, exact-coin Pay, Give, reward rounding, attributes, coin messages; bridge stops writing the purse) | server-builder | in progress (cloud) | Rounding table passes; 120 Copper cannot pay 1 Silver; purse follows attributes |
+| M5A-01 | `Shared/Data/Economy.luau` (1/100/10,000, whole-coin rounding rule) + `EconomyService` (wallet, exact-coin Pay, Give, reward rounding, attributes, coin messages; bridge stops writing the purse) | server-builder | built, in review | Rounding table passes; 120 Copper cannot pay 1 Silver; purse follows attributes |
 | M5A-02 | `CurrencyController`: the old purse HUD from attributes; coin messages posted as the character speaking | client-builder | done (lead-checked; client branch, merges with M5A-01) | Same look; messages show |
 | M5A-03 | PLAYTEST.md 5A scenarios; Bryan plays | Bryan + lead | scenarios drafted | Bryan OK |
