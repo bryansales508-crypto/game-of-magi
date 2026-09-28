@@ -93,36 +93,47 @@ Config.Health = {
 	CombatTierSeconds = 6,
 }
 
--- M3-FIX3-S/M3-FIX3-C: the animation-driven punch flow (Shared/Data/
--- Combat.luau's Swing/Punch shape). Not weapon numbers - those stay in
--- Combat.luau. One click plays one fist animation containing several
--- punches; the client reports each punch off the animation's own events.
+-- M3-FIX3-S/M3-FIX3-C/M3-FIX4: the animation-driven, per-style hit chain
+-- (Shared/Data/Combat.luau's Combat.Styles shape). Not weapon numbers -
+-- those stay in Combat.luau. One click plays one swing animation for the
+-- attacker's WeaponSet style, containing several hits; the client reports
+-- each hit off the animation's own events.
 Config.Combat = {
-	-- Seconds of slack added to BOTH ends of a punch's hitWindow when the
-	-- server checks an AttackHit report (and to AttackCancel's cancelWindow),
-	-- absorbing network round-trip and animation-marker jitter between the
-	-- client's animation clock and the server's own.
+	-- Seconds of slack added to BOTH ends of a hit's hitWindow when the
+	-- server checks an AttackHit report (and to AttackCancel's cancelWindow/
+	-- cancelUntil), absorbing network round-trip and animation-marker
+	-- jitter between the client's animation clock and the server's own.
 	HitTolerance = 0.15,
 	-- The real marker names can't be read from the .rbxm file, so this is a
-	-- starting guess - Bryan edits it to match his animation's actual event
-	-- names. With LogMarkers on (the default), CombatController logs every
+	-- starting guess - Bryan edits it to match each style's actual animation
+	-- event names, one Windup/Hit name per hit in the chain, in order. With
+	-- LogMarkers on (the default), CombatController logs every
 	-- KeyframeReached AND every configured marker that's actually reached
-	-- on the fist track (`Log:Info("marker: <name> at <t>s")`), so the real
-	-- names and their timing show up in Output even before the guess is
-	-- right.
+	-- on whichever style's track is playing (`Log:Info("marker: <name> at
+	-- <t>s")`), so the real names and their timing show up in Output even
+	-- before the guess is right.
 	Markers = {
-		Windup = { "Windup1", "Windup2" },
-		Hit = { "Hit1", "Hit2" },
+		Fist = {
+			Windup = { "Windup1", "Windup2" },
+			Hit = { "Hit1", "Hit2" },
+		},
+		Dagger = {
+			Windup = { "Windup1", "Windup2", "Windup3" },
+			Hit = { "Hit1", "Hit2", "Hit3" },
+		},
 	},
 	LogMarkers = true,
 	-- How long EffectsController flashes the "Cancel" Highlight for a
 	-- cancelled (not interrupted) attack.
 	CancelFlashSeconds = 0.25,
-	-- M3-FIX3-C (client): how much CombatController slows the fist
-	-- animation during each wind-up (1 = normal speed, less = slower). A
-	-- pure client feel knob - the server never reads this, it only ever
-	-- validates hitWindow, so retuning this doesn't need to match any
-	-- server timing.
+	-- M3-FIX3-C (client): fallback wind-up slowdown (1 = normal speed, less
+	-- = slower) for a hit whose own windupSpeed isn't available from
+	-- Shared/Data/Combat.luau's Combat.Styles yet (M3-FIX4-S, in progress
+	-- in parallel) - once that lands, CombatController prefers each hit's
+	-- own windupSpeed (Lights 1.0, Heavies slowed) and only falls back to
+	-- this flat number if that data is missing. A pure client feel knob -
+	-- the server never reads this, it only ever validates hitWindow/
+	-- cancelUntil, so retuning this doesn't need to match any server timing.
 	WindupSpeed = 0.5,
 }
 
@@ -206,8 +217,12 @@ table.freeze(Config.Aging)
 table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
-table.freeze(Config.Combat.Markers.Windup)
-table.freeze(Config.Combat.Markers.Hit)
+table.freeze(Config.Combat.Markers.Fist.Windup)
+table.freeze(Config.Combat.Markers.Fist.Hit)
+table.freeze(Config.Combat.Markers.Fist)
+table.freeze(Config.Combat.Markers.Dagger.Windup)
+table.freeze(Config.Combat.Markers.Dagger.Hit)
+table.freeze(Config.Combat.Markers.Dagger)
 table.freeze(Config.Combat.Markers)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
