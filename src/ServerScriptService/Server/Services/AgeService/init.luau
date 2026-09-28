@@ -33,7 +33,6 @@ local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local ItemService = require(script.Parent.ItemService)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local DevService = require(script.Parent.DevService)
 local AgeHandler = require(script.AgeHandler)
 local HeightHandler = require(script.HeightHandler)
@@ -251,7 +250,6 @@ function AgeService.StartDeathSequence(player: Player, data: Data, cause: "heart
 	-- CharacterService's wait-for-CreateCharacter path again, which rolls
 	-- growth once gender is known - not eagerly here, gender-blind.
 	DataService.NewLife(player)
-	LegacyBridge.Refresh(player, data)
 	player:SetAttribute("Age", data.Age.Years)
 	player:SetAttribute("Lives", data.Meta.Lives)
 	-- M3B-05: LifeService owns LivesLeft conceptually, but NewLife already
@@ -297,7 +295,6 @@ local function onBirthday(player: Player, data: Data): boolean
 	if character then
 		AgeService.ApplyHairColor(character, data)
 	end
-	LegacyBridge.Refresh(player, data)
 
 	if data.Age.Years < Config.Aging.DeathStart then
 		return false
@@ -411,7 +408,6 @@ function AgeService:Init()
 		if character then
 			AgeService.ApplyHairColor(character, data)
 		end
-		LegacyBridge.Refresh(player, data)
 	end)
 
 	-- Registered here (DevService.Register, not a direct require of
@@ -468,7 +464,6 @@ function AgeService:Start()
 		-- always take the male curve. CharacterService now rolls it once
 		-- gender is known; resizeCharacter's own fallback below still
 		-- catches it defensively if that's ever skipped.
-		LegacyBridge.Refresh(player, data)
 		player:SetAttribute("Age", data.Age.Years)
 
 		active[player] = true
@@ -513,7 +508,6 @@ function AgeService:Start()
 			end
 
 			resizeCharacter(player, data)
-			LegacyBridge.Refresh(player, data)
 		end)
 	end)
 

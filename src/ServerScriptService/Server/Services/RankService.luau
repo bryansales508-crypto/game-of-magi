@@ -29,7 +29,6 @@ local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local DataService = require(script.Parent.DataService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local DevService = require(script.Parent.DevService)
 
 local log = Log.new("RankService")
@@ -232,7 +231,6 @@ function RankService.AddMagoi(player: Player, amount: number, reason: string)
 	local oldIndex, newIndex = RankService.ApplyMagoi(data, amount)
 
 	log:Info(string.format("%s Magoi %d -> %d (%+d, %s)", player.Name, oldMagoi, data.Progress.Magoi, amount, reason))
-	LegacyBridge.Refresh(player, data)
 	refreshRankAttributes(player, data)
 
 	local announceIndex = RankService.NextRankToAnnounce(data, oldIndex, newIndex)
@@ -422,7 +420,6 @@ local function rukhCommand(caller: Player, args: { string }): string
 	local oldGold, oldBlack = data.Progress.GoldRukh, data.Progress.BlackRukh
 	RankService.AddDeed(target, "Gold", gold - oldGold)
 	RankService.AddDeed(target, "Black", black - oldBlack)
-	LegacyBridge.Refresh(target, data)
 
 	return string.format("%s's Rukh: %d/%d -> %d/%d", target.Name, oldGold, oldBlack, data.Progress.GoldRukh, data.Progress.BlackRukh)
 end
@@ -465,7 +462,6 @@ local function epithetCommand(caller: Player, args: { string }): string
 
 		data.Progress.Epithet = ""
 		data.Progress.PendingEpithet = nil
-		LegacyBridge.Refresh(target, data)
 		refreshRankAttributes(target, data)
 		checkOrigin(target, data)
 
@@ -487,7 +483,6 @@ local function epithetCommand(caller: Player, args: { string }): string
 
 	local old = data.Progress.Epithet
 	data.Progress.Epithet = text
-	LegacyBridge.Refresh(target, data)
 	refreshRankAttributes(target, data)
 
 	return string.format("%s's epithet: %q -> %q", target.Name, old, text)

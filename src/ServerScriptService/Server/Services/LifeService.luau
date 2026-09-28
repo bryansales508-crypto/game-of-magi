@@ -32,7 +32,6 @@ local Log = require(ReplicatedStorage.Shared.Log)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local DataService = require(script.Parent.DataService)
 local AgeService = require(script.Parent.AgeService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local DevService = require(script.Parent.DevService)
 
 local log = Log.new("LifeService")
@@ -93,7 +92,6 @@ local function onDied(player: Player, character: Model)
 	local outcome = LifeService.HandleDeath(data)
 	refreshLivesLeftAttribute(player, data)
 	log:Info(string.format("%s died (%s, %d life/lives left)", player.Name, outcome, data.Character.LivesLeft))
-	LegacyBridge.Refresh(player, data)
 	DataService.Save(player)
 
 	if outcome == "respawn" then
@@ -142,7 +140,6 @@ local function registerDevCommands()
 		-- unconditional arithmetic on.
 		data.Character.LivesLeft = math.clamp(math.floor(n), 0, 99)
 		refreshLivesLeftAttribute(target, data)
-		LegacyBridge.Refresh(target, data)
 		return string.format("%s's LivesLeft: %d", target.Name, data.Character.LivesLeft)
 	end)
 

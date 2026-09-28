@@ -1,8 +1,8 @@
 --!strict
 -- Dev tools: chat commands (the old `.field player value` style, kept) plus
 -- the same commands over the DevCommand remote for the M1-05C dev panel.
--- Every command writes through DataService (LegacyBridge mirrors it to the
--- old Values); nothing here touches a Value directly.
+-- Every command writes through DataService; nothing here touches a Value
+-- directly.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -14,7 +14,6 @@ local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local DataService = require(ServerScriptService.Server.Services.DataService)
-local LegacyBridge = require(ServerScriptService.Server.Services.LegacyBridge)
 local PlayerService = require(ServerScriptService.Server.Services.PlayerService)
 
 local log = Log.new("DevService")
@@ -383,7 +382,6 @@ local function currencyCommand(mode: "set" | "add"): (Player, { string }) -> str
 			data.Economy.Silver = silver
 			data.Economy.Gold = gold
 		end
-		LegacyBridge.Refresh(target, data)
 
 		return string.format(
 			"%s's coins: %d/%d/%d -> %d/%d/%d",
@@ -419,7 +417,6 @@ local function ageCommand(mode: "set" | "add"): (Player, { string }) -> string
 
 		local old = data.Age.Years
 		data.Age.Years = if mode == "add" then old + years else years
-		LegacyBridge.Refresh(target, data)
 		-- BUG-15: resize, grey hair and refresh max health right away
 		-- instead of waiting for the next birthday.
 		runAgeChangeHooks(target, data)
@@ -449,7 +446,6 @@ local function magoiCommand(mode: "set" | "add"): (Player, { string }) -> string
 
 		local old = data.Progress.Magoi
 		data.Progress.Magoi = if mode == "add" then old + n else n
-		LegacyBridge.Refresh(target, data)
 
 		return string.format("%s's Magoi: %d -> %d", target.Name, old, data.Progress.Magoi)
 	end
@@ -477,7 +473,6 @@ register("rukh", "<gold> <black> [player] - set both Rukh tallies", function(cal
 	local oldGold, oldBlack = data.Progress.GoldRukh, data.Progress.BlackRukh
 	data.Progress.GoldRukh = gold
 	data.Progress.BlackRukh = black
-	LegacyBridge.Refresh(target, data)
 
 	return string.format("%s's Rukh: %d/%d -> %d/%d", target.Name, oldGold, oldBlack, gold, black)
 end)
@@ -499,7 +494,6 @@ register("bounty", "<n> [player] - set bounty", function(caller, args)
 
 	local old = data.Bounty
 	data.Bounty = n
-	LegacyBridge.Refresh(target, data)
 
 	return string.format("%s's bounty: %d -> %d", target.Name, old, n)
 end)
@@ -522,7 +516,6 @@ register("epithet", '<text> [player] - set epithet, quote multi-word text', func
 
 	local old = data.Progress.Epithet
 	data.Progress.Epithet = text
-	LegacyBridge.Refresh(target, data)
 
 	return string.format("%s's epithet: %q -> %q", target.Name, old, text)
 end)

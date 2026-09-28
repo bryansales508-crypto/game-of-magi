@@ -3,9 +3,6 @@
 -- Copper/Silver/Gold on the save, exact-coin payment (no automatic
 -- change-making - that's the Bank milestone), CanAfford/Pay/Give, and the
 -- Currency (Copper/Silver/Gold) player attributes the purse HUD reads.
--- Replaces LegacyBridge writing the purse text directly (its own M5A-01
--- comment); LegacyBridge still mirrors the wallet onto the old Currency
--- Value folder for old readers (e.g. the mission script) until 5C.
 --
 -- Paying is EXACT COIN ONLY: Pay(player, "Silver", 1, ...) only ever
 -- spends Silver, even if the player is holding enough Copper+Gold to
@@ -25,7 +22,6 @@ local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local Economy = require(ReplicatedStorage.Shared.Data.Economy)
 local DataService = require(script.Parent.DataService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local DevService = require(script.Parent.DevService)
 
 local log = Log.new("EconomyService")
@@ -192,7 +188,6 @@ function EconomyService.Pay(player: Player, coin: Coin, amount: number, reason: 
 		return false
 	end
 
-	LegacyBridge.Refresh(player, data)
 	refreshAttributes(player, data)
 	log:Info(string.format("%s paid %d %s (%s)", player.Name, amount, coin, reason))
 	return true
@@ -206,7 +201,6 @@ function EconomyService.Give(player: Player, coin: Coin, amount: number, reason:
 	end
 
 	EconomyService.ApplyGive(data, coin, amount)
-	LegacyBridge.Refresh(player, data)
 	refreshAttributes(player, data)
 	log:Info(string.format("%s given %d %s (%s), now %d", player.Name, amount, coin, reason, getCoin(data, coin)))
 end
@@ -269,7 +263,6 @@ local function coinsCommand(mode: "set" | "add"): (Player, { string }) -> string
 		else
 			EconomyService.ApplySet(data, copper, silver, gold)
 		end
-		LegacyBridge.Refresh(target, data)
 		refreshAttributes(target, data)
 
 		return string.format(

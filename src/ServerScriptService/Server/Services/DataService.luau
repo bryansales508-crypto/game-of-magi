@@ -13,7 +13,6 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local ProfileStoreLib = require(ServerScriptService.Server.Packages.ProfileStore)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 
 local log = Log.new("DataService")
 
@@ -169,11 +168,9 @@ local function onPlayerAdded(player: Player)
 	profile.OnSessionEnd:Connect(function()
 		profiles[player] = nil
 		loading[player] = nil
-		LegacyBridge.Destroy(player)
 		kick(player)
 	end)
 
-	LegacyBridge.Build(player, data)
 
 	log:Info(string.format("Loaded save for %s (scope %s)", player.Name, Config.Debug.SaveScope))
 	loadedBindable:Fire(player)
@@ -342,7 +339,6 @@ function DataService.Wipe(player: Player)
 	data.Meta.LastSeen = now
 	data.Age.TimePassed = now
 
-	LegacyBridge.Refresh(player, profile.Data)
 	log:Info(string.format("Wiped save for %s", player.Name))
 end
 
@@ -373,7 +369,6 @@ function DataService.NewLife(player: Player)
 	data.Meta.Unlocks.Combat = keepCombatUnlocked
 	data.Age.TimePassed = now
 
-	LegacyBridge.Refresh(player, profile.Data)
 	log:Info(string.format("New life for %s (life #%d)", player.Name, keepLives))
 end
 
