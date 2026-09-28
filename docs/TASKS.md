@@ -127,8 +127,8 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | queued after the M3-FIX4-S fixes | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
-| M3B-02 | Seven trainer dummies (trees, `Config.Npc.Trainers`, `.dummy spawn|clear|list`, name billboards, reset after knockout) | server-builder | queued | Each dummy does only its habit; spawn/clear work |
+| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | built (with the account-wide flag), in Opus review | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
+| M3B-02 | Seven trainer dummies (trees, `Config.Npc.Trainers`, `.dummy spawn|clear|list`, name billboards, reset after knockout) | server-builder | in progress (cloud) | Each dummy does only its habit; spawn/clear work |
 | M3B-03 | Client: `C` stance toggle, clicks only in stance, weapon-click enters combat, stance idle placeholders, locked message | client-builder | reviewed PASS (client branch; merges with M3B-01/02) | Same on every client; no style sent by the client |
 | M3B-04 | PLAYTEST.md M3B scenarios (one per dummy); Bryan plays; agent only if a check needs tooling | Bryan + lead | scenarios drafted; Bryan plays when home | Bryan approves the feel |
 | M3B-05 | Lives per character: `Character.LivesLeft` (4), ordinary death costs one and respawns, the last one runs the afterlife wipe, a fatal heart attack wipes regardless; `.lives`, `.kill` | server-builder | queued after M3B-01/02 | Rules hold in the self-test; Meta.Unlocks survives a new character |
