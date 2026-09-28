@@ -26,7 +26,6 @@ local Assets = require(ReplicatedFirst.Assets) :: any
 local ItemService = require(script.Parent.ItemService)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local AgeService = require(script.Parent.AgeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local FaceControl = require(script.FaceControl)
@@ -118,8 +117,8 @@ end
 -- ==================== build steps ====================
 
 -- A stand-in for the old Stats Value folder: RF.Assets' facebase/mouthshape/
--- eyecolor/eyebrow functions all read `stat["Field"].Value`. Cheaper than
--- waiting on LegacyBridge's real Values, and works before Build() has run.
+-- eyecolor/eyebrow functions all read `stat["Field"].Value`. The folder itself
+-- is gone (M6), so this shim is all they see.
 -- BUG-10: must cover every key RF/Assets reads via `stat["X"].Value`
 -- (grepped: Gender, FaceBase, Race, EyeColor, MouthShape, HairColor -
 -- Assets.eyebrow reads HairColor as a Color3 to tint the eyebrow decal).
@@ -340,7 +339,6 @@ local SFX_NAMES = {
 local VFX_NAMES = { "HitParticle", "Cancel", "BlockParticle", "BlockBreakParticle", "Confusion", "Sparks1", "Sparks2" }
 
 local resolvedAssets: { [string]: Instance } = {}
-local sfxRoot: Instance? = nil
 local assetsResolved = false
 
 local function resolveSoundsAndParticles()
@@ -355,7 +353,6 @@ local function resolveSoundsAndParticles()
 		log:Error("ReplicatedFirst.SFX/VFX missing; every spawn will be missing sounds/particles")
 		return
 	end
-	sfxRoot = sfx
 
 	for _, name in SFX_NAMES do
 		local found = sfx:FindFirstChild(name, true)
@@ -423,29 +420,8 @@ local function attachSoundsAndParticles(character: Model)
 	end
 	cloneNamed("Sparks1", centerAttachment)
 	cloneNamed("Sparks2", centerAttachment)
-
-	if sfxRoot == nil then
-		return
-	end
-
-	local steps = sfxRoot:FindFirstChild("Steps")
-	if steps then
-		for _, sound in steps:GetChildren() do
-			local clone = sound:Clone()
-			clone.Parent = torso
-		end
-	end
-
-	local soundsFolder = Instance.new("Folder")
-	soundsFolder.Name = "SoundsFolder"
-	soundsFolder.Parent = torso
-	local osts = sfxRoot:FindFirstChild("OSTs")
-	if osts then
-		for _, track in osts:GetChildren() do
-			local clone = track:Clone()
-			clone.Parent = soundsFolder
-		end
-	end
+	-- Step sounds and the OST playlist are no longer cloned into the Torso: the
+	-- client plays them straight from ReplicatedFirst.SFX (M6).
 end
 
 -- Rolls a random starter rag outfit into `data.Gear` if the player has
@@ -604,7 +580,6 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 	wireToolGrip(character)
 	applyAnimations(character)
 
-	LegacyBridge.Refresh(player, data)
 	setAttributes(player, data)
 
 	appearenceLoaded.Value = true
@@ -660,7 +635,6 @@ function CharacterService:Init()
 			end
 			return
 		end
-		LegacyBridge.Refresh(player, data)
 		-- N2: HeightStuds here is transiently the Height==10 sentinel until
 		-- buildCharacter's own thread rolls the growth profile (F2) and
 		-- calls setAttributes again; harmless today since nothing reads it

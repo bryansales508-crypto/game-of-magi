@@ -35,32 +35,16 @@ Missing keys on an existing save are filled in by `Profile:Reconcile()` before `
 
 **Migrations.** `SaveSchema.Migrations[N]` is a function that turns a save at version `N-1` into version `N`; `Migrate` walks a save up from its own `Version` to `Config.Data.SchemaVersion` one step at a time. `Migrations[2]` (M4-01, the first real one) is an intentional no-op: v2 only adds `Progress.PendingEpithet`, an optional field, so a v1 save missing the key entirely already reads the same as `nil` — there's nothing to backfill, but the entry exists (rather than being left out) so the version bump always walks through a real migration function. `Migrations[3]` (M3B-01/M3B-05, Bryan 2026-09-28) sets `Meta.Unlocks.Combat = true` and `Character.LivesLeft = Config.Life.LivesPerCharacter` for every EXISTING pre-v3 save: it already had full combat access before v3 ever existed, and gaining a flag for something it could already do shouldn't take that away; it never had a lives system at all, so it starts with a full count rather than 0. `Migrations[4]` (M5C-01) is another intentional no-op, same reasoning as `Migrations[2]`: v4 adds `Progress.DeliveryStreak` (number), `Progress.Routes` (a city key → delivery count map), and (added later, while M5C-01 was still unmerged, so no v5 for it) `Progress.Intercepted` (the intercepted mark, section 7) — all three already read as "nothing has happened yet" (`0` / an empty table) once `Profile:Reconcile()` backfills them from the template — there's no old streak, route history or intercepted mark to carry over (the old `SuccessRate` folder it replaces was never saved at all). **A genuinely new save never actually runs this migration at all** (REVIEW-M3B-01 C1): `SaveSchema.Template`'s own `Version` is `Config.Data.SchemaVersion` already (not `1`), so `Migrate`'s loop (`data.Version + 1` up to `SchemaVersion`) has nothing to walk for a fresh template copy — it starts at the template's own values instead (`Unlocks.Combat = false`, has to actually earn it; `LivesLeft` already full either way) — same for `DataService.ResetToTemplate` (`Wipe`/`NewLife`), which re-copies the template and re-runs `Migrate` on it every time. Getting this backwards (the template used to read `Version = 1`) meant a brand-new profile AND every `.fresh` silently came out combat-unlocked regardless — invisible today only because `Config.Combat.UnlockedByDefault` is still `true`, but it would have broken the tutorial gate the moment Bryan flips that off. `Unlocks.Combat` lives in `Meta`, not `Progress` — the unlock is meant to be per-player forever, not per-life; see section 9 and `DataService.NewLife`/`.Wipe` (the `DataService` function; the dev command that calls it is `.fresh`) below. `LivesLeft` lives in `Character`, not `Meta` — it resets with every new character (`DataService.NewLife`), unlike the account-wide combat unlock; see section 4.
 
-**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save and the legacy bridge are both ready), `.ResetToTemplate(data)` (M3B-01: the shared reset step `Wipe`/`NewLife` both build on — replaces `data` in place with a fresh, migrated template; data-only, no Player involved, so self-tests can exercise it directly), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command — a wipe is a brand-new player, so `Meta.Unlocks.Combat` resets to `false` along with everything else), `.Save(player)` (manual save, for dev use), `.NewLife(player)` (M2-02: like `Wipe`, but keeps `Meta.Lives` — incremented —, `Meta.Created`, and (M3B-01) `Meta.Unlocks.Combat`, since the combat unlock is per-player forever, not per-life; used by `AgeService`'s old-age death).
+**Public API** (`RS/Shared` types, `SSS/Server/Services/DataService.luau`): `DataService.Get(player)`, `.WaitFor(player, timeout?)`, `.IsLoaded(player)`, `.Loaded` (fires once the save is ready), `.ResetToTemplate(data)` (M3B-01: the shared reset step `Wipe`/`NewLife` both build on — replaces `data` in place with a fresh, migrated template; data-only, no Player involved, so self-tests can exercise it directly), `.Wipe(player)` (resets to a fresh template in place, for the M1-05 dev "fresh save" command — a wipe is a brand-new player, so `Meta.Unlocks.Combat` resets to `false` along with everything else), `.Save(player)` (manual save, for dev use), `.NewLife(player)` (M2-02: like `Wipe`, but keeps `Meta.Lives` — incremented —, `Meta.Created`, and (M3B-01) `Meta.Unlocks.Combat`, since the combat unlock is per-player forever, not per-life; used by `AgeService`'s old-age death).
 
 **If loading fails or the player leaves mid-load:** the player is kicked with "Your save couldn't be loaded. Please rejoin in a moment." A session stolen by another server, or the DataStore going down mid-session, kicks the player the same way (ProfileStore's `OnSessionEnd`).
 
-**The legacy bridge** (`SSS/Server/Services/LegacyBridge.luau`, **temporary** — deleted once M2–M6 stop needing it). Old scripts (M2 onward, not yet rebuilt) still read and write `player.Stats` and `player.OnCharacter` directly, so on load DataService builds those exact folders and Value objects from the real save, and mirrors changes both ways:
+**The legacy bridge is gone (M6-01, phase 6E).** `LegacyBridge.luau` and every `player.Stats`, `player.OnCharacter`, `player.LoadedOC` and `player.Loaded` Value it mirrored from the save are deleted, and so are the `SSS/Character/AgeHandler.luau` and `HeightHandler.luau` shims (their only reader was the Studio-only clothes stocker). The save (`DataService.Get`) and the player/character attributes are the only sources now. The one server reader left, `ItemService`'s body-ratio helper, now reads `Character.GrowthProfile`, `Age.Years` and `Character.Height` from the save. The `SSS/Character`, `SSS/MISC` and `SSS/Interactions` folders are empty containers now (kept as Studio folders; Bryan can delete them by hand). Client note: `MenuController.fillInventoryTokens` still looks for `OnCharacter.Inventory.Row1`, which no longer exists; nothing ever wrote `Gear.Inventory`, so that value was always empty and the apparel tab shows the same as before.
 
-| Old Value | Mirrors | Direction |
-|---|---|---|
-| `Stats.Race`, `.Kingdom`, `.EyeColor`, `.FaceBase`, `.MouthShape`, `.SkinTone`, `.HairColor`, `.FirstName`, `.GrowthProfile`, `.Height` | `Character.*` (same names) | two-way |
-| `Stats.Gender` | `Character.Gender` | two-way |
-| `Stats.Age` | `Age.Years` | two-way |
-| `Stats.TimePassed`, `.ProgToAge` | `Age.TimePassed`, `.ProgToAge` | two-way |
-| `Stats.MaxMagoi` | `Progress.Magoi` | one-way (data → Value); nothing currently active writes it back (the only old writer, `LevelHandler`, is parked) |
-| `Stats.Hunger` | fixed at `5` | one-way (parked, TRIAGE K1) |
-| `OnCharacter.Clothes.Clothing_Shirt/Pants` | `Gear.Shirt`/`Pants` | two-way |
-| `OnCharacter.Currency.Copper/Silver/Gold` | `Economy.*` | two-way |
-| `OnCharacter.Hats.HatSpot1..3` | `Gear.Hats[1..3]` | two-way |
-| `OnCharacter.Inventory.Row1` | `Gear.Inventory`, `;`-joined | two-way |
-| `OnCharacter.Inventory.Row2` | fixed at `""` | one-way (nothing ever wrote it) |
-| `OnCharacter.Position` | fixed at `(0,0,0)` | inert — created (like the old code did) but never read from or written to the save; new spawns always go to Qarzin — see section 2 |
-| `player.LoadedOC`, then `player.Loaded` | — | set once, in that order, after the folders above are populated |
-
-**Also mirrored, one-way (data → old GUI/sound), not part of the table above:** the coin purse HUD (`PlayerGui.Currency.Bank.CoinPurse.Copper/Silver/Gold.Text`) is set from `Economy.*` on load and on every change, and the `CoinReward` sound plays on every change — exactly what the old `OnCharacterStore2` did, since nothing else updates that display now.
+**Purse HUD and coin sound:** the `Copper`/`Silver`/`Gold` player attributes are set by `EconomyService` (section 6), and the `CoinReward` sound plays client-side, so nothing mirrors data into old GUI labels any more.
 
 **Depends on:** `RS/Shared/Config`, `RS/Shared/Log`, `RS/Shared/SaveSchema`, `SSS/Server/Packages/ProfileStore`.
-**Depended on by:** every old script that reads `player.Stats` / `player.OnCharacter` / `player.Loaded` / `player.LoadedOC` (unchanged, via the bridge), and every M1-04+ system that will call `DataService.Get`/`WaitFor` directly instead.
+**Depended on by:** every system that calls `DataService.Get`/`WaitFor`.
 
 **Removed:** the old `SSS/Datastore/` folder (`MainStore2/init.server.luau`, `MainStore2/OnCharacterStore2.server.luau`, `CurrentStore.txt`) — TRIAGE #1, approved. **Not removed** (out of this task's scope): `SSS/DevCommandHandler.luau` (M1-05) still opens two DataStores directly by name (`"Mainstore2"`, `"OnCharacterStore2"` — note these don't even match the old `CurrentStore` value, so that code path looks already-dead); M1-05 should point it at `DataService` instead.
 
@@ -118,7 +102,7 @@ Applied (not saved) hair colour lerps toward grey from `Config.Aging.GreyStart` 
 
 **Removed (TRIAGE #3):** `SSS/Character/AppearanceController/init.server.luau`, `SSS/Character/AppearanceController/FaceControl/init.server.luau`, `SSS/Animations.server.luau`.
 
-**Depends on:** `DataService`, `PlayerService.Ready`, `LegacyBridge` (refreshes `Stats`/`OnCharacter` after writing `Gender`/`SkinTone`/`FirstName`/`Gear`/`GrowthProfile`/`Height` directly to the save), `ItemHandler`, `AgeService` (`AgeHandler` for the first growth roll, `ApplyHairColor` for hair colour), `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox` (none of the last three are synced by Rojo — Studio-only asset folders).
+**Depends on:** `DataService`, `PlayerService.Ready`, `ItemHandler`, `AgeService` (`AgeHandler` for the first growth roll, `ApplyHairColor` for hair colour), `RF.Assets`, `RF.SFX`, `RF.VFX`, `RF.MISC.HitBox` (none of the last three are synced by Rojo — Studio-only asset folders).
 **Depended on by:** nearly every character script still waits on `AppearenceLoaded` (unchanged name); the legacy bridge keeps `Stats.Gender`/`Stats.SkinTone` mirrored for anything not yet rebuilt; `AgeService`'s own spawn-resize waits for `AppearenceLoaded` before resizing/re-fitting hats.
 
 ---
@@ -158,7 +142,7 @@ If `ReplicatedFirst.AfterLife` is missing entirely, the scene falls back to keep
 **Files:** `SSS/Server/Services/AgeService/` (`init.luau` the service; `AgeHandler.luau` growth maths and the profile format, ported to `--!strict`, same numbers; `HeightHandler.luau` resizes body parts, joints, attachments and accessories — also holds the per-cloak fit offsets — ported to `--!strict` with the L5 fix); `SSS/Server/Services/LifeService.luau` (M3B-05: `Character.LivesLeft`, `Humanoid.Died` handling, `.lives`/`.kill`, calls into `AgeService.StartDeathSequence`).
 **Removed (TRIAGE #4):** `SSS/Character/AgeController.server.luau`.
 **Repointed:** `SSS/Character/ItemHandler.luau` and `SSS/MISC/MissionHandler/init.server.luau` required the old `Character.HeightHandler`/`Character.AgeHandler` paths; both now require the new `Server.Services.AgeService.HeightHandler`/`.AgeHandler`. **BUG-11/BUG-18:** the Studio-only `Workspace.Qarzin.ClothesStand.ClothingSpawn` (a live place script, not synced into `src/`, so it can't be repointed the same way) requires **both** old paths directly (`ClothingSpawn:5` the old `HeightHandler`, `:8` the old `AgeHandler`) and errored every time it tried to stock the shop. `SSS/Character/HeightHandler.luau` and `SSS/Character/AgeHandler.luau` are now one-line compatibility shims (`return require(...AgeService.HeightHandler/.AgeHandler)`) at those old paths — the self-test confirms each shim resolves to the exact same module table as the new path (Lua's require cache, not a copy). Delete both once M5 rebuilds the clothes shop.
-**Depends on:** `DataService` (`Age`, `Character.Height`/`GrowthProfile`, `NewLife`), `PlayerService.Ready`, `LegacyBridge`, `DevService.GetTimeScale`/`.OnAgeChanged`, `ItemHandler`, `Gear.Hats`. `LifeService` additionally depends on `AgeService.StartDeathSequence` (a one-directional require - `AgeService` never requires `LifeService` back).
+**Depends on:** `DataService` (`Age`, `Character.Height`/`GrowthProfile`, `NewLife`), `PlayerService.Ready`, `DevService.GetTimeScale`/`.OnAgeChanged`, `ItemHandler`, `Gear.Hats`. `LifeService` additionally depends on `AgeService.StartDeathSequence` (a one-directional require - `AgeService` never requires `LifeService` back).
 **Depended on by:** `CharacterService` (requires `AgeHandler` directly for its own first growth roll, and `GreyFactor` for hair colour), Items, Health (Height adds max health, M2-03).
 
 ---
@@ -172,18 +156,18 @@ If `ReplicatedFirst.AfterLife` is missing entirely, the scene falls back to keep
 
 `ItemService` (`SSS/Server/Services/ItemService.luau`) replaces the old `Character/ItemHandler.luau`, ported to `--!strict` with the same code format and the same `Equip(code, character)` behaviour (puts the item on, recolors it, resizes it to the character's current body through `AgeService.HeightHandler`, same as before). Two things were added for the M5B-01 shop rewrite:
 - `Owns(data, code)` — **colour-aware** ownership (exact item **and** colour). **⚠ fixed bug:** the old `MarketHandler` compared shirts/pants by clothing id only, so owning a black shirt blocked buying an otherwise-identical white one; hats/cloaks were already colour-aware there (matched by the full code). `Owns` makes every item type consistent with the colour-aware rule.
-- `Wear(player, code)` — equips, then writes the code into `data.Gear.Shirt`/`Gear.Pants`, or the first empty `data.Gear.Hats` slot (hats and cloaks share the same 3 slots, same as before). `LegacyBridge.Refresh` mirrors the write onto `OnCharacter.Clothes`/`OnCharacter.Hats` for old readers.
+- `Wear(player, code)` — equips, then writes the code into `data.Gear.Shirt`/`Gear.Pants`, or the first empty `data.Gear.Hats` slot (hats and cloaks share the same 3 slots, same as before).
 
 **Files:** `SSS/Server/Services/ItemService.luau`.
-**Saved in:** `SaveSchema.Data.Gear.Shirt/Pants/Hats` (mirrored onto `OnCharacter.Clothes.Clothing_Shirt/Clothing_Pants`, `OnCharacter.Hats.HatSpot1..3` by `LegacyBridge`).
-**Depends on:** `RF.Assets`, `AgeService.HeightHandler`, `AgeService.AgeHandler`, `DataService`, `LegacyBridge`.
+**Saved in:** `SaveSchema.Data.Gear.Shirt/Pants/Hats`.
+**Depends on:** `RF.Assets`, `AgeService.HeightHandler`, `AgeService.AgeHandler`, `DataService`.
 **Depended on by:** `CharacterService` (starter rags + spawn equip), `AgeService` (rebuilds worn hats/cloaks on a birthday resize), `ShopService` (section 6).
 
 ---
 
 ## 6. Currency (rebuilt M5A-01) and the Qarzin clothes shop (rebuilt M5B-01)
 
-**Currency — what it does now.** `EconomyService` (`SSS/Server/Services/EconomyService.luau`) owns the wallet: `data.Economy.Copper/Silver/Gold` (unchanged save shape - still three integers, never negative). `Get(player)` returns a snapshot; `CanAfford`/`Pay` are **exact-coin only** - a price in Silver can only be paid with Silver, never made up from Copper and Gold converted, even if the player is holding more than enough total wealth (120 Copper still can't pay a 1-Silver price). A failed `Pay` fires the new `CoinMessage` remote with one of the old `MarketHandler`/`ForcedChat` flavour lines (generalized to name whichever coin the price needed): "I need more money..." when the player's total wealth, converted to Copper, doesn't reach the price at all, or "This place only takes Silver, huh..." (a Bank-flavoured convert line) when it does, just not in that coin - exchanging coins is the Bank milestone's job; nothing in `EconomyService` converts. `Give`/`GiveCopperValue` add coins; `GiveCopperValue(player, copper, reason)` pays a reward as **Copper only** for now (Bryan's refinement, 2026-09-29) - it never rounds a reward up into Silver/Gold. `Copper`/`Silver`/`Gold` player attributes are kept current on every wallet change (the purse HUD and the client's `CoinReward` sound both read them); `LegacyBridge` no longer writes the purse text or plays that sound itself (both moved: text onto the attributes, the sound to the client's `CurrencyController`), but still mirrors the wallet onto the old `OnCharacter.Currency` Value folder in both directions for old readers (e.g. the mission script) until 5C.
+**Currency — what it does now.** `EconomyService` (`SSS/Server/Services/EconomyService.luau`) owns the wallet: `data.Economy.Copper/Silver/Gold` (unchanged save shape - still three integers, never negative). `Get(player)` returns a snapshot; `CanAfford`/`Pay` are **exact-coin only** - a price in Silver can only be paid with Silver, never made up from Copper and Gold converted, even if the player is holding more than enough total wealth (120 Copper still can't pay a 1-Silver price). A failed `Pay` fires the new `CoinMessage` remote with one of the old `MarketHandler`/`ForcedChat` flavour lines (generalized to name whichever coin the price needed): "I need more money..." when the player's total wealth, converted to Copper, doesn't reach the price at all, or "This place only takes Silver, huh..." (a Bank-flavoured convert line) when it does, just not in that coin - exchanging coins is the Bank milestone's job; nothing in `EconomyService` converts. `Give`/`GiveCopperValue` add coins; `GiveCopperValue(player, copper, reason)` pays a reward as **Copper only** for now (Bryan's refinement, 2026-09-29) - it never rounds a reward up into Silver/Gold. `Copper`/`Silver`/`Gold` player attributes are kept current on every wallet change (the purse HUD and the client's `CoinReward` sound both read them); the purse text and that sound moved to the attributes and the client's `CurrencyController`; the old (removed in M6) mirror used to copy the wallet onto the old `OnCharacter.Currency` Value folder in both directions for old readers (e.g. the mission script) until 5C.
 
 **The display/price rule** (`Shared/Data/Economy.luau`, pure, no Player/save/remotes): 1 Gold = 100 Silver = 10,000 Copper (`Economy.Copper/Silver/Gold` are exactly those three numbers). A price or reward shows in exactly one coin, never mixed or decimal - **bands, not rounding** (Bryan, 2026-09-29, replacing an earlier round-half-up rule): `Economy.toPrice(copper)` shows 1-100 Copper as that many Copper; every full 100 Copper past that is one more Silver (101-200 → 1 Silver, 201-300 → 2 Silver, ..., 10,000 → 99 Silver); the same banding then carries Silver into Gold once past 10,000 Copper (10,001-20,000 → 1 Gold, 20,001-30,000 → 2 Gold). Gold is checked first, so anything past 10,000 Copper always shows in Gold, never Silver. `Economy.format(coin, amount)` renders it ("3 Silver"). `Economy.roundReward` is the same rule under its own name, kept for the Bank milestone - **unused today**, since rewards pay Copper only (see `GiveCopperValue` above).
 
@@ -195,9 +179,9 @@ Dev commands: `.shop restock` (clears and re-stocks the stand, same rules as boo
 
 **Files:** `Shared/Data/Economy.luau`, `SSS/Server/Services/EconomyService.luau` (M5A-01); `Shared/Data/Shop.luau`, `SSS/Server/Services/ItemService.luau`, `SSS/Server/Services/ShopService.luau` (M5B-01).
 **Remotes:** `Net.CoinMessage` (server → client, one string - every coin failure and every shop-specific failure, e.g. "I don't have enough room...", "Didn't I buy this?", fires through this one remote now; the client posts it to chat, same feel as the old `ForcedChat`).
-**Player attributes:** `Copper`, `Silver`, `Gold` (`EconomyService`, M5A-01) - the purse HUD's source of truth, not a GUI label `LegacyBridge` writes.
-**Depends on:** `DataService`, `LegacyBridge.Refresh`, `DevService.Register`, `Shared/Data/Economy`, `Shared/Data/Shop`, `ItemService`, `Shared/Remotes`, `RF.Assets`.
-**Depended on by:** `LegacyBridge` (mirrors the wallet onto `OnCharacter.Currency` for old readers); the mission script (reads that mirror until 5C); 5C/5E/5F's payouts (through `GiveCopperValue`).
+**Player attributes:** `Copper`, `Silver`, `Gold` (`EconomyService`, M5A-01) - the purse HUD's source of truth.
+**Depends on:** `DataService`, `DevService.Register`, `Shared/Data/Economy`, `Shared/Data/Shop`, `ItemService`, `Shared/Remotes`, `RF.Assets`.
+**Depended on by:** 5C/5E/5F's payouts (through `GiveCopperValue`).
 
 ---
 
@@ -321,7 +305,7 @@ Wire: `MissionBoard` gains `intercepted` (the player's current stack count) and 
 **Weapon/style:** everyone starts `"Fist"` (the `WeaponSet` attribute, now a style name, not just a weapon label). `.weapon <Fist|Dagger> [player]` (dev, section 16) or `CombatService.SetWeapon(character, styleName)` changes it, ending any in-progress attack outright (a chain index from the old style might not even exist in the new one) and re-applying `MovementService.SetStyle`. The old 10-second auto-equipped Royal Dagger was already removed in M1; bought weapons (M5) will call `SetWeapon` the same way.
 
 **Files:**
-- Server: `Server/Services/CombatService.luau`, `Server/Services/FootstepService.luau` (see below).
+- Server: `Server/Services/CombatService.luau`, (footsteps moved to the client in M6, section 12).
 - Shared: `Shared/Data/Combat.luau` (M3-01; M3-FIX3-S changed `Moves.Fist`/`Moves.Dagger` to one `Combat.Swing` of `Combat.Punch`es; **M3-FIX4-S replaced that with `Combat.Styles`** — each a `Combat.Style` with a `chain` of `Combat.ChainHit`s, plus `Combat.Knockback`; `Combat.Block.drainPerHit` is gone, replaced by per-hit `blockDrain`), `Shared/Config.luau` (`Config.Health.CombatTierSeconds`; `Config.Combat.HitTolerance`; M3-FIX4-C added `Config.Combat.Markers`/`.LogMarkers`/`.CancelFlashSeconds`/`.WindupSpeed`, client-only), `Shared/Remotes.luau` (`AttackStart`/`AttackHit`/`AttackCancel`; `Block` unchanged).
 - Kept, trimmed to only what the client `EffectsController` does **not** already do: `Services/EffectsService.server.luau` now just creates `character.Effects` and runs the actual server-side ragdoll physics on `Knocked` (un-ragdolling on `Recovered` isn't separate code — it's the same marker chain run backwards). Also: `Modules/Ragdoll`, `RF/ShapecastHitbox` (unused by the new hit-check, not removed - other systems may still reference it).
 
@@ -331,7 +315,7 @@ Wire: `MissionBoard` gains `intercepted` (the player's current stack count) and 
 
 **Removed (approved TRIAGE #10/#13):** `Interactions/InteractionsHandler.server.luau`, `Interactions/InteractionsDesign.server.luau`, `Services/DamageHandler.luau`, `Modules/Combat/WeaponHandler.luau` (unused since M1's dagger-autoequip removal), the remote model files `Blocking`, `CombatRemotes/Hit`, `CombatRemotes/Parry`, `GetDamage` (all only ever read by the deleted files or by the old `PhysicalHandler.client.luau`, since replaced by `Client/Controllers/CombatController`). **Kept, not removed:** the top-level `Hit` and `RagdollEvent` remote model files — `EffectsService.server.luau` still fires `RagdollEvent` directly for ragdoll sync; nothing server-side uses the top-level `Hit` remote any more, but it's left in place in case old missions/regions still reference it.
 
-**Footsteps (section 12) moved into `FootstepService.luau`** unchanged (same sounds, same sand/mud footprints, same `MiscRemotes.Footstep` remote) since the combat file it used to live inside is gone; see section 12.
+**Footsteps** left the server in M6; see section 12.
 
 **Health and block — rebuilt M2-03 (TRIAGE #14).** `HealthService` sets `Humanoid.MaxHealth = Config.Health.Base + Config.Health.HeightBonus × Character.Height + Config.Health.RankBonus[rankIndex]` (DESIGN.md section 3a "Rank raises max health"; `rankIndex` from `Shared/Data/Ranks.rankFor`) via `setupCharacter`, called on `PlayerService.Ready`, again once `AppearenceLoaded` is true, and then **every tick of the shared loop below** (REVIEW-M2-03: `AgeService.resizeCharacter` changes `Character.Height` in place on a birthday, with no respawn to re-fire `Ready`, so without the per-tick recompute a live height/rank change wouldn't reach `MaxHealth` until the player's next death or rejoin — the same M11 bug this service exists to fix, just moved). A character already at full health when `MaxHealth` changes is topped up to the new full; otherwise current health is left alone. One shared loop (`Config.Health.Tick`, 1s) regenerates health by `Config.Health.RegenPerSecond[tier]` (`Idle`/`Combat`/`Knocked`, set via `HealthService.SetTier`) and refills `Block` by `Config.Health.BlockRegenPerSecond` while not blocking, up to `Config.Health.MaxBlock` — flat per-second rates, so the tiers actually change the rate now (**FIX L8**: the old scripts' regen scaled with their own wait interval, so the tier variable never mattered). **M3-FIX4-S:** the same loop also ticks `Bleed` (see section 9) - `StatusService.Get(character, "Bleed")`'s `data.config.damagePerStackPerSecond × data.stacks × Tick` damage, floored at 1 HP so it never knocks out on its own. **M4-01:** the `Rank`/`Epithet`/`Alignment` attributes moved out to `RankService` (section 19), which refreshes them itself on every `Progress` change instead of this loop refreshing them every tick — one writer. The old `Knocked`-revival countdown (decrement once a second while health is above a threshold, destroy at 0) that moved over unchanged in M2-03 is **gone as of M3-03** (REVIEW-M3-03 L6): `CombatService`/`StatusService` are the sole authority on when a knockout ends now (`Combat.Knockout.getUpSeconds`, `Recovered`), and an independent second timer here was a real conflict, not just a documented overlap — `Config.Health.KnockedReviveThreshold` is removed with it.
 
@@ -400,25 +384,30 @@ Every active status is also cleared through the real `Remove` (bridge marker des
 
 ---
 
-## 11. Regions, music and announcements
+## 11. Regions and music — rebuilt M6 (phase 6A, TRIAGE #15)
 
-**What it does.** The map has invisible parts whose names contain `REGION` (under `Workspace.Regions`). The server watches the character's root part touching them and keeps a list in `character.RegionInfo`. The client reacts: it starts a region's music playlist (Qarzin, Qishan City, Badlands, Sakura Island), plays ambient loops (Rain, Ocean), shows a "Q A R Z I N — The Merchant's Playground" banner, and darkens lighting in `DesertLairTunnel`. It fades music out when you leave.
+**What it does.** Entirely client-side; the server does nothing and no remote exists. `RegionController` reads the invisible `<Key>REGION` parts under `Workspace.Regions` (today: `OceanREGION` x4, `QarzinREGION` x2, `SakuraIslandREGION` x1) and tests the character's root position against each part's box every `Config.World.Music.RegionPollSeconds` (0.25 s), so a teleport or a walk through a wall can never leave you in the wrong region. `MusicController` plays what `Shared/Data/Regions.luau` says for the winning region (highest `priority`): a shuffled playlist with no immediate repeats, an ambient loop layered underneath (ocean 0.6, rain 0.2), a 1 s crossfade, one volume for playlist tracks (`Config.World.Music.Volume`, 0.5), and the bounce-in city banner ("Q A R Z I N / The Merchant's Playground"). The sounds are played straight from `ReplicatedFirst.SFX.OSTs`; `CharacterService` no longer clones the soundtrack into every Torso (the `SoundsFolder` is gone).
 
-**Files:** `SSS/MISC/RegionHandlerPart2.server.luau`, `SCS/Scripts/RegionHandlerPart1.client.luau`, `RS/Modules/SoundController.luau`.
-**⚠** The server-side region list uses `Touched` and `TouchEnded`, and the client changes Lighting without ever restoring it (the restore code is commented out).
+**Contract:** `Shared/Config.luau` `Config.World.Music`, `Shared/Data/Regions.luau` (per region: `priority`, `playlist`, `ambient`, `banner`).
+**Files:** `Client/Controllers/RegionController`, `Client/Controllers/MusicController` (M6-02), `Shared/Data/Regions.luau`. **Removed:** `SSS/MISC/RegionHandlerPart2.server.luau`, `SCS/Scripts/RegionHandlerPart1.client.luau`, `RS/Modules/SoundController.luau`. **Fixes:** L21, M16, D5. **Dev:** `.region`, `.music <track>|stop` (client controllers).
 
 ---
 
-## 12. Footsteps — moved M3-03 (same behavior as the old code)
+## 11b. Day and night, city lights — new M6 (phase 6B, TRIAGE #27)
 
-**What it does.** `Animate` fires `MiscRemotes.Footstep("Right" | "Left" | "Jump")` on each step (still the old, unvalidated remote — TRIAGE #16 rebuilds this properly in M6). The server plays a step sound that matches the floor material (stone, dirt, wood), checking `IntFold["Running?"]` (now maintained by M3-02's `MovementService`) for volume and `character.Effects.MutedStep` to suppress it. Separately, on **every** step call (not only a jump), it raycasts straight down from the Torso and drops a fading footprint block if that specific raycast hits sand or mud — independent of whatever the sound decision above used (REVIEW-M3-03 M6: the first port of this only ever ran that raycast for a jump, matching the outer sound-material check instead of the old code's own inner, unconditional one — footprints on an ordinary grounded step over sand silently stopped appearing).
+**What it does.** One shared clock, no traffic. `WorldClockService` (`Server/Services`) sets two `Workspace` attributes once at Start: `DayStart` (the `workspace:GetServerTimeNow()` at which the current in-game day began, at 06:00) and `DayLength` (`Config.World.DayNight.DaySeconds + NightSeconds` = 600 + 360 s). It never touches Lighting. The client `LightingController` computes `Lighting.ClockTime` from `GetServerTimeNow()` every frame with the same maths as the pure `WorldClockService.ClockTimeAt(now, dayStart, dayLength)` (day part DawnHour..DuskHour spans `DaySeconds`, night spans `NightSeconds`, both linear), so every player and every late joiner sees the same hour. It tweens the Atmosphere, ColorCorrection, Bloom and ambient light between the four palettes in `Shared/Data/DayNight.luau` (Day = the place's own values), and fades every part or model tagged `CityLight` (`Config.World.DayNight.Tag`) on at dusk and off at dawn: its lights, `Fire`, `ParticleEmitter`, `Smoke` and `Sparkles` run at night only, and a Neon part in it turns to `Config.World.DayNight.DayMaterial` by day.
 
-Moved out of `Interactions/InteractionsHandler.server.luau` into its own `FootstepService.luau` when that file was deleted for M3-03's combat rebuild (TRIAGE #10) — the footstep code was the one piece of that file that still worked and had nothing to do with combat.
+**Attributes (contract):** `Workspace.DayStart`, `Workspace.DayLength`, and `Workspace.DayPaused` (a number, the frozen hour, present only while paused; the client shows that hour and ignores the clock).
+**Dev:** `.time` prints the hour; `.time <0-24>` re-anchors `DayStart` so every client jumps together; `.time speed <x>` sets `DayLength` to base / x and keeps the hour (1 restores); `.time pause` / `.time resume`.
+**Files:** `Server/Services/WorldClockService.luau`, `Client/Controllers/LightingController` (M6-02), `Shared/Data/DayNight.luau`, `Config.World.DayNight`. **Removed in Studio by Bryan:** `ServerStorage.Folder.Day/Night Cycle` (it never ran there).
 
-**⚠** `PhysicalHandler.client.luau` (which used to fire `MiscRemotes.Footstep` on each step, alongside its now-deleted combat/movement input) has been fully broken since M3-02 removed `Remotes.Running`, its very first top-level lookup — the whole script errors at load, so **no client currently sends footstep events at all**. `FootstepService` itself is unchanged and correct; it just has nothing to react to until M3-05 replaces `PhysicalHandler.client.luau`.
+---
 
-**Files:** `Server/Services/FootstepService.luau`, `SCS/Animate/init.client.luau` (Roblox's Animate with footstep hooks added, unchanged), `Modules/ColorMath.luau` (third-party color math, used to darken footprints, unchanged).
-**Removed:** nothing new; the code lived inside `Interactions/InteractionsHandler.server.luau`, deleted by M3-03 as a whole for its combat parts.
+## 12. Footsteps — rebuilt M6 (phase 6C, TRIAGE #16, fixes M7/L10)
+
+**What it does.** Client-only, no remote, no server work per step. `Animate` still times the steps but tells the client `FootstepController` locally; the controller picks the sound from `Humanoid.FloorMaterial`, sets its volume from the `Running` character attribute (`Config.World.Footsteps.WalkVolume`/`RunVolume`), skips it while the character has the `MutedStep` marker, and makes the sand/mud footprint with one local raycast per step (other players do not see your prints). The step sounds play from `ReplicatedFirst.SFX.Steps`; `CharacterService` no longer clones them into the Torso.
+
+**Files:** `Client/Controllers/FootstepController` (M6-02), `SCS/Animate/init.client.luau`, `Modules/ColorMath.luau`. **Removed:** `Server/Services/FootstepService.luau` and the `MiscRemotes.Footstep` remote (M6-01). Note for the client builder: `Animate` still referenced that remote until M6-02 removes its remote lines.
 
 ---
 
@@ -497,7 +486,7 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 | `.cmd` | lists every command with one-line help |
 | `.state [player]` | sends a state snapshot to the caller over `DevState` and logs the same snapshot as a readable block in Output |
 | `.watch on\|off` | streams `DevState` to the caller every second |
-| `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency, through `EconomyService` (**M5A-01**: re-registered by `EconomyService`, replacing `DevService`'s own version, so the `Copper`/`Silver`/`Gold` attributes and the legacy `Currency` mirror both update immediately, same pattern as `RankService`'s `.magoi`/`.rukh`) |
+| `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency, through `EconomyService` (**M5A-01**: re-registered by `EconomyService`, replacing `DevService`'s own version, so the `Copper`/`Silver`/`Gold` attributes update immediately, same pattern as `RankService`'s `.magoi`/`.rukh`) |
 | `.price <copper>` | prints how a copper amount displays (`Economy.toPrice`/`.format`) - doesn't touch any wallet (**M5A-01**, `EconomyService`) |
 | `.pay <Copper\|Silver\|Gold> <amount>` | tests a purchase against the caller's own wallet through `EconomyService.Pay` (exact coin only; fires `CoinMessage` on failure) (**M5A-01**, `EconomyService`) |
 | `.shop restock` | clears and re-stocks the Qarzin clothes stand, same randomness rules as boot (**M5B-01**, `ShopService`) |
@@ -518,6 +507,8 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 | `.tp <city>` | teleports the caller's character to a spawn point (matches `Workspace.MAP.Spawns` children case-insensitively, with or without the `Spawn` suffix — `.tp qarzin` finds `QarzinSpawn`) |
 | `.cities` | lists the spawn points that exist |
 | `.timescale <n>` | sets a runtime time scale (`DevService.GetTimeScale()` / `.TimeScaleChanged`); later milestones (aging, day/night) should read it from here instead of the frozen `Config.Debug.TimeScale` |
+| `.time [0-24 \| speed <x> \| pause \| resume]` | the shared world clock (M6-01, `WorldClockService`, section 11b): no argument prints the hour; `<0-24>` jumps every client to that hour; `speed <x>` scales the day length (1 restores); `pause`/`resume` freeze and release it |
+| `.region`, `.music <track>\|stop` | client-side, run by `RegionController` / `MusicController` (M6-02, section 11) |
 | `.mortal on\|off` | toggles whether a birthday can roll a death (`DevService.IsMortal()`, same pattern as `.timescale`; **BUG-20**) |
 | `.fresh [player]` | `DataService.Wipe`, then reloads the character (kick-free) |
 | `.save [player]` | saves now |
@@ -539,7 +530,7 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 | `.dummy clear` | destroys every currently-spawned trainer |
 | `.dummy list` | prints the roster in teaching order, with how many of each are currently live |
 
-Every stat-editing command writes through the `DataService` table and calls `LegacyBridge.Refresh` so the old Value folders pick it up immediately — never the Values directly. `.coins`/`.coins+` also refresh the `Copper`/`Silver`/`Gold` attributes directly (**M5A-01**: the purse HUD's source now, not a Value-driven GUI label). Every reply goes out over `DevReply` and is also logged with `Log:Info`.
+Every stat-editing command writes through the `DataService` table, never a Value directly. `.coins`/`.coins+` also refresh the `Copper`/`Silver`/`Gold` attributes directly (**M5A-01**: the purse HUD's source now, not a Value-driven GUI label). Every reply goes out over `DevReply` and is also logged with `Log:Info`.
 
 **The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, mortal, sessionSeconds`. **⚠** `rank` still always sends `"n/a"` — `DevService`'s own snapshot code was written before rank existed (M1-05) and hasn't been pointed at `RankService.GetRank` yet; the player's `Rank`/`RankIndex`/`Alignment`/`EpithetPending` attributes (M4-01) are the live source until a follow-up wires this up.
 
@@ -549,15 +540,15 @@ Every stat-editing command writes through the `DataService` table and calls `Leg
 
 ---
 
-## 17. Collisions
+## 17. Collisions — rebuilt M6 (phase 6E, TRIAGE #22, fixes L9/L18)
 
-`SSS/Interactions/CollisionsHandler` puts all map parts (except `Areas`) in `MapCollisionGroup`, and clothing racks in `ClothingRackGroup`. Appearance gives each player their own limb group that doesn't collide with clothing racks.
+`CollisionService` (`Server/Services`) registers `MapCollisionGroup` and `ClothingRackGroup` at Init (no `game.Loaded` wait), then puts every BasePart under `Workspace.MAP` (Unions included) in `MapCollisionGroup` unless it sits under a folder named `Areas`, and every BasePart inside a model named `ClothingRack` anywhere under Workspace in `ClothingRackGroup` (rack wins over map). It listens to `Workspace.MAP.DescendantAdded` for parts that stream in or are spawned later, logs one line with the counts, and exports `AssignMapPart(part)` / `AssignTree(root)`. `CharacterService` still registers the `PlayerLimbs` group and makes it ignore the rack group (both registrations are check-then-register, so order is safe); `ShopService` still moves rack parts between groups when a rack is dressed or undressed. Removed: `SSS/Interactions/CollisionsHandler.server.luau`. The two `RebornNoMoreCollisionGroup` names on 18 parts do nothing and are left for Bryan to clean in Studio.
 
 ---
 
-## 18. Ocean (Workspace, not synced)
+## 18. Ocean — rebuilt M6 (phase 6D, TRIAGE #23, fixes M17)
 
-766 server Scripts under `Workspace.MAP.OCEAN`, three per ocean tile, animate the waves: parts bob 2 studs over 15 s, and wave decals fade in and out over 10 s. **⚠** The `OceanWaves` copies move up and then "down" to the same spot, so they stop after one bob. Every copy adds more event connections each cycle, so the cost keeps growing the longer a server runs.
+One client script, `OceanController` (M6-02), drives every `MovingPart` and `OceanWaves` tile and every wave decal from a single Heartbeat with `BulkMoveTo` and the old timing (tiles rise `Amplitude` 2 studs over 15 s, hold 3 s, fall 15 s; decals fade in over 10 s, out over 10 s, pause 10 s), configured in `Config.World.Ocean`. It stays off (`Enabled = false`) until Bryan deletes the 766 old Scripts under `Workspace.MAP.OCEAN` with the command in `docs/TINKER.md` "Ocean", because while they run the server keeps overwriting the tile positions. Nothing in `src/` is server-side for the ocean.
 
 ---
 
@@ -588,7 +579,7 @@ Every stat-editing command writes through the `DataService` table and calls `Leg
 **Player attributes:** `Rank` (title via `Ranks.titleFor`), `RankIndex`, `Epithet`, `Alignment` (label), `EpithetPending` (bool) — moved here from `HealthService` (section 9), which still owns `Health`/`MaxHealth`/`Block`/`MaxBlock`/`RegenTier` and still reads `Ranks.rankFor` itself for the max-health formula.
 
 **Files:** `SSS/Server/Services/RankService.luau`.
-**Depends on:** `DataService` (`Progress.*`, `Character.Gender`, `.Loaded`/`.Get`/`.IsLoaded`), `LegacyBridge.Refresh` (Magoi is one-way bridged to the legacy `Stats.MaxMagoi`, section 1), `DevService.Register`/`.ResolvePlayer`, `Shared/Data/Ranks`/`Alignment`/`Epithets`, `Shared/Remotes`.
+**Depends on:** `DataService` (`Progress.*`, `Character.Gender`, `.Loaded`/`.Get`/`.IsLoaded`), `DevService.Register`/`.ResolvePlayer`, `Shared/Data/Ranks`/`Alignment`/`Epithets`, `Shared/Remotes`.
 **Depended on by:** M4-02's client `RankController` (the remotes and attributes above); M5's missions (`AddMagoi`/`AddDeed`).
 
 ---
@@ -644,7 +635,7 @@ These scripts sit inside GUI frames, which Rojo saves as binary `.rbxm` files. T
 Arrows mean "needs". For example, "Appearance → Saving" means Appearance needs Saving.
 
 ```
-Saving (Stats + OnCharacter)      → RF.Assets
+Saving (DataService)              → RF.Assets, ProfileStore
 Join flow (Load screen)           → MainScreen remote → Appearance, Location
 Appearance                        → Saving, Aging, Items, RF.Assets, Gender picker
 Location (spawn)                  → Saving, Join flow, Appearance
@@ -659,16 +650,18 @@ Combat (server)                   → DamageHandler → SpeedHandler, GetDamage 
                                   → Effects → EffectsService → Ragdoll, InputHandler (freezes)
 Health / BlockHealthRegen         → Saving (Stats), Effects, IntFold
 Weapon                            → WeaponHandler ← InteractionsDesign (auto-equips Royal Dagger)
-Regions & music                   → RegionHandlerPart2 (server) → RegionInfo → RegionHandlerPart1 → SoundController
-Footsteps                         → Animate / PhysicalHandler → Footstep remote → InteractionsHandler → ColorMath
+Regions & music (client only)     → Workspace.Regions parts → RegionController → MusicController → Shared/Data/Regions, RF.SFX.OSTs
+Day & night, city lights          → WorldClockService (Workspace DayStart/DayLength) → LightingController (client) → Shared/Data/DayNight, CityLight tag
+Footsteps (client only)           → Animate → FootstepController → RF.SFX.Steps, ColorMath
+Ocean (client only)               → OceanController → Workspace.MAP.OCEAN tiles, Config.World.Ocean
 HUD                               → Humanoid, IntFold, Saving (Hunger)
 Menu                              → Saving, RF.Assets
 NPCs (Workspace)                  → NPController, DamageHandler, Effects, speed handling
 Dev commands                      → Saving (live Values, or the DataStore directly for offline players)
-Collisions                        → Workspace.MAP, clothing racks; Appearance adds player groups
+Collisions                        → CollisionService → Workspace.MAP, clothing racks; CharacterService adds the player limb group
 ```
 
 The central pieces nearly everything depends on:
-- the two save scripts (`player.Stats`, `player.OnCharacter`, `player.Loaded`)
+- `DataService` (the save; the old `player.Stats` / `player.OnCharacter` / `player.Loaded` Values are gone since M6)
 - `AppearanceController` (`character.AppearenceLoaded`)
 - the `character.Effects` and `character.IntFold` folders

@@ -5,7 +5,6 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
@@ -15,7 +14,6 @@ local Validate = require(ReplicatedStorage.Shared.Validate)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local DataService = require(script.Parent.DataService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
 local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
@@ -25,7 +23,6 @@ local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
 local LifeService = require(script.Parent.LifeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
-local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local RankService = require(script.Parent.RankService)
 local Economy = require(ReplicatedStorage.Shared.Data.Economy)
@@ -42,6 +39,8 @@ local NpcTrees = require(script.Parent.NpcService.Trees)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Cities = require(ReplicatedStorage.Shared.Data.Cities)
 local MissionService = require(script.Parent.MissionService)
+local WorldClockService = require(script.Parent.WorldClockService)
+local CollisionService = require(script.Parent.CollisionService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -220,9 +219,7 @@ local function testRemoteWrapper(results: { Check })
 end
 
 -- M1-03: a fake Data table exercises SaveSchema.Migrate's version bump, and
--- a temporary Folder stands in for a Player (LegacyBridge only needs an
--- Instance to parent the mirrored Values under; it never touches
--- Player-specific members).
+-- a temporary Folder stands in for a Player.
 local function testDataService(results: { Check })
 	do
 		local data = ({ Version = 0 } :: any) :: SaveSchema.Data
@@ -343,70 +340,6 @@ local function testDataService(results: { Check })
 		DataService.ResetToTemplate(data)
 
 		expect(results, "DataService: Wipe's reset (no restore step) clears Meta.Unlocks.Combat back to the template's false", data.Meta.Unlocks.Combat == false)
-	end
-
-	do
-		local data: SaveSchema.Data = {
-			Version = 1,
-			Character = {
-				FirstName = "Test",
-				Gender = 1,
-				Race = 2,
-				Kingdom = 1,
-				SkinTone = 1,
-				HairColor = { R = 0.5, G = 0.5, B = 0.5 },
-				EyeColor = 1,
-				FaceBase = 1,
-				MouthShape = 1,
-				Height = 1,
-				GrowthProfile = "",
-				LivesLeft = Config.Life.LivesPerCharacter,
-			},
-			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
-			Bounty = 0,
-			Economy = { Copper = 20, Silver = 0, Gold = 0 },
-			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
-			Family = {},
-			Magic = {},
-			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
-		}
-
-		local standIn = Instance.new("Folder")
-		local fakePlayer = (standIn :: any) :: Player
-
-		local built = pcall(function()
-			LegacyBridge.Build(fakePlayer, data)
-		end)
-		expect(results, "LegacyBridge: Build doesn't error", built)
-
-		local firstNameValue: StringValue? = nil
-		if built then
-			local statsFolder = standIn:FindFirstChild("Stats")
-			local child = statsFolder and statsFolder:FindFirstChild("FirstName")
-			if child and child:IsA("StringValue") then
-				firstNameValue = child
-			end
-		end
-		expect(results, "LegacyBridge: Build creates Stats.FirstName", firstNameValue ~= nil)
-
-		if firstNameValue then
-			local value = firstNameValue :: StringValue
-			expect(results, "LegacyBridge: Build pushes data onto the Value", value.Value == "Test")
-
-			value.Value = "Changed"
-			task.wait()
-			expect(results, "LegacyBridge: a Value change writes back into data", data.Character.FirstName == "Changed")
-
-			data.Character.FirstName = "FromData"
-			LegacyBridge.Refresh(fakePlayer, data)
-			expect(results, "LegacyBridge: Refresh pushes data back onto the Value", value.Value == "FromData")
-		end
-
-		if built then
-			LegacyBridge.Destroy(fakePlayer)
-		end
-		standIn:Destroy()
 	end
 
 	-- REVIEW-M5C-01B F1: DataService.RunReleasing must run every registered
@@ -544,29 +477,6 @@ local function testDevService(results: { Check })
 	expect(results, "DevService: .mortal off sets IsMortal false", DevService.IsMortal() == false)
 	local restoreCommand = if realMortal then ".mortal on" else ".mortal off"
 	DevService.Dispatch(fakePlayer, restoreCommand)
-end
-
--- BUG-11/BUG-18: the two Studio-only compatibility shims at the old
--- Character.HeightHandler/AgeHandler paths must resolve to the exact same
--- module as the new AgeService path (Lua caches require by ModuleScript,
--- so `require`ing the shim - which itself just returns require(new path) -
--- returns the identical table, not a copy).
-local function testCompatShims(results: { Check })
-	local Character = ServerScriptService:FindFirstChild("Character")
-	local heightHandlerShim = Character and Character:FindFirstChild("HeightHandler")
-	local ageHandlerShim = Character and Character:FindFirstChild("AgeHandler")
-
-	expect(results, "Compat shim: Character.HeightHandler exists", heightHandlerShim ~= nil)
-	expect(results, "Compat shim: Character.AgeHandler exists", ageHandlerShim ~= nil)
-
-	if heightHandlerShim then
-		local ok, shimmed = pcall(require, heightHandlerShim)
-		expect(results, "Compat shim: Character.HeightHandler resolves to AgeService.HeightHandler", ok and shimmed == HeightHandler)
-	end
-	if ageHandlerShim then
-		local ok, shimmed = pcall(require, ageHandlerShim)
-		expect(results, "Compat shim: Character.AgeHandler resolves to AgeService.AgeHandler", ok and shimmed == AgeHandler)
-	end
 end
 
 -- M2-06: the shared rank/alignment/epithet data modules are pure, so
@@ -3321,6 +3231,72 @@ end
 
 local SelfTestService = {}
 
+-- M6: the shared world clock's pure maths and the `.time` dev command, and
+-- CollisionService's group assignment on a fake folder of parts.
+local function testWorld(results: { Check })
+	local D, N = Config.World.DayNight.DaySeconds, Config.World.DayNight.NightSeconds
+	local L = D + N
+	local function near(a: number, b: number): boolean
+		return math.abs(a - b) < 0.01
+	end
+	expect(results, "WorldClock: day start reads 06:00", near(WorldClockService.ClockTimeAt(1000, 1000, L), 6))
+	expect(results, "WorldClock: DaySeconds in reads 18:00", near(WorldClockService.ClockTimeAt(1000 + D, 1000, L), 18))
+	expect(results, "WorldClock: mid-day reads 12:00", near(WorldClockService.ClockTimeAt(1000 + D / 2, 1000, L), 12))
+	local midnight = WorldClockService.ClockTimeAt(1000 + D + N / 2, 1000, L)
+	expect(results, "WorldClock: mid-night reads 00:00", math.min(midnight, 24 - midnight) < 0.01)
+	expect(results, "WorldClock: end of the night wraps to 06:00", near(WorldClockService.ClockTimeAt(1000 + L, 1000, L), 6))
+	expect(results, "WorldClock: a scaled day length keeps the ratio", near(WorldClockService.ClockTimeAt(1000 + D / 4, 1000, L / 2), 18))
+
+	local fakePlayer = ({ Name = "SelfTestWorld", UserId = 27938432 } :: any) :: Player
+	local wasPaused = WorldClockService.IsPaused()
+	local oldHour = WorldClockService.CurrentHour()
+	local oldSpeed = WorldClockService.GetSpeed()
+	DevService.Dispatch(fakePlayer, ".time 20")
+	expect(results, "WorldClock: .time 20 puts the clock at 20", near(WorldClockService.CurrentHour(), 20))
+	DevService.Dispatch(fakePlayer, ".time pause")
+	expect(results, "WorldClock: .time pause freezes the clock", WorldClockService.IsPaused() and near(WorldClockService.CurrentHour(), 20))
+	DevService.Dispatch(fakePlayer, ".time 21")
+	expect(results, "WorldClock: .time while paused moves the frozen hour", near(WorldClockService.CurrentHour(), 21))
+	DevService.Dispatch(fakePlayer, ".time resume")
+	expect(results, "WorldClock: .time resume unfreezes", not WorldClockService.IsPaused())
+	DevService.Dispatch(fakePlayer, ".time speed 4")
+	expect(results, "WorldClock: .time speed keeps the hour", near(WorldClockService.CurrentHour(), 21))
+	expect(results, "WorldClock: .time speed 4 divides DayLength", near(Workspace:GetAttribute("DayLength") :: number, L / 4))
+	DevService.Dispatch(fakePlayer, ".time speed 1")
+	expect(results, "WorldClock: .time speed 1 restores DayLength", near(Workspace:GetAttribute("DayLength") :: number, L))
+	local bad = DevService.Dispatch(fakePlayer, ".time 99")
+	expect(results, "WorldClock: .time 99 is rejected", bad ~= nil and string.find(bad, "usage") ~= nil)
+	-- Put the clock back where the test found it.
+	WorldClockService.SetSpeed(oldSpeed)
+	WorldClockService.SetHour(oldHour)
+	if wasPaused then
+		WorldClockService.Pause()
+	end
+
+	local root = Instance.new("Folder")
+	local plain = Instance.new("Part")
+	plain.Parent = root
+	local union = Instance.new("UnionOperation")
+	union.Parent = root
+	local areas = Instance.new("Folder")
+	areas.Name = "Areas"
+	areas.Parent = root
+	local areaPart = Instance.new("Part")
+	areaPart.Parent = areas
+	local rack = Instance.new("Model")
+	rack.Name = "ClothingRack"
+	rack.Parent = root
+	local rackPart = Instance.new("Part")
+	rackPart.Parent = rack
+	local mapCount, rackCount = CollisionService.AssignTree(root)
+	expect(results, "CollisionService: a plain part joins MapCollisionGroup", plain.CollisionGroup == "MapCollisionGroup")
+	expect(results, "CollisionService: a Union joins MapCollisionGroup (L18)", union.CollisionGroup == "MapCollisionGroup")
+	expect(results, "CollisionService: a part under Areas is left alone", areaPart.CollisionGroup == "Default")
+	expect(results, "CollisionService: a rack part joins ClothingRackGroup", rackPart.CollisionGroup == "ClothingRackGroup")
+	expect(results, "CollisionService: AssignTree counts 2 map, 1 rack", mapCount == 2 and rackCount == 1)
+	root:Destroy()
+end
+
 function SelfTestService:Init() end
 
 function SelfTestService:Start()
@@ -3353,7 +3329,7 @@ function SelfTestService:Start()
 		testTrainers(collected)
 		testLifeService(collected)
 		testMissionService(collected)
-		testCompatShims(collected)
+		testWorld(collected)
 		return collected
 	end)
 

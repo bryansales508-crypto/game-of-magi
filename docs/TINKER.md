@@ -99,6 +99,40 @@ Conventions in the new code: services on the server live in `src/ServerScriptSer
 
 - **`Client/Controllers/MenuController/init.luau`**: search "FIX BUG-21". The preview clones your character into a `WorldModel` inside a `ViewportFrame` in the old diamond, camera 2.5 studs in front of the head looking back (a mirror). Change the offset, angle or lighting there. The rest of the menu (name, title from epithet or rank, stat line, alignment/lives line, apparel frames) is in the same file.
 
+## Day and night
+
+- **`Shared/Config.luau` `Config.World.DayNight`**: `DaySeconds` (600) and `NightSeconds` (360) are real seconds of daylight (06:00 to 18:00) and night; day must stay longer than night. `DawnHour` / `DuskHour`, `TransitionSeconds` (how long the sky blends at dawn and dusk) and `LightFadeSeconds` live there too.
+- **`Shared/Data/DayNight.luau`**: the four looks (Day, Dusk, Night, Dawn): sky and ambient colours, Atmosphere colour/density/haze, ColorCorrection tint, Bloom. Day is the place's own Lighting exactly as it was; tune the night in `Night` (darker `Brightness`/`OutdoorAmbient` = darker night).
+- Test in the chat: `.time 18.5` (dusk), `.time 0` (midnight), `.time 5.5` (dawn), `.time speed 20` (fast clock, `.time speed 1` to restore), `.time pause` / `.time resume`. Everyone in the server jumps together.
+
+## City lights
+
+- Tag a **part or a model** `CityLight` (Studio: Tag Editor plugin, or the Properties tag box). Every `PointLight`, `SpotLight`, `SurfaceLight`, `Fire`, `ParticleEmitter`, `Smoke` and `Sparkles` under it runs at night only (fading over `LightFadeSeconds`), and a Neon part in it turns to `Config.World.DayNight.DayMaterial` (SmoothPlastic) by day so a lamp looks unlit in the sun.
+- A torch is a **model** with a flame part (Neon, maybe a Fire) and a separate part holding the light; tag the model. Parts added later (streaming, spawned) are picked up automatically.
+- To change the tag name or the day material: `Config.World.DayNight.Tag` / `.DayMaterial`.
+
+## Ocean
+
+The new `OceanController` only runs once the old wave scripts are gone (they would fight it for the tile positions). In Studio, open View > Command Bar and run this once (Ctrl+Z undoes it; the published game's version history is your backup):
+
+```lua
+local n = 0
+for _, d in workspace.MAP.OCEAN:GetDescendants() do
+	if d:IsA("Script") then
+		d:Destroy()
+		n += 1
+	end
+end
+print("deleted", n, "scripts")
+```
+
+It should print 766. Then set `Config.World.Ocean.Enabled = true` in `Shared/Config.luau`. Timing and size of the waves: `Amplitude`, `RiseSeconds`, `HoldSeconds`, `DecalFadeSeconds`, `DecalPauseSeconds`, `DecalVisibleTransparency`; `CullDistance` stops tiles far from the camera from moving.
+
+## Regions and music
+
+- A region is an invisible, `CanCollide = false`, `Anchored` part named `<Key>REGION` (for example `QarzinREGION`) under `Workspace.Regions`; several parts can share a key. Then add a `<Key>` entry to **`Shared/Data/Regions.luau`**: `priority` (higher wins where regions overlap), `playlist` (track names from `ReplicatedFirst.SFX.OSTs`), optional `ambient` loop and volume, optional `banner` title and subtitle.
+- Music volume for every playlist track is `Config.World.Music.Volume`; the crossfade is `CrossfadeSeconds`.
+
 ## Studio-only leftovers (delete by hand)
 
 `ReplicatedFirst.GUI.Gender.Decisions` (Script), `MenuGUI...MenuMechanics` (LocalScript), R7 MissionWagon seat script, R8 empty scripts (`Workspace.Qarzin.QarzinEconomy`, `MaterialService.Tool.LocalScript`). The new controllers disable the first two at runtime, so nothing breaks if they stay.

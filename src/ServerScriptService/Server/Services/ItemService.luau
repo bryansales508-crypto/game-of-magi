@@ -6,9 +6,7 @@
 -- code format and equip behaviour; only the typing changed and two things
 -- were added: Owns (exact item AND colour - the old MarketHandler ignored
 -- colour) and Wear (equips, then writes Gear.Shirt/Gear.Pants/the first
--- empty Gear.Hats slot; LegacyBridge already mirrors Gear onto the old
--- OnCharacter Value folders for old readers, so nothing here writes those
--- directly any more).
+-- empty Gear.Hats slot).
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -20,7 +18,6 @@ local Assets = require(ReplicatedFirst.Assets) :: any
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local DataService = require(script.Parent.DataService)
-local LegacyBridge = require(script.Parent.LegacyBridge)
 
 local log = Log.new("ItemService")
 
@@ -109,19 +106,13 @@ function ItemService.HasFreeHatSlot(data: Data): boolean
 end
 
 local function currentRatio(player: Player): Vector3
-	local stats = player:FindFirstChild("Stats")
-	if stats == nil then
+	local data = DataService.Get(player)
+	if data == nil then
 		return Vector3.new(1, 1, 1)
 	end
-	local growthProfileValue = stats:FindFirstChild("GrowthProfile")
-	local ageValue = stats:FindFirstChild("Age")
-	local heightValue = stats:FindFirstChild("Height")
-	if growthProfileValue == nil or ageValue == nil or heightValue == nil then
-		return Vector3.new(1, 1, 1)
-	end
-	local profile = AgeHandler.unpack((growthProfileValue :: any).Value)
-	local fat = if profile then AgeHandler.fatAt(profile, (ageValue :: any).Value) else 0
-	return HeightHandler.heightToRatio((heightValue :: any).Value, fat)
+	local profile = AgeHandler.unpack(data.Character.GrowthProfile)
+	local fat = if profile then AgeHandler.fatAt(profile, data.Age.Years) else 0
+	return HeightHandler.heightToRatio(data.Character.Height, fat)
 end
 
 -- Equips `code` onto `chara`: recolours a shirt/pants in place, or clones
@@ -236,7 +227,6 @@ function ItemService.Wear(player: Player, code: string): boolean
 	end
 
 	ItemService.Equip(code, character)
-	LegacyBridge.Refresh(player, data)
 	return true
 end
 
