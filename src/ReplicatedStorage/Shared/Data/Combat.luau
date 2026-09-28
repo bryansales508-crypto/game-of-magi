@@ -1,135 +1,169 @@
 --!strict
--- Combat tuning numbers (M3-01, TRIAGE #10/#13). Data only, frozen: nothing
--- in here runs any logic. Bryan tunes the feel by editing the numbers below;
--- CombatService/MovementService/StatusService read them, they never own a
--- copy of their own.
+-- Combat tuning numbers (M3-01/M3-FIX3-S, TRIAGE #10/#13). Data only,
+-- frozen: nothing in here runs any logic. Bryan tunes the feel by editing
+-- the numbers below; CombatService/MovementService/StatusService read them,
+-- they never own a copy of their own.
 --
--- Move sets: each move is one step of a combo chain. Timings are seconds,
--- measured from the swing starting:
---   windup   - before the hit can land (plays the wind-up part of the swing)
---   hitTime  - when the server actually checks what got hit (from swing start)
---   recovery - after hitTime before another attack is allowed
---   comboWindow - how long after THIS move lands the next click still
---                 continues the combo (past it, the next click restarts at 1)
--- range/radius describe the server's hit-check shapecast (a capsule/sphere
--- cast forward from the attacker). knockback is a speed added along the
--- direction away from the attacker.
+-- M3-FIX3-S (Bryan, 2026-09-28) replaced the old multi-move combo chain
+-- with animation-driven punches: one weapon set is now ONE swing
+-- (Combat.Swing), and one swing contains several punches (Combat.Punch) -
+-- for Fist, a right then a left, both thrown by the same click. The client
+-- plays one swing animation with a wind-up marker and a hit marker per
+-- punch, and fires one AttackHit report per hit marker; the server is the
+-- only one that decides whether that report is on time.
 --
--- stun (0.6-1.0s, per move) is how long the FULL "Stun" status (can't
--- attack/block) lasts on a landed hit: StatusService.Apply(target, "Stun",
--- move.stun). This is separate from Combat.Stagger.hitStun below (a fixed,
--- much shorter 0.35s) - that one drives the "Hit" status/MovementService's
--- "Hit" speed modifier instead, the brief stagger every hit applies
--- regardless of which move landed (see Combat.Stagger's own comment).
+--   punches   - in order. Each punch's `hitWindow = {min, max}` is how many
+--               seconds after CombatEvent Swing fires the server will
+--               accept that punch's AttackHit report; outside it (even by
+--               Config.Combat.HitTolerance either way) the report is
+--               dropped. damage/stun/knockback apply on a landed hit;
+--               range/radius describe the server's own hit-check sphere,
+--               same convention as before (a sphere cast forward from the
+--               attacker; knockback is a speed added away from the
+--               attacker).
+--   cancelWindow    - seconds after Swing during which AttackCancel is
+--                      still honoured (only before punch 1 has landed).
+--                      This is meant to line up with the animation's own
+--                      first wind-up marker - Bryan cancels the swing
+--                      before that marker plays.
+--   cancelRecovery  - added to the cooldown after a successful cancel. 0
+--                      (Bryan, 2026-09-28): a cancel costs nothing, so
+--                      cancelling into an immediate re-swing is a real,
+--                      punishing bait - see the comment above Moves.Fist.
+--   recovery        - added to the cooldown after the LAST punch actually
+--                      lands (accepted, whether it hit or whiffed).
+--   timeout         - CombatService's own watchdog: if the final punch's
+--                      AttackHit report never arrives by
+--                      punches[#punches].hitWindow.max + HitTolerance +
+--                      timeout, the attack just ends (client desync),
+--                      silently, with no CombatEvent.
 --
--- Old numbers this replaces (SYSTEMS 9 / DamageHandler): flat 5 damage, 1s
--- stun, every 5th hit a 10x knockback multiplier, no real combo steps (the
--- client just replayed a 2-swing animation loop with no server timing at
--- all). The 3-hit Fist chain and the Dagger set (present for M5, not
--- granted to anyone yet) keep that same "every few hits hits harder" spirit
--- as a real finisher instead of an every-5th-hit roll.
+-- Old numbers this replaces (SYSTEMS 9 / DamageHandler / the pre-M3-FIX3-S
+-- 3-step Jab/Cross/Finisher combo): every weapon set used to be an array of
+-- combo steps, each fully server-timed (no client hit reports at all,
+-- AUDIT C2). ComboStep is kept as a character attribute for compatibility
+-- but stays 1 for now (M3-FIX3-S) - there's no combo chain to advance
+-- through any more, just the one swing's punches.
 
-export type Move = {
+export type HitWindow = {
+	min: number,
+	max: number,
+}
+
+export type Punch = {
 	name: string,
-	windup: number,
-	hitTime: number,
-	recovery: number,
 	damage: number,
 	range: number,
 	radius: number,
 	stun: number,
 	knockback: number,
-	comboWindow: number,
-	finisher: boolean?,
+	hitWindow: HitWindow,
 }
 
-export type MoveSet = { Move }
+export type Swing = {
+	name: string,
+	punches: { Punch },
+	cancelWindow: number,
+	cancelRecovery: number,
+	recovery: number,
+	timeout: number,
+}
 
 local Combat = {}
 
-local Moves: { [string]: MoveSet } = {
+local Moves: { [string]: Swing } = {
+	-- M3-FIX3-S (Bryan, 2026-09-28): the read-and-punish loop this timing
+	-- is built around -
+	--   Player 1 swings. The enemy reads the Swing CombatEvent and clicks
+	--   to interrupt back. Player 1 cancels (allowed only up to the first
+	--   wind-up marker) to bait that click, then swings again and
+	--   interrupts the ENEMY during the enemy's own wind-up - which the
+	--   enemy can no longer cancel, since their own first wind-up marker
+	--   has already passed by then.
+	-- For that loop to work, keep three things true whenever these numbers
+	-- are retuned against the real animation:
+	--   1. cancelWindow (swing start -> first wind-up marker) must be long
+	--      enough for a human to actually read the swing and react - about
+	--      0.35s or more.
+	--   2. Each punch's windup (its own wind-up marker -> its own hit
+	--      marker) must be LONGER than a fresh swing's own start -> first
+	--      hit time, so a counter-attack thrown once the wind-up is read
+	--      still lands before the original punch does.
+	--   3. Every punch's hitWindow.min must fall after cancelWindow (and
+	--      after that punch's own wind-up), so an AttackHit report is never
+	--      valid before the wind-up that's supposed to gate it has even
+	--      finished playing.
+	-- The numbers below satisfy rule 1 and rule 3 on paper; they are
+	-- PLACEHOLDERS - Bryan re-tunes them once he reads the real wind-up/hit
+	-- marker times off his fist animation with `.combat log on`.
 	Fist = {
-		{
-			name = "Jab",
-			windup = 0.18,
-			hitTime = 0.22,
-			recovery = 0.30,
-			damage = 5,
-			range = 4.5,
-			radius = 1.6,
-			stun = 0.6,
-			knockback = 12,
-			comboWindow = 0.9,
+		name = "Fist",
+		punches = {
+			{
+				name = "Right",
+				damage = 5,
+				range = 4.5,
+				radius = 1.6,
+				stun = 0.6,
+				knockback = 12,
+				hitWindow = { min = 0.75, max = 1.10 },
+			},
+			{
+				name = "Left",
+				damage = 6,
+				range = 4.5,
+				radius = 1.6,
+				stun = 0.8,
+				knockback = 18,
+				hitWindow = { min = 1.30, max = 1.70 },
+			},
 		},
-		{
-			name = "Cross",
-			windup = 0.18,
-			hitTime = 0.22,
-			recovery = 0.32,
-			damage = 6,
-			range = 4.5,
-			radius = 1.6,
-			stun = 0.6,
-			knockback = 14,
-			comboWindow = 0.9,
-		},
-		{
-			name = "Finisher",
-			windup = 0.22,
-			hitTime = 0.28,
-			recovery = 0.5,
-			damage = 9,
-			range = 4.5,
-			radius = 1.8,
-			stun = 1.0,
-			knockback = 40,
-			comboWindow = 0.9,
-			finisher = true,
-		},
-	} :: MoveSet,
+		cancelWindow = 0.35,
+		cancelRecovery = 0,
+		recovery = 0.30,
+		timeout = 0.6,
+	},
 
-	-- M5: the Royal Dagger's combo. Present now so the data shape and
-	-- Combat.move/moveSet API are exercised, but nothing grants "Dagger" as
-	-- a WeaponSet yet (M3 keeps everyone on Fist).
+	-- M5: the Royal Dagger's swing. Present now so the data shape is
+	-- exercised, but nothing grants "Dagger" as a WeaponSet yet (M3 keeps
+	-- everyone on Fist). Same three rules as Fist's comment above; same
+	-- placeholder caveat.
 	Dagger = {
-		{
-			name = "Slash",
-			windup = 0.14,
-			hitTime = 0.18,
-			recovery = 0.24,
-			damage = 6,
-			range = 5,
-			radius = 1.5,
-			stun = 0.5,
-			knockback = 10,
-			comboWindow = 0.85,
+		name = "Dagger",
+		punches = {
+			{
+				name = "Slash",
+				damage = 6,
+				range = 5,
+				radius = 1.5,
+				stun = 0.5,
+				knockback = 10,
+				hitWindow = { min = 0.65, max = 0.95 },
+			},
+			{
+				name = "Reverse",
+				damage = 7,
+				range = 5,
+				radius = 1.5,
+				stun = 0.5,
+				knockback = 12,
+				hitWindow = { min = 1.05, max = 1.35 },
+			},
+			{
+				name = "Finisher",
+				damage = 11,
+				range = 5,
+				radius = 1.7,
+				stun = 1.0,
+				knockback = 42,
+				hitWindow = { min = 1.45, max = 1.85 },
+			},
 		},
-		{
-			name = "Reverse",
-			windup = 0.14,
-			hitTime = 0.18,
-			recovery = 0.26,
-			damage = 7,
-			range = 5,
-			radius = 1.5,
-			stun = 0.5,
-			knockback = 12,
-			comboWindow = 0.85,
-		},
-		{
-			name = "Finisher",
-			windup = 0.2,
-			hitTime = 0.26,
-			recovery = 0.45,
-			damage = 11,
-			range = 5,
-			radius = 1.7,
-			stun = 1.0,
-			knockback = 42,
-			comboWindow = 0.85,
-			finisher = true,
-		},
-	} :: MoveSet,
+		cancelWindow = 0.35,
+		cancelRecovery = 0,
+		recovery = 0.28,
+		timeout = 0.6,
+	},
 }
 Combat.Moves = Moves
 
@@ -179,30 +213,20 @@ table.freeze(Combat.Dash)
 table.freeze(Combat.Run)
 table.freeze(Combat.Knockout)
 table.freeze(Combat.Stagger)
-for _, moveSet in Combat.Moves do
-	for _, move in moveSet do
-		table.freeze(move)
+for _, swing in Combat.Moves do
+	for _, punch in swing.punches do
+		table.freeze(punch.hitWindow)
+		table.freeze(punch)
 	end
-	table.freeze(moveSet)
+	table.freeze(swing.punches)
+	table.freeze(swing)
 end
 table.freeze(Combat.Moves)
 
--- The named move set (e.g. "Fist"), or nil if unknown. CombatService uses
--- this to resolve a combatant's WeaponSet attribute into its moves.
-function Combat.moveSet(name: string): MoveSet?
+-- The named weapon set's swing (e.g. "Fist"), or nil if unknown.
+-- CombatService uses this to resolve a combatant's WeaponSet attribute.
+function Combat.swingFor(name: string): Swing?
 	return Combat.Moves[name]
-end
-
--- One move by 1-based index within a set, wrapping combo steps that run
--- past the set's length back to 1 so ComboStep math never has to special-
--- case "off the end" itself.
-function Combat.move(setName: string, index: number): Move?
-	local set = Combat.Moves[setName]
-	if set == nil or #set == 0 then
-		return nil
-	end
-	local wrapped = ((index - 1) % #set) + 1
-	return set[wrapped]
 end
 
 table.freeze(Combat)

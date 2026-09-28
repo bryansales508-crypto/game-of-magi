@@ -111,13 +111,26 @@ Remotes.Definitions = {
 		args = { Validate.string({ maxLen = 32 }) },
 		rate = { count = 1, per = 5 },
 	},
-	-- M3-03: CombatService. Intentions only - the client never reports
-	-- what it hit (C2); the server runs its own hit-check at the move's
-	-- hit time.
-	Attack = {
+	-- M3-FIX3-S: CombatService's animation-driven punch flow. AttackStart is
+	-- still just an intention (no args); AttackHit reports which punch's
+	-- hit marker just played (1-based, matching Combat.Swing.punches) - the
+	-- client never reports WHAT it hit (C2 stays fixed), only that a marker
+	-- played, and the server re-derives everything else (timing window,
+	-- target, geometry) itself. Replaces the old single Attack() remote.
+	AttackStart = {
 		kind = "Event",
 		args = {},
-		rate = { count = 6, per = 1 },
+		rate = { count = 4, per = 1 },
+	},
+	AttackHit = {
+		kind = "Event",
+		args = { Validate.number({ min = 1, integer = true }) },
+		rate = { count = 8, per = 1 },
+	},
+	AttackCancel = {
+		kind = "Event",
+		args = {},
+		rate = { count = 4, per = 1 },
 	},
 	Block = {
 		kind = "Event",

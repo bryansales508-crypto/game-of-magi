@@ -2,10 +2,18 @@
 -- The server-authoritative combat core (M3-03, TRIAGE #10, fixes AUDIT
 -- C2/H5/H6/M1/M2/M3-P2). Keyed by the combatant's character Model, never
 -- by Player: NPCs attack and block through the exact same
--- CombatService.Attack/SetBlocking entry points a Player's Attack()/Block()
--- remote calls use. The client only ever sends an intention (Attack,
--- Block(on)); it never reports what it hit (C2) - every hit is a real
--- server-side spatial query run at the move's own hit time.
+-- CombatService.Attack/SetBlocking entry points a Player's remote calls use.
+--
+-- M3-FIX3-S (Bryan, 2026-09-28) replaced the old single server-timed swing
+-- with an animation-driven punch sequence: AttackStart begins a swing (one
+-- or more punches, Shared/Data/Combat.luau's Swing/Punch shape) and
+-- broadcasts it; the client plays the animation and fires one AttackHit
+-- report per hit marker, in order; AttackCancel is only honoured before the
+-- first punch lands. The client STILL never reports what it hit (C2 stays
+-- fixed) - only that a marker played - the server re-derives the target
+-- with its own hit-check, exactly as before, and validates every report's
+-- timing window, order and the attacker's own position (anti-teleport)
+-- before it counts for anything.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -23,13 +31,17 @@ local DevService = require(script.Parent.DevService)
 
 local log = Log.new("CombatService")
 
--- Statuses that gate an Attack/Block entirely (dead is checked
+-- Statuses that gate an AttackStart/Block entirely (dead is checked
 -- separately, via Humanoid.Health).
 local BLOCKS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true }
 local BLOCKS_BLOCK_START: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, BlockBroken = true }
 -- Statuses that force Block off outright the instant they turn on
 -- (REVIEW-M3-03 M3) - onStatusChanged below reacts to all three.
 local ENDS_BLOCK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
+-- Statuses that also interrupt an in-progress attack the instant they turn
+-- on (M3-FIX3-S), regardless of what caused them (a real hit, a dev
+-- command, anything) - onStatusChanged below reacts to all three.
+local INTERRUPTS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
 
 -- Statuses that also freeze/slow movement while active - a single named
 -- MovementService modifier per status, set/cleared alongside StatusService
@@ -52,17 +64,26 @@ local KNOCKBACK_DURATION = 0.25
 -- same formula).
 local RUN_SPEED = 16 * Combat.Run.speedMult
 
+-- One in-progress swing: which punch is still owed, when it started, and
+-- where the attacker's HRP was then (the anti-teleport baseline).
+type PendingAttack = {
+	swing: Combat.Swing,
+	startedAt: number,
+	nextPunch: number,
+	swingPosition: Vector3,
+}
+
 type Entry = {
 	owner: Player?,
 	weaponSet: string,
-	comboStep: number,
-	lastMoveWasFinisher: boolean,
-	lastHitAt: number?,
 	lastCombatAt: number?,
 	parryCooldownUntil: number?,
-	-- The window between a swing and its own hit-check resolving (H2: you
-	-- can't start blocking while your own swing is still in flight).
-	pendingHitUntil: number?,
+	attack: PendingAttack?,
+	-- Bumped on every AttackStart; a watchdog closure captures its own
+	-- value and checks it still matches before acting, so a stale watchdog
+	-- from an attack that already ended (landed, cancelled, interrupted)
+	-- can never reach into a LATER attack's state.
+	attackGeneration: number,
 	ancestryConn: RBXScriptConnection?,
 	diedConn: RBXScriptConnection?,
 }
@@ -73,15 +94,6 @@ local combatLogEnabled = false
 local CombatService = {}
 
 -- ==================== pure helpers (self-tested directly) ====================
-
--- Whether the swing that just landed at `previousMoveIndex` still counts
--- as the same combo chain `now` (server clock) seconds later.
-function CombatService.NextComboStep(previousStep: number, comboWindow: number, lastHitAt: number?, now: number): number
-	if lastHitAt and (now - lastHitAt) <= comboWindow then
-		return previousStep + 1
-	end
-	return 1
-end
 
 -- The target is only protected while Blocking AND facing the attacker
 -- (old code's own convention: the direction from attacker to target,
@@ -132,6 +144,49 @@ local function healthCombatant(character: Model): HealthService.Combatant
 	return Players:GetPlayerFromCharacter(character) or character
 end
 
+-- ==================== attack-state helpers ====================
+
+-- Ends whatever attack `entry` has in progress (if any) and sets the next
+-- allowed AttackStart time. Never broadcasts anything itself - callers
+-- decide whether an AttackCancelled event (or nothing, for a normal
+-- completion/timeout) goes out.
+local function clearAttack(character: Model, entry: Entry, nextAttackDelay: number)
+	entry.attack = nil
+	pcall(function()
+		character:SetAttribute("Attacking", false)
+		character:SetAttribute("NextAttackAt", Workspace:GetServerTimeNow() + nextAttackDelay)
+	end)
+end
+
+-- Shared by AttackCancel (reason = "cancelled") and getting hit / a status
+-- that ends an attack outright (reason = "interrupted"). A no-op if there's
+-- no attack in progress (safe to call speculatively, e.g. from
+-- onStatusChanged on every Stun/TrueStun/Knocked, whether or not the
+-- combatant was mid-swing).
+local function interruptAttack(character: Model, reason: "cancelled" | "interrupted")
+	local entry = registered[character]
+	if entry == nil or entry.attack == nil then
+		return
+	end
+	local attack = entry.attack
+
+	local nextAttackDelay: number
+	if reason == "interrupted" then
+		-- The punch that got cut short pays its own stun as the cooldown -
+		-- getting hit mid-swing costs more than a clean cancel does.
+		local punch = attack.swing.punches[attack.nextPunch]
+		nextAttackDelay = if punch then punch.stun else attack.swing.recovery
+	else
+		nextAttackDelay = attack.swing.cancelRecovery
+	end
+
+	clearAttack(character, entry, nextAttackDelay)
+	Remotes.Server.FireAll("CombatEvent", "AttackCancelled", { character = character, reason = reason })
+	if combatLogEnabled then
+		log:Info(string.format("%s's attack %s (next attack in %.2fs)", character.Name, reason, nextAttackDelay))
+	end
+end
+
 -- ==================== movement/status/health coupling ====================
 
 -- REVIEW-M3-03 M2: HealthService.SetTier(player, "Combat") on any hit
@@ -168,7 +223,9 @@ end
 
 -- REVIEW-M3-03 M3: one place owns what happens when a status turns on or
 -- off, regardless of which code path caused it (a direct StatusService
--- call, a dev command, the shared expiry loop...).
+-- call, a dev command, the shared expiry loop...). M3-FIX3-S: also the one
+-- place that interrupts an in-progress attack when Stun/TrueStun/Knocked
+-- turns on, however it turned on.
 local function onStatusChanged(character: Model, status: string, active: boolean)
 	local mult = MOVEMENT_MULT_FOR[status]
 	if mult ~= nil then
@@ -191,6 +248,10 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 		-- actually clears the speed modifier/HealthService flag above -
 		-- one place owns that cleanup no matter which status ended it.
 		StatusService.Remove(character, "Block")
+	end
+
+	if active and INTERRUPTS_ATTACK[status] then
+		interruptAttack(character, "interrupted")
 	end
 
 	if status == "Knocked" then
@@ -278,6 +339,9 @@ local function applyBlockedHit(attacker: Model, target: Model)
 		if entry then
 			entry.parryCooldownUntil = Workspace:GetServerTimeNow() + Combat.Block.parryCooldown
 		end
+		-- The parried attacker's own swing is punished twice over: stunned,
+		-- AND (below, via onStatusChanged reacting to that Stun) their own
+		-- in-progress attack is interrupted if they hadn't finished it yet.
 		StatusService.Apply(attacker, "Stun", Combat.Block.breakStun / 2)
 		Remotes.Server.FireAll("CombatEvent", "Parried", { attacker = attacker, target = target })
 		if combatLogEnabled then
@@ -303,8 +367,9 @@ local function applyBlockedHit(attacker: Model, target: Model)
 end
 
 -- Exported (not just local) so the self-test can drive it directly with
--- fake models, without going through the full Attack()/hit-check pipeline.
-function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Move, moveIndex: number)
+-- fake models, without going through the full AttackStart/AttackHit
+-- pipeline.
+function CombatService.ApplyHit(attacker: Model, target: Model, punch: Combat.Punch, punchIndex: number)
 	local targetHumanoid = target:FindFirstChildOfClass("Humanoid")
 	local attackerHrp = attacker:FindFirstChild("HumanoidRootPart")
 	local targetHrp = target:FindFirstChild("HumanoidRootPart")
@@ -338,6 +403,11 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 		StatusService.Remove(target, "Block")
 	end
 
+	-- M3-FIX3-S: a hit that actually lands (a block/parry returned above
+	-- already) interrupts whatever punch sequence the TARGET was mid-way
+	-- through - "if the attacker gets hit, the attack is interrupted".
+	interruptAttack(target, "interrupted")
+
 	local by = attackerLabel(attacker)
 
 	-- AUDIT C2's "knock them out instead of dying" path must never let
@@ -345,7 +415,7 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 	-- the instant Health hits 0, which would kill the character before
 	-- any of this code could set it back to 1. So the would-be result is
 	-- computed BEFORE touching Health at all.
-	local wouldBeHealth = targetHumanoid.Health - move.damage
+	local wouldBeHealth = targetHumanoid.Health - punch.damage
 	if wouldBeHealth <= 0 then
 		targetHumanoid.Health = 1
 		StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, { by = by })
@@ -360,19 +430,15 @@ function CombatService.ApplyHit(attacker: Model, target: Model, move: Combat.Mov
 	-- now - a registered NPC has its own HealthService state (NpcService
 	-- calls HealthService.Register), the identical path a player's own
 	-- damage takes.
-	HealthService.TakeDamage(healthCombatant(target), move.damage, by)
+	HealthService.TakeDamage(healthCombatant(target), punch.damage, by)
 
 	StatusService.Apply(target, "Hit", Combat.Stagger.hitStun, { kind = "Fist" })
-	StatusService.Apply(target, "Stun", move.stun)
-	knockback(attacker, target, move.knockback)
+	StatusService.Apply(target, "Stun", punch.stun)
+	knockback(attacker, target, punch.knockback)
 
-	Remotes.Server.FireAll(
-		"CombatEvent",
-		"Hit",
-		{ attacker = attacker, target = target, moveIndex = moveIndex, finisher = move.finisher == true, knockback = move.knockback }
-	)
+	Remotes.Server.FireAll("CombatEvent", "Hit", { attacker = attacker, target = target, punchIndex = punchIndex, knockback = punch.knockback })
 	if combatLogEnabled then
-		log:Info(string.format("%s hit %s with %s for %d", attacker.Name, target.Name, move.name, move.damage))
+		log:Info(string.format("%s hit %s with %s for %d", attacker.Name, target.Name, punch.name, punch.damage))
 	end
 end
 
@@ -399,7 +465,7 @@ local function hasLineOfSight(attackerPos: Vector3, targetPos: Vector3, attacker
 	return result == nil
 end
 
--- A single generous sphere covering the move's reach, centred half its
+-- A single generous sphere covering the punch's reach, centred half its
 -- range in front of the attacker's torso: a simple, well-supported
 -- approximation of a forward capsule swing that doesn't depend on the
 -- third-party ShapecastHitbox module's (unverified) server-side behavior.
@@ -412,15 +478,15 @@ end
 -- front of the attacker's own facing, not just within the sphere's reach
 -- (the sphere's back edge can bulge slightly behind the attacker for a
 -- wide-radius/short-range move).
-function CombatService.FindTarget(attacker: Model, move: Combat.Move): Model?
+function CombatService.FindTarget(attacker: Model, punch: Combat.Punch): Model?
 	local torso = attacker:FindFirstChild("HumanoidRootPart")
 	if torso == nil or not torso:IsA("BasePart") then
 		return nil
 	end
 	local attackerPos = (torso :: BasePart).Position
 	local attackerLook = (torso :: BasePart).CFrame.LookVector
-	local origin = attackerPos + attackerLook * (move.range / 2)
-	local searchRadius = move.range / 2 + move.radius
+	local origin = attackerPos + attackerLook * (punch.range / 2)
+	local searchRadius = punch.range / 2 + punch.radius
 
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterDescendantsInstances = { attacker }
@@ -469,63 +535,114 @@ function CombatService.FindTarget(attacker: Model, move: Combat.Move): Model?
 end
 
 -- REVIEW-M3-03 L3: rejects a hit if the attacker moved further than a
--- legitimate combatant could have between the swing and its own hit-check
--- (a dash mid-swing, plus ordinary run speed for the remaining time) -
--- catches a speed-hacked/teleported attacker landing a hit its swing
--- position could never actually have reached.
-local function didNotTeleport(swingPosition: Vector3, currentPosition: Vector3, move: Combat.Move): boolean
-	local maxMoved = RUN_SPEED * move.hitTime + Combat.Dash.distance
+-- legitimate combatant could have in `elapsed` seconds (a dash mid-swing,
+-- plus ordinary run speed for the rest) - catches a speed-hacked/teleported
+-- attacker landing a hit its swing position could never actually have
+-- reached. `elapsed` is however long it's actually been since Swing, not a
+-- fixed per-punch number, since punches now land at client-reported times.
+local function didNotTeleport(swingPosition: Vector3, currentPosition: Vector3, elapsed: number): boolean
+	local maxMoved = RUN_SPEED * elapsed + Combat.Dash.distance
 	return (currentPosition - swingPosition).Magnitude <= maxMoved
 end
 
-local function runHitCheck(attacker: Model, move: Combat.Move, moveIndex: number, swingPosition: Vector3)
-	local entry = registered[attacker]
-	if entry == nil or attacker.Parent == nil then
-		return
-	end
-	-- REVIEW-M3-03 L4: measured from when the move's hit-check actually
-	-- resolves (matches Combat.luau's own comboWindow comment - "how long
-	-- after THIS move lands"), not from when Attack() was first called.
-	entry.lastHitAt = Workspace:GetServerTimeNow()
-	-- REVIEW-M3-03 L5/H2: dead, stunned/knocked, or now blocking (you can't
-	-- swing and hold a block at the same time) all interrupt mid-swing -
-	-- the Swing already played, it just doesn't connect.
-	local humanoid = attacker:FindFirstChildOfClass("Humanoid")
-	if humanoid == nil or humanoid.Health <= 0 then
-		return
-	end
-	if
-		StatusService.Has(attacker, "Stun")
-		or StatusService.Has(attacker, "TrueStun")
-		or StatusService.Has(attacker, "Knocked")
-		or StatusService.Has(attacker, "Block")
-	then
-		return
+-- ==================== attack flow ====================
+
+-- Shared by the AttackStart remote and CombatService.Attack (NPCs).
+-- Returns whether an attack was actually started, and the swing it started
+-- if so (so a caller that needs to know the punch timings - NpcService -
+-- doesn't have to look it back up).
+function CombatService.AttackStart(character: Model): (boolean, Combat.Swing?)
+	local entry = registered[character]
+	if entry == nil then
+		return false, nil
 	end
 
-	local torso = attacker:FindFirstChild("HumanoidRootPart")
-	if torso == nil or not torso:IsA("BasePart") or not didNotTeleport(swingPosition, (torso :: BasePart).Position, move) then
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then
+		return false, nil
+	end
+	for status in BLOCKS_ATTACK do
+		if StatusService.Has(character, status) then
+			return false, nil
+		end
+	end
+	if entry.attack ~= nil then
 		if combatLogEnabled then
-			log:Warn(string.format("%s's %s rejected: moved too far since the swing", attacker.Name, move.name))
+			log:Warn(string.format("%s's AttackStart dropped: already attacking", character.Name))
+		end
+		return false, nil
+	end
+
+	local now = Workspace:GetServerTimeNow()
+	local nextAttackAt = character:GetAttribute("NextAttackAt")
+	if type(nextAttackAt) == "number" and now < nextAttackAt then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackStart dropped: on cooldown for %.2fs", character.Name, (nextAttackAt :: number) - now))
+		end
+		return false, nil
+	end
+
+	local swing = Combat.swingFor(entry.weaponSet)
+	if swing == nil or #swing.punches == 0 then
+		log:Error(string.format("%s's weapon set %s has no swing data", character.Name, entry.weaponSet))
+		return false, nil
+	end
+
+	local torso = character:FindFirstChild("HumanoidRootPart")
+	local swingPosition = if torso and torso:IsA("BasePart") then (torso :: BasePart).Position else Vector3.zero
+
+	entry.attackGeneration += 1
+	local generation = entry.attackGeneration
+	entry.attack = {
+		swing = swing,
+		startedAt = now,
+		nextPunch = 1,
+		swingPosition = swingPosition,
+	}
+
+	pcall(function()
+		character:SetAttribute("Attacking", true)
+		character:SetAttribute("ComboStep", 1)
+	end)
+
+	Remotes.Server.FireAll("CombatEvent", "Swing", { character = character, setName = entry.weaponSet, punchCount = #swing.punches })
+	if combatLogEnabled then
+		log:Info(string.format("%s starts %s (%d punches)", character.Name, swing.name, #swing.punches))
+	end
+
+	-- Watchdog: if the client never reports the final punch (desync, drop,
+	-- a client that just stopped responding), don't leave the attacker
+	-- stuck "Attacking" forever - end it silently, no CombatEvent, and
+	-- start the normal cooldown as if it had landed.
+	local lastPunch = swing.punches[#swing.punches]
+	local watchdogDelay = lastPunch.hitWindow.max + Config.Combat.HitTolerance + swing.timeout
+	task.delay(watchdogDelay, function()
+		if entry.attack ~= nil and entry.attackGeneration == generation then
+			if combatLogEnabled then
+				log:Warn(string.format("%s's attack timed out waiting for the final AttackHit report", character.Name))
+			end
+			clearAttack(character, entry, swing.recovery)
+		end
+	end)
+
+	return true, swing
+end
+
+-- Shared by the AttackHit remote and CombatService.Attack (NPCs).
+function CombatService.AttackHit(character: Model, index: number)
+	local entry = registered[character]
+	if entry == nil or entry.attack == nil then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackHit(%d) dropped: no attack in progress", character.Name, index))
 		end
 		return
 	end
+	local attack = entry.attack :: PendingAttack
 
-	local target = CombatService.FindTarget(attacker, move)
-	if target then
-		CombatService.ApplyHit(attacker, target, move, moveIndex)
-	elseif combatLogEnabled then
-		log:Info(string.format("%s's %s whiffed", attacker.Name, move.name))
-	end
-end
-
--- ==================== public API ====================
-
--- Shared by the Attack() remote and NpcService (M3-04): identical rules
--- either way, keyed by character Model only.
-function CombatService.Attack(character: Model)
-	local entry = registered[character]
-	if entry == nil then
+	if index ~= attack.nextPunch then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackHit(%d) dropped: expected punch %d (out of order or a duplicate)", character.Name, index, attack.nextPunch))
+		end
 		return
 	end
 
@@ -533,54 +650,158 @@ function CombatService.Attack(character: Model)
 	if humanoid == nil or humanoid.Health <= 0 then
 		return
 	end
+	-- Defense in depth: onStatusChanged already interrupts (clears
+	-- entry.attack) the instant Stun/TrueStun/Knocked turns on, and Block
+	-- can't start while entry.attack ~= nil - so this should already be
+	-- unreachable via those paths, but Roblox's deferred signal behavior
+	-- means a status applied in the same frame might not have run its
+	-- Changed handler yet.
 	for status in BLOCKS_ATTACK do
 		if StatusService.Has(character, status) then
+			if combatLogEnabled then
+				log:Warn(string.format("%s's AttackHit(%d) dropped: %s", character.Name, index, status))
+			end
 			return
 		end
 	end
 
 	local now = Workspace:GetServerTimeNow()
-	local nextAttackAt = character:GetAttribute("NextAttackAt")
-	if type(nextAttackAt) == "number" and now < nextAttackAt then
+	local elapsed = now - attack.startedAt
+	local punch = attack.swing.punches[index]
+	local tolerance = Config.Combat.HitTolerance
+
+	if elapsed < punch.hitWindow.min - tolerance then
+		if combatLogEnabled then
+			log:Warn(
+				string.format(
+					"%s's AttackHit(%d) dropped: too early (elapsed %.2fs, window %.2f-%.2f)",
+					character.Name,
+					index,
+					elapsed,
+					punch.hitWindow.min,
+					punch.hitWindow.max
+				)
+			)
+		end
+		return
+	end
+	if elapsed > punch.hitWindow.max + tolerance then
+		if combatLogEnabled then
+			log:Warn(
+				string.format(
+					"%s's AttackHit(%d) dropped: too late (elapsed %.2fs, window %.2f-%.2f)",
+					character.Name,
+					index,
+					elapsed,
+					punch.hitWindow.min,
+					punch.hitWindow.max
+				)
+			)
+		end
 		return
 	end
 
-	-- REVIEW-M3-03 L4: a finisher always restarts the chain outright,
-	-- regardless of comboWindow timing; otherwise it continues only if the
-	-- PREVIOUS move's own hit-check (runHitCheck's entry.lastHitAt, not
-	-- this call's timing) landed within that move's comboWindow.
-	if entry.lastMoveWasFinisher then
-		entry.comboStep = 1
-	else
-		local previousMove = Combat.move(entry.weaponSet, entry.comboStep)
-		local comboWindow = if previousMove then previousMove.comboWindow else 0
-		entry.comboStep = CombatService.NextComboStep(entry.comboStep, comboWindow, entry.lastHitAt, now)
-	end
-
-	local move = Combat.move(entry.weaponSet, entry.comboStep)
-	if move == nil then
-		return
-	end
-	entry.lastMoveWasFinisher = move.finisher == true
-
-	character:SetAttribute("ComboStep", entry.comboStep)
-	character:SetAttribute("NextAttackAt", now + move.windup + move.recovery)
-	-- H2: Block(true) is rejected while this swing's own hit-check is
-	-- still pending.
-	entry.pendingHitUntil = now + move.hitTime
-
-	local moveIndex = entry.comboStep
 	local torso = character:FindFirstChild("HumanoidRootPart")
-	local swingPosition = if torso and torso:IsA("BasePart") then (torso :: BasePart).Position else Vector3.zero
-
-	Remotes.Server.FireAll("CombatEvent", "Swing", { character = character, setName = entry.weaponSet, moveIndex = moveIndex })
-	if combatLogEnabled then
-		log:Info(string.format("%s swings %s (%s)", character.Name, move.name, entry.weaponSet))
+	if torso == nil or not torso:IsA("BasePart") or not didNotTeleport(attack.swingPosition, (torso :: BasePart).Position, elapsed) then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackHit(%d) dropped: moved too far since the swing", character.Name, index))
+		end
+		return
 	end
 
-	task.delay(move.hitTime, function()
-		runHitCheck(character, move, moveIndex, swingPosition)
-	end)
+	if combatLogEnabled then
+		log:Info(string.format("%s's AttackHit(%d) accepted (elapsed %.2fs)", character.Name, index, elapsed))
+	end
+
+	local target = CombatService.FindTarget(character, punch)
+	if target then
+		CombatService.ApplyHit(character, target, punch, index)
+	elseif combatLogEnabled then
+		log:Info(string.format("%s's %s (punch %d) whiffed", character.Name, attack.swing.name, index))
+	end
+
+	-- CombatService.ApplyHit above may have interrupted the TARGET's own
+	-- attack (a different Entry) or, on a parry, stunned this very
+	-- attacker - but StatusService.Changed is a deferred BindableEvent, so
+	-- that stun's own interrupt hasn't run yet; `entry`/`attack` here are
+	-- still this attacker's live state either way.
+	attack.nextPunch = index + 1
+	if attack.nextPunch > #attack.swing.punches then
+		clearAttack(character, entry, attack.swing.recovery)
+		if combatLogEnabled then
+			log:Info(string.format("%s's attack complete, recovery %.2fs", character.Name, attack.swing.recovery))
+		end
+	end
+end
+
+-- Shared by the AttackCancel remote and CombatService.Attack (NPCs, in
+-- principle - NpcService doesn't cancel today, but nothing stops it later).
+function CombatService.AttackCancel(character: Model)
+	local entry = registered[character]
+	if entry == nil or entry.attack == nil then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackCancel dropped: no attack in progress", character.Name))
+		end
+		return
+	end
+	local attack = entry.attack :: PendingAttack
+
+	if attack.nextPunch ~= 1 then
+		if combatLogEnabled then
+			log:Warn(string.format("%s's AttackCancel dropped: punch 1 already landed", character.Name))
+		end
+		return
+	end
+
+	local now = Workspace:GetServerTimeNow()
+	local elapsed = now - attack.startedAt
+	local tolerance = Config.Combat.HitTolerance
+	if elapsed > attack.swing.cancelWindow + tolerance then
+		if combatLogEnabled then
+			log:Warn(
+				string.format(
+					"%s's AttackCancel dropped: past the cancel window (elapsed %.2fs, window %.2fs)",
+					character.Name,
+					elapsed,
+					attack.swing.cancelWindow
+				)
+			)
+		end
+		return
+	end
+
+	interruptAttack(character, "cancelled")
+end
+
+-- The NPC entry point (same signature as before M3-FIX3-S): starts the
+-- swing exactly like a player's AttackStart, then schedules AttackHit
+-- itself at the middle of each punch's hitWindow, so NPC punches go
+-- through the identical validation (and can be interrupted the same way)
+-- a player's own client-reported punches do.
+function CombatService.Attack(character: Model)
+	local started, swing = CombatService.AttackStart(character)
+	if not started or swing == nil then
+		return
+	end
+	local entry = registered[character]
+	if entry == nil then
+		return
+	end
+	-- REVIEW-M3-FIX3-S L2: captured so a stale timer from an attack that got
+	-- interrupted/cancelled/re-started can't consume a LATER attack's punch
+	-- (today's numbers happen to make that unreachable, but nothing should
+	-- depend on that staying true).
+	local generation = entry.attackGeneration
+
+	for index, punch in swing.punches do
+		local midpoint = (punch.hitWindow.min + punch.hitWindow.max) / 2
+		task.delay(midpoint, function()
+			if entry.attackGeneration ~= generation then
+				return
+			end
+			CombatService.AttackHit(character, index)
+		end)
+	end
 end
 
 -- Shared by the Block() remote and NpcService (M3-04).
@@ -603,9 +824,10 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 		if StatusService.Has(character, "Block") then
 			return
 		end
-		-- REVIEW-M3-03 H2: can't start blocking while your own swing's
-		-- hit-check is still in flight.
-		if entry.pendingHitUntil and Workspace:GetServerTimeNow() < entry.pendingHitUntil then
+		-- M3-FIX3-S: can't start blocking while an attack (any punch of it)
+		-- is still in progress - replaces the old H2 pendingHitUntil check
+		-- now that a "swing" can span multiple punches.
+		if entry.attack ~= nil then
 			return
 		end
 		-- onStatusChanged applies the speed modifier/HealthService.SetBlocking
@@ -631,8 +853,8 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 	local entry: Entry = {
 		owner = owner,
 		weaponSet = weaponSet or "Fist",
-		comboStep = 1,
-		lastMoveWasFinisher = false,
+		attack = nil,
+		attackGeneration = 0,
 	}
 	registered[character] = entry
 
@@ -640,6 +862,7 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		character:SetAttribute("WeaponSet", weaponSet or "Fist")
 		character:SetAttribute("ComboStep", 1)
 		character:SetAttribute("NextAttackAt", 0)
+		character:SetAttribute("Attacking", false)
 	end)
 
 	-- REVIEW-M3-03 M4: unregistered on death or on leaving the game
@@ -674,6 +897,16 @@ function CombatService.Unregister(character: Model)
 		return
 	end
 	registered[character] = nil
+	-- M3-FIX3-S: an in-progress attack dies with the combatant - no event,
+	-- nothing left to tell (the character is gone or leaving); this just
+	-- stops a stale watchdog from touching a re-registered entry later
+	-- (attackGeneration on THIS entry no longer matters once it's orphaned).
+	-- REVIEW-M3-FIX3-S L1: clear the attribute too, for tidiness, while the
+	-- character instance still exists (a corpse, or a leaving player).
+	entry.attack = nil
+	pcall(function()
+		character:SetAttribute("Attacking", false)
+	end)
 	if entry.ancestryConn then
 		entry.ancestryConn:Disconnect()
 	end
@@ -734,10 +967,24 @@ end
 function CombatService:Init()
 	registerDevCommands()
 
-	Remotes.Server.On("Attack", function(player: Player)
+	Remotes.Server.On("AttackStart", function(player: Player)
 		local character = player.Character
 		if character then
-			CombatService.Attack(character)
+			CombatService.AttackStart(character)
+		end
+	end)
+
+	Remotes.Server.On("AttackHit", function(player: Player, index: number)
+		local character = player.Character
+		if character then
+			CombatService.AttackHit(character, index)
+		end
+	end)
+
+	Remotes.Server.On("AttackCancel", function(player: Player)
+		local character = player.Character
+		if character then
+			CombatService.AttackCancel(character)
 		end
 	end)
 
