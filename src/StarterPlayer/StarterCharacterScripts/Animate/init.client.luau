@@ -19,9 +19,21 @@ local userAnimateScaleRunSuccess, userAnimateScaleRunValue = pcall(function() re
 local userAnimateScaleRun = userAnimateScaleRunSuccess and userAnimateScaleRunValue
 
 local chara = Figure
-local replicatedstorage = game:GetService("ReplicatedStorage")
-local remotes = replicatedstorage.Remotes
-local footEvent = remotes.MiscRemotes.Footstep
+-- M6-02: steps are handled on this client by FootstepController. Animate
+-- fires this BindableEvent (child of the character, local only, never
+-- replicated) with "Left" | "Right" | "Jump" instead of a server remote.
+local footEvent = chara:FindFirstChild("FootstepEvent")
+if footEvent == nil then
+	footEvent = Instance.new("BindableEvent")
+	footEvent.Name = "FootstepEvent"
+	footEvent.Parent = chara
+end
+
+-- MovementService sets this attribute on the character (replaces the old
+-- IntFold "Running?" value).
+local function isRunning()
+	return chara:GetAttribute("Running") == true
+end
 
 local function getRigScale()
 	if userAnimateScaleRun then
@@ -288,7 +300,7 @@ function playAnimation(animName, transitionTime, humanoid)
 
 		-- play the animation
 		if animName == "walk" then
-			if chara:FindFirstChild("IntFold"):FindFirstChild("Running?").Value == false then
+			if not isRunning() then
 				currentAnimTrack:Play(transitionTime)
 
 				-- listen for if running starts to end this anim.
@@ -313,27 +325,27 @@ function playAnimation(animName, transitionTime, humanoid)
 		-- footsteps sounds
 		local charaHum = chara:WaitForChild("Humanoid")
 
-		if chara:WaitForChild("IntFold"):FindFirstChild("Running?").Value == false then
+		if not isRunning() then
 			if animName == "walk" or animName == "jump" then
 				-- Dealing with Feet
 
 				conFeet1 = currentAnimTrack:GetMarkerReachedSignal("RightFoot"):Connect(function()
 					-- Checking whether or not the player is in the air.
 					if charaHum.FloorMaterial ~= Enum.Material.Air then
-						footEvent:FireServer("Right")
+						footEvent:Fire("Right")
 					end
 				end)
 
 				conFeet2 = currentAnimTrack:GetMarkerReachedSignal("LeftFoot"):Connect(function()
 					-- Checking whether or not the player is in the air.
 					if charaHum.FloorMaterial ~= Enum.Material.Air then
-						footEvent:FireServer("Left")
+						footEvent:Fire("Left")
 					end
 				end)
 
 				-- Jumping Sound for Feet
 				if animName == "jump" then
-					footEvent:FireServer("Jump", true)
+					footEvent:Fire("Jump")
 				end
 			end
 		end
@@ -549,8 +561,8 @@ function move(time)
 		
 		-- stopping walk animation if the character goes into a run.
 		local con
-		con = chara:WaitForChild("IntFold"):WaitForChild("Running?").Changed:Connect(function(v)
-			if v == true then
+		con = chara:GetAttributeChangedSignal("Running"):Connect(function()
+			if isRunning() then
 				stopAllAnimations()
 				con:Disconnect()
 			end

@@ -106,6 +106,58 @@ local function newInstance<T>(className: string, props: { [string]: any }): T
 	return instance :: any
 end
 
+-- Local-only commands (M6): they act on this client's own world, so they are
+-- answered here and never sent to the server.
+local function handleLocalCommand(text: string, reply: (string) -> ()): boolean
+	local matchedCommand, matchedRest = string.match(text, "^%.(%a+)%s*(.-)%s*$")
+	if matchedCommand == nil then
+		return false
+	end
+	local command: string = string.lower(matchedCommand)
+	local rest: string = matchedRest or ""
+	local controllers = script.Parent
+
+	if command == "region" then
+		local RegionController = require(controllers.RegionController) :: any
+		local keys = RegionController.Current()
+		reply(if #keys == 0 then "regions: none" else "regions: " .. table.concat(keys, ", "))
+		return true
+	elseif command == "music" then
+		local MusicController = require(controllers.MusicController) :: any
+		local arg = string.lower(rest)
+		if arg == "" then
+			reply("now playing: " .. tostring(MusicController.CurrentTrack()))
+		elseif arg == "stop" then
+			MusicController.Stop()
+			reply("music stopped (until you change region)")
+		elseif arg == "next" then
+			MusicController.Next()
+			reply("next track")
+		elseif MusicController.PlayForced(rest) then
+			reply("playing " .. rest)
+		else
+			reply("no such track: " .. rest)
+		end
+		return true
+	elseif command == "lights" then
+		local LightingController = require(controllers.LightingController) :: any
+		local arg = string.lower(rest)
+		if arg == "on" then
+			LightingController.ForceLights(true)
+		elseif arg == "off" then
+			LightingController.ForceLights(false)
+		elseif arg == "auto" then
+			LightingController.ForceLights(nil)
+		else
+			reply("usage: .lights on|off|auto (now " .. (if LightingController.LightsOn() then "on" else "off") .. ")")
+			return true
+		end
+		reply("city lights: " .. arg)
+		return true
+	end
+	return false
+end
+
 function DevController:Init() end
 
 function DevController:Start()
@@ -274,7 +326,9 @@ function DevController:Start()
 		if #text == 0 then
 			return
 		end
-		Remotes.Client.Fire("DevCommand", text)
+		if not handleLocalCommand(text, appendReply) then
+			Remotes.Client.Fire("DevCommand", text)
+		end
 		table.insert(history, text)
 		while #history > MAX_HISTORY do
 			table.remove(history, 1)
