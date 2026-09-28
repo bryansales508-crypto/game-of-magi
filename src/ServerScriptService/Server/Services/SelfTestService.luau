@@ -44,6 +44,25 @@ local function expect(results: { Check }, name: string, condition: boolean)
 	table.insert(results, { name = name, pass = condition })
 end
 
+-- BUG-26 (M3-FIX2-S): polls `predicate` instead of asserting right after a
+-- fixed `task.wait(n)` - Studio runs with Deferred signal behavior (a
+-- BindableEvent connection doesn't run until the firing thread's next
+-- resumption point, not synchronously) and task.wait can genuinely take
+-- longer than requested under load, so no fixed wait is ever provably
+-- enough. Returns true as soon as `predicate()` does, otherwise keeps
+-- yielding (never busy-loops without a wait) until `timeoutSeconds` have
+-- passed, then makes one final check.
+local function pollUntil(timeoutSeconds: number, predicate: () -> boolean): boolean
+	local deadline = os.clock() + timeoutSeconds
+	while os.clock() < deadline do
+		if predicate() then
+			return true
+		end
+		task.wait()
+	end
+	return predicate()
+end
+
 local function testValidators(results: { Check })
 	local number = Validate.number({ min = 0, max = 10, integer = true })
 	expect(results, "number: good value accepted", (number(5)))
@@ -847,25 +866,28 @@ local function testStatusService(results: { Check })
 
 		StatusService.Register(character)
 
-		-- BUG-23 (M3-FIX-S): both fixes below are test-side, not
-		-- StatusService bugs. (1) Roblox's default Signal Behavior is
-		-- Deferred: changedBindable:Fire(...) inside Apply/Remove does NOT
-		-- invoke this connection synchronously, so checking activeFires
-		-- immediately after Apply (no yield in between) reliably read it
-		-- as 0, not 1 - a `task.wait()` lets the deferred call actually
-		-- dispatch before we look. (2) the original 0.15s duration against
-		-- 0.1s waits left only a 0.05s margin either side of Studio's own
-		-- task.wait scheduling jitter (worse right after server start,
-		-- when the self-test actually runs) - "re-Apply refreshes" could
-		-- read Has as false if the ORIGINAL entry expired inside that
-		-- first 0.1s wait before the refreshing Apply even ran. Both
-		-- Apply/Remove/the shared expiry loop are correct; the test just
-		-- needs to give real time enough room.
-		local DURATION = 1
-		local MARGIN = 0.3
+		-- BUG-26 (M3-FIX2-S): the M3-FIX-S rewrite still asserted right
+		-- after a FIXED task.wait(n) - correct in spirit (a Deferred
+		-- signal handler needs a yield to actually run at all, and a real
+		-- duration needs real time to pass before it can expire), but a
+		-- fixed wait can never be PROVEN long enough: Studio's own
+		-- task.wait is only a lower bound (it can overshoot under load,
+		-- especially right when the self-test runs, just after server
+		-- start), so "one task.wait() always flushes the deferred queue"
+		-- and "0.1s of wait never overshoots a 1.0s+0.3s budget" were both
+		-- still schedule-dependent guesses, not proofs. `pollUntil` (above)
+		-- removes the guess: each assertion below only runs once the
+		-- condition it checks is actually true, or a generous multi-second
+		-- deadline is reached - so it passes or fails on what the code
+		-- did, not on how fast this particular tick ran. StatusService's
+		-- Apply/Remove/shared expiry loop are unchanged and correct; every
+		-- fix in this block is test-side.
+		local DURATION = 2
 
 		StatusService.Apply(character, "Stun", DURATION)
-		task.wait()
+		pollUntil(1, function()
+			return activeFires >= 1
+		end)
 		expect(results, "StatusService: Apply makes Has true", StatusService.Has(character, "Stun"))
 		expect(
 			results,
@@ -874,24 +896,37 @@ local function testStatusService(results: { Check })
 		)
 		expect(results, "StatusService: Changed fires exactly once on Apply", activeFires == 1)
 
-		-- Refresh: re-Apply well before expiry should push the expiry
-		-- back out, so waiting past the ORIGINAL duration alone must not
-		-- clear it, and must not re-fire Changed (the active state didn't
-		-- change).
-		task.wait(MARGIN)
+		-- Refresh immediately (DURATION is generous enough that even the
+		-- poll above, worst case, can't have eaten into it): re-Apply
+		-- before expiry must push the expiry back out, and must not
+		-- re-fire Changed (the active state didn't change). There's
+		-- nothing to poll FOR here (no state transition to wait on), so a
+		-- few bare yields just give any wrongly-fired deferred event a
+		-- chance to show up before the "still 1" check.
 		StatusService.Apply(character, "Stun", DURATION)
 		task.wait()
-		task.wait(MARGIN)
+		task.wait()
+		task.wait()
 		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
 		expect(results, "StatusService: a refreshing re-Apply doesn't re-fire Changed", activeFires == 1)
 
-		task.wait(DURATION + MARGIN)
+		-- "a window that ends only after the loop has ticked at least
+		-- once past expiry": poll for Has actually clearing (which can
+		-- only happen once the shared expiry loop has run at least one
+		-- tick past the refreshed expiresAt), not a fixed wait sized to
+		-- guess when that tick will have happened.
+		pollUntil(DURATION + 2, function()
+			return not StatusService.Has(character, "Stun")
+		end)
 		expect(results, "StatusService: an expired duration clears Has", not StatusService.Has(character, "Stun"))
 		expect(
 			results,
 			"StatusService: attribute clears once the status expires",
 			character:GetAttribute("Stunned") == false
 		)
+		pollUntil(1, function()
+			return inactiveFires >= 1
+		end)
 		expect(results, "StatusService: Changed fires exactly once on expiry", inactiveFires == 1)
 
 		conn:Disconnect()
