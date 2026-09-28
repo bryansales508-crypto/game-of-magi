@@ -3,16 +3,24 @@
 -- from the old OldGameScripts/WipeHandlerPart2 (docs/reference/
 -- old-game-scripts.txt line 6503) and DeathHandlerPart1 (line 6064).
 --
--- Contract with the server (M2-02):
+-- Contract with the server (M2-02, plus M3B-05/M3B-06 for lives):
 --   HeartAttack(age: number, fatal: boolean) -- server -> client. Every
 --   online birthday from 60 fires a short non-fatal moment; a fatal one
---   leads into the scene below.
+--   (old age -- always wipes, regardless of lives left) leads into the
+--   scene below.
+--   Died({cause: "lastLife"}) -- server -> client. Fired instead of
+--   HeartAttack for the death that takes a character's LAST life
+--   (Bryan's rule: 4 lives per character; an ordinary death with lives
+--   left just respawns the same character with no client involvement at
+--   all -- nothing here reacts to Humanoid.Died itself, only to this
+--   remote). Goes straight into the same return-to-the-Rukh scene, with
+--   no heartbeat pulses and no "Your heart gave out." line first.
 --   RukhSceneDone() -- client -> server, no args, fired once the scene
 --   finishes; the server starts the fresh life then, or after a 30s
 --   timeout regardless.
---   Player:GetAttribute("Dying") is true for the duration of the fatal
+--   Player:GetAttribute("Dying") is true for the duration of either
 --   sequence -- informational on the server's side; this controller
---   drives entirely off the HeartAttack remote's own `fatal` argument.
+--   drives entirely off the HeartAttack/Died remotes' own arguments.
 --
 -- Bryan tunes the scene himself (M2-FIX-C, BUG-16): every timing here
 -- comes from Config.Scene, and the return-to-the-Rukh scene's own LOOK
@@ -624,6 +632,28 @@ function RukhController:Start()
 				playNonFatalPulse(myGeneration)
 			end)
 		end
+	end)
+
+	-- M3B-06: the death that takes a character's last life. Same
+	-- generation/cleanup machinery as HeartAttack above, so a Died mid-
+	-- pulse cancels the pulse, a HeartAttack mid-Died-scene cancels the
+	-- scene, and a respawn cancels either -- point 2's guards are just
+	-- this shared mechanism, not anything new. Straight into
+	-- freezeInput + playRukhScene: no pulses, no "Your heart gave out.".
+	Remotes.Client.On("Died", function(data: any)
+		if typeof(data) ~= "table" or data.cause ~= "lastLife" then
+			log:Warn("Died: unexpected payload")
+			return
+		end
+
+		local myGeneration = startGeneration()
+		task.spawn(function()
+			freezeInput(myGeneration)
+			if not isCurrent(myGeneration) then
+				return
+			end
+			playRukhScene(myGeneration)
+		end)
 	end)
 
 	log:Info("ready")
