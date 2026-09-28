@@ -1,0 +1,22 @@
+Follow-up **M3-FIX3-C: animation-driven punches, interrupts and the right-click cancel** (client side). `git fetch origin main && git merge origin/main` first. Same rules: your branch, never push main, check.sh at 0 errors, LAST commit starts with `DONE M3-FIX3-C:`. Read `docs/TINKER.md` section "Combat" for the current flow.
+
+## Bryan's design (2026-09-28)
+One click = one fist animation (`rbxassetid://125726557974534`, already `Fist` in CombatController) containing TWO punches, right then left. The animation carries events (markers): a wind-up and a hit for each punch. The client sends one hit report per hit marker. During a wind-up, if the attacker has been hit, the attack stops. Right-click cancels ONLY before the first wind-up marker; after that the swing carries through. A cancel briefly highlights the player (the old "Cancel" highlight, `character.Cancel`, a Highlight cloned by CharacterService from `ReplicatedFirst.VFX.MiscEffects.Cancel`) so the enemy sees it. The server (M3-FIX3-S, built in parallel) validates everything.
+
+## Contract (keep these names exactly)
+- Remotes (defined by the server side; you don't edit `Shared/Remotes.luau`): `AttackStart()`, `AttackHit(index)`, `AttackCancel()`. `Attack()` no longer exists.
+- `CombatEvent`: `Swing {character, setName, punchCount}`, `Hit {..., punchIndex}`, `AttackCancelled {character, reason: "cancelled" | "interrupted"}`. Attributes: `Attacking` (bool), plus the existing ones.
+- **Marker names are unknown** (we can't read the animation). Add `Config.Combat = { Markers = { Windup = {"Windup1", "Windup2"}, Hit = {"Hit1", "Hit2"} }, LogMarkers = true }` to `Shared/Config.luau` with a comment: Bryan edits the names to match his animation events; when `LogMarkers` is true, every `KeyframeReached` and every marker reached on the fist track is logged (`Log:Info("marker: <name> at <t>s")`) so he can read the real names and times from Output.
+
+## CombatController changes
+1. M1: if the attributes allow it (as today) fire `AttackStart()`; do not play anything yet.
+2. On `Swing` for the LOCAL character: play the set's track; connect `track:GetMarkerReachedSignal(name)` for each configured wind-up and hit name (and `KeyframeReached` for the log). At hit marker k -> `AttackHit(k)`. At wind-up marker k -> if the `Stunned`/`Knocked` attribute is true, stop the track (the server sends `AttackCancelled` too; both paths stop it once). Track `firstWindupReached` for the cancel rule. For OTHER characters' `Swing`: play the track only (as today).
+3. Right-click (or jump, as before): if an attack is in progress and the first wind-up marker has NOT been reached -> `AttackCancel()`; otherwise ignore. Never stop the track locally on a cancel request; wait for `AttackCancelled`.
+4. On `AttackCancelled` for the local character: stop the fist track with a short fade. On `AttackCancelled` for any character: nothing here (EffectsController handles the visuals).
+5. Clean up the marker connections when the track ends, on cancel, and on CharacterRemoving.
+
+## EffectsController changes
+6. On `AttackCancelled {reason = "cancelled"}`: flash that character's `Cancel` Highlight (enable it for `Config.Combat.CancelFlashSeconds = 0.25`, then disable; clone from `ReplicatedFirst.VFX.MiscEffects.Cancel` if the character lacks one). On `reason = "interrupted"`: play the existing stagger reaction on that character and stop its fist track if one is playing for it.
+7. The `Swing` miss-sound logic must handle two punches: play the miss sound per punch that gets no `Hit` within its window (use `punchCount` and the `Hit.punchIndex`).
+
+Style as always: `--!strict`, `task.*`, Log only, tracked connections. Reply with BRANCH, commit hash, files, check.sh counts, and a plain 6-line explanation for Bryan of what he must do to match the marker names.
