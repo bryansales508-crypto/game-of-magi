@@ -14,6 +14,7 @@ local Log = require(ReplicatedStorage.Shared.Log)
 local Validate = require(ReplicatedStorage.Shared.Validate)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
+local DataService = require(script.Parent.DataService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
@@ -22,6 +23,7 @@ local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
+local LifeService = require(script.Parent.LifeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
@@ -233,6 +235,90 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v1 -> v2 migration leaves PendingEpithet nil (nothing to fill)", data.Progress.PendingEpithet == nil)
 	end
 
+	-- M3B-01: schema v3 adds Meta.Unlocks.Combat. The fake input already has
+	-- Unlocks pre-populated (simulating what Profile:Reconcile() would have
+	-- already backfilled in production, before Migrate ever runs - same
+	-- reasoning as Migrations[3]'s own comment).
+	do
+		local data = ({
+			Version = 2,
+			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v2 -> v3 migration bumps Version to 3", data.Version == 3)
+		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
+	end
+
+	do
+		expect(results, "SaveSchema: a fresh template starts Meta.Unlocks.Combat false (earned, not automatic)", SaveSchema.Template.Meta.Unlocks.Combat == false)
+		local wouldBeUnlocked = SaveSchema.Template.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault
+		expect(
+			results,
+			"CombatService: CombatUnlocked follows Config.Combat.UnlockedByDefault for a fresh save (blanket-unlocked until the tutorial ships)",
+			wouldBeUnlocked == Config.Combat.UnlockedByDefault
+		)
+	end
+
+	-- REVIEW-M3B-01 C1: a brand-new profile follows exactly this path
+	-- (ProfileStore's own deep copy of SaveSchema.Template, then
+	-- Profile:Reconcile(), then SaveSchema.Migrate - DataService.luau's
+	-- onPlayerAdded). Migrate must be a no-op for it now that the
+	-- template's own Version is already current - before the fix, this
+	-- walked a fresh profile through Migrations[3] too, which grandfathered
+	-- it into Meta.Unlocks.Combat = true even though nothing was ever
+	-- "existing" to grandfather.
+	do
+		local function deepCopy(value: any): any
+			if type(value) ~= "table" then
+				return value
+			end
+			local copy = {}
+			for key, inner in value do
+				copy[key] = deepCopy(inner)
+			end
+			return copy
+		end
+
+		local data = deepCopy(SaveSchema.Template) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: migrating a fresh deep copy of the template is a no-op (Version is already current)", data.Version == Config.Data.SchemaVersion)
+		expect(results, "SaveSchema: a brand-new profile starts with Meta.Unlocks.Combat false (earned, not automatic)", data.Meta.Unlocks.Combat == false)
+		expect(results, "SaveSchema: a brand-new profile starts with a full Character.LivesLeft", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
+	end
+
+	-- M3B-01 (Bryan's refinement, 2026-09-28): the combat unlock is
+	-- per-player forever, not per-life - DataService.ResetToTemplate is the
+	-- exact reset both Wipe and NewLife build on, so exercising it directly
+	-- proves what each of them actually does to Meta.Unlocks.Combat, with no
+	-- Player/ProfileStore involved.
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Character = { LivesLeft = 0 },
+			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+		local keepCombatUnlocked = data.Meta.Unlocks.Combat
+
+		DataService.ResetToTemplate(data)
+		data.Meta.Unlocks.Combat = keepCombatUnlocked -- NewLife's own restore step
+
+		expect(results, "DataService: NewLife's reset carries Meta.Unlocks.Combat over (per-player forever, not per-life)", data.Meta.Unlocks.Combat == true)
+		-- M3B-05: a brand-new character always starts with a full life count,
+		-- regardless of how many the character it replaces had left (0 here).
+		expect(results, "DataService: NewLife's reset gives the new character a full Character.LivesLeft again", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
+	end
+
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+
+		DataService.ResetToTemplate(data)
+
+		expect(results, "DataService: Wipe's reset (no restore step) clears Meta.Unlocks.Combat back to the template's false", data.Meta.Unlocks.Combat == false)
+	end
+
 	do
 		local data: SaveSchema.Data = {
 			Version = 1,
@@ -248,6 +334,7 @@ local function testDataService(results: { Check })
 				MouthShape = 1,
 				Height = 1,
 				GrowthProfile = "",
+				LivesLeft = Config.Life.LivesPerCharacter,
 			},
 			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
 			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
@@ -256,7 +343,7 @@ local function testDataService(results: { Check })
 			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
 			Family = {},
 			Magic = {},
-			Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
 		}
 
 		local standIn = Instance.new("Folder")
@@ -465,6 +552,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			MouthShape = 1,
 			Height = 10,
 			GrowthProfile = "",
+			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
 		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
@@ -473,7 +561,7 @@ local function fakeCharacterData(): SaveSchema.Data
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
 		Family = {},
 		Magic = {},
-		Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+		Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
 	}
 end
 
@@ -1809,6 +1897,124 @@ local function testCombatService(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3B-01: the combat stance - SetStance gating (locked/knocked), AttackStart
+-- rejected outside the stance, and the tool -> style mapping.
+local function testCombatStance(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestCombatStance"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model
+	end
+
+	do
+		local fakePlayerInstance = Instance.new("Folder")
+		fakePlayerInstance.Name = "SelfTestStancePlayer"
+		fakePlayerInstance.Parent = scratch
+		local fakePlayer = (fakePlayerInstance :: any) :: Player
+
+		local character = buildFakeCombatant("SelfTestStanceAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, fakePlayer, "Fist")
+
+		local startedLocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance is rejected while combat is locked (CombatUnlocked not true)",
+			startedLocked == false and character:GetAttribute("InCombat") ~= true
+		)
+
+		local startedOutsideStance = CombatService.AttackStart(character)
+		expect(results, "CombatService: AttackStart is rejected outside the combat stance", startedOutsideStance == false)
+
+		fakePlayer:SetAttribute("CombatUnlocked", true)
+		local startedUnlocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance succeeds once CombatUnlocked is true",
+			startedUnlocked == true and character:GetAttribute("InCombat") == true
+		)
+
+		-- REVIEW-M3B-01 H1: still InCombat (from the SetStance(true) just
+		-- above) when the knockout lands - onStatusChanged's Knocked branch
+		-- has to be what drops it, not a caller remembering to leave first.
+		StatusService.Apply(character, "Knocked", 5)
+		expect(results, "CombatService: a knockout drops a player out of the combat stance on its own", character:GetAttribute("InCombat") ~= true)
+
+		local startedKnocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance is rejected while knocked",
+			startedKnocked == false and character:GetAttribute("InCombat") ~= true
+		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	-- REVIEW-M3B-01 H1's own guard: an NPC (owner == nil) is always
+	-- InCombat by design and a knockout must never touch that.
+	do
+		local character = buildFakeCombatant("SelfTestStanceNpc", Vector3.new(1210, 5, 0), Vector3.new(1210, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		character:SetAttribute("InCombat", true) -- NpcService's own job normally, not CombatService's
+
+		StatusService.Apply(character, "Knocked", 5)
+		expect(results, "CombatService: a knockout never drops an NPC out of InCombat", character:GetAttribute("InCombat") == true)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	do
+		local character = buildFakeCombatant("SelfTestToolAttacker", Vector3.new(1220, 5, 0), Vector3.new(1220, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		character:SetAttribute("InCombat", true) -- no stance gating needed for this check
+
+		local tool = Instance.new("Tool")
+		tool:SetAttribute("Weapon", "Dagger")
+		tool.Parent = character
+		local equipped = pollUntil(1, function()
+			return character:GetAttribute("WeaponSet") == "Dagger"
+		end)
+		expect(results, "CombatService: equipping a weapon Tool sets WeaponSet to its own style", equipped)
+
+		CombatService.AttackStart(character)
+		expect(results, "CombatService: tool-equip setup - an attack is in progress", character:GetAttribute("Attacking") == true)
+
+		tool:Destroy() -- unequip
+		local unequipped = pollUntil(1, function()
+			return character:GetAttribute("WeaponSet") == "Fist" and character:GetAttribute("Attacking") == false
+		end)
+		expect(results, "CombatService: unequipping the weapon Tool drops the style to Fist and cancels the in-progress attack", unequipped)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	scratch:Destroy()
+end
+
 -- M3-04: BehaviorTree node semantics (Selector short-circuit, Sequence
 -- failure, Running propagation, Cooldown), pure and self-contained - no
 -- Roblox instances needed, just counters and canned statuses.
@@ -1930,6 +2136,365 @@ local function testNpcService(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3B-02: each trainer tree ticks without error through its main branch,
+-- against a real registered trainer (so CombatService.Attack/AttackCancel/
+-- SetBlocking and MovementService.Dash have live state to act on) and a
+-- plain fake target Model whose Attacking/CurrentHit attributes are set
+-- directly (a trainer only ever reads those two off its target, so there's
+-- nothing for the target to be registered with).
+local function testTrainers(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestTrainers"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model
+	end
+
+	local function buildTrainerBlackboard(trainer: Model, target: Model, engageRadius: number): any
+		local humanoid = trainer:FindFirstChildOfClass("Humanoid") :: Humanoid
+		local rootPart = trainer:FindFirstChild("HumanoidRootPart") :: BasePart
+		return {
+			character = trainer,
+			humanoid = humanoid,
+			rootPart = rootPart,
+			npcType = "Dummy",
+			home = rootPart.Position,
+			target = target,
+			wanderGoal = nil,
+			path = nil,
+			waypoints = nil,
+			waypointIndex = 1,
+			pathComputedAt = nil,
+			engageRadius = engageRadius,
+		}
+	end
+
+	local function registerTrainer(trainer: Model)
+		StatusService.Register(trainer)
+		MovementService.Register(trainer, nil)
+		CombatService.Register(trainer, nil, "Fist")
+		pcall(function()
+			trainer:SetAttribute("InCombat", true) -- a live trainer is always in the stance, same as any NPC
+		end)
+	end
+
+	local function teardown(trainer: Model, target: Model)
+		StatusService.Unregister(trainer)
+		MovementService.Unregister(trainer)
+		CombatService.Unregister(trainer)
+		trainer:Destroy()
+		target:Destroy()
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestSam", Vector3.new(2000, 5, 0), Vector3.new(2000, 5, 1))
+		local target = buildFakeCombatant("SelfTestSamTarget", Vector3.new(2000, 5, 3), Vector3.new(2000, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("StraightSam", { rhythmSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Straight Sam throws on rhythm", trainer:GetAttribute("Attacking") == true)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestTariq", Vector3.new(2010, 5, 0), Vector3.new(2010, 5, 1))
+		local target = buildFakeCombatant("SelfTestTariqTarget", Vector3.new(2010, 5, 3), Vector3.new(2010, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("TurtleTariq", { engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Turtle Tariq blocks", StatusService.Has(trainer, "Block"))
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestJamalIdle", Vector3.new(2020, 5, 0), Vector3.new(2020, 5, 1))
+		local target = buildFakeCombatant("SelfTestJamalTargetIdle", Vector3.new(2020, 5, 3), Vector3.new(2020, 5, 4))
+		target:SetAttribute("Attacking", false)
+		target:SetAttribute("CurrentHit", "")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(
+			results,
+			"Trainers: Jabbing Jamal doesn't jab without a Heavy wind-up (blocks instead)",
+			trainer:GetAttribute("Attacking") ~= true and StatusService.Has(trainer, "Block")
+		)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestJamalReact", Vector3.new(2030, 5, 0), Vector3.new(2030, 5, 1))
+		local target = buildFakeCombatant("SelfTestJamalTargetReact", Vector3.new(2030, 5, 3), Vector3.new(2030, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.05, engageRadius = 50 })
+		local jabbed = pollUntil(1, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Jabbing Jamal jabs only when the target's CurrentHit == \"Heavy\"", jabbed)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestPeteLight", Vector3.new(2040, 5, 0), Vector3.new(2040, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetLight", Vector3.new(2040, 5, 3), Vector3.new(2040, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Light")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.05, engageRadius = 50 })
+		local parried = pollUntil(1, function()
+			tree.Tick(bb)
+			return StatusService.Has(trainer, "Block")
+		end)
+		expect(results, "Trainers: Parry Pete parries the target's first Light", parried)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestPeteHeavy", Vector3.new(2050, 5, 0), Vector3.new(2050, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetHeavy", Vector3.new(2050, 5, 3), Vector3.new(2050, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.02, engageRadius = 50 })
+		for _ = 1, 5 do
+			tree.Tick(bb)
+		end
+		expect(results, "Trainers: Parry Pete never parries a Heavy", not StatusService.Has(trainer, "Block"))
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestMohammed", Vector3.new(2060, 5, 0), Vector3.new(2060, 5, 1))
+		local target = buildFakeCombatant("SelfTestMohammedTarget", Vector3.new(2060, 5, 3), Vector3.new(2060, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("FeintingMohammed", { rhythmSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Feinting Mohammed throws its light-heavy chain", trainer:GetAttribute("Attacking") == true)
+
+		-- Combat.Styles.Fist.chain[2] (Heavy)'s own cancelUntil is 1.05s;
+		-- its hitWindow doesn't open until 1.45s - a cancel caught well
+		-- before that proves it didn't just land normally.
+		local cancelled = pollUntil(1.3, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == false
+		end)
+		expect(results, "Trainers: Feinting Mohammed cancels its own heavy at cancelUntil", cancelled)
+
+		local rejabbed = pollUntil(0.5, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Feinting Mohammed re-jabs right after cancelling", rejabbed)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestDalila", Vector3.new(2080, 5, 0), Vector3.new(2080, 5, 1))
+		local target = buildFakeCombatant("SelfTestDalilaTarget", Vector3.new(2080, 5, 3), Vector3.new(2080, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.05, engageRadius = 50 })
+		local dashed = pollUntil(1, function()
+			tree.Tick(bb)
+			local nextDashAt = trainer:GetAttribute("NextDashAt")
+			return typeof(nextDashAt) == "number" and (nextDashAt :: number) > 0
+		end)
+		expect(results, "Trainers: Dashing Dalila dashes away on the target's Heavy wind-up", dashed)
+		teardown(trainer, target)
+	end
+
+	-- REVIEW-M3B-02: the non-reacting branch is a lone jab, not the full
+	-- Sam-style chain - with the target idle, she should throw (Attacking
+	-- true) and then self-cancel her own heavy (Attacking false again,
+	-- well before the heavy's own hitWindow would resolve it naturally).
+	do
+		local trainer = buildFakeCombatant("SelfTestDalilaRhythm", Vector3.new(2085, 5, 0), Vector3.new(2085, 5, 1))
+		local target = buildFakeCombatant("SelfTestDalilaRhythmTarget", Vector3.new(2085, 5, 3), Vector3.new(2085, 5, 4))
+		target:SetAttribute("Attacking", false)
+		target:SetAttribute("CurrentHit", "")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.01, engageRadius = 50 })
+
+		local jabbed = pollUntil(1, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Dashing Dalila jabs on rhythm when the target isn't winding up a Heavy", jabbed)
+
+		local cancelled = pollUntil(1.3, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == false
+		end)
+		expect(results, "Trainers: Dashing Dalila cancels her own heavy - a lone jab, never the full chain", cancelled)
+
+		teardown(trainer, target)
+	end
+
+	do
+		expect(results, "Trees.WeightedPick: a single 100% option always wins", NpcTrees.WeightedPick({ throw = 1, cancel = 0, parry = 0, dash = 0 }, 0.5) == "throw")
+		expect(results, "Trees.WeightedPick: picks the option the roll actually falls into", NpcTrees.WeightedPick({ throw = 0, cancel = 1, parry = 0, dash = 0 }, 0.999) == "cancel")
+		expect(
+			results,
+			"Trees.WeightedPick: falls back to the first action when every weight is 0",
+			NpcTrees.WeightedPick({ throw = 0, cancel = 0, parry = 0, dash = 0 }, 0.5) == "throw"
+		)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestSinbad", Vector3.new(2090, 5, 0), Vector3.new(2090, 5, 1))
+		local target = buildFakeCombatant("SelfTestSinbadTarget", Vector3.new(2090, 5, 3), Vector3.new(2090, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("SparringSinbad", { rhythmSeconds = 0.01, engageRadius = 50, weights = { throw = 1, cancel = 0, parry = 0, dash = 0 } })
+		tree.Tick(bb)
+		expect(results, "Trainers: Sparring Sinbad picks by weights (100% throw always throws)", trainer:GetAttribute("Attacking") == true)
+		teardown(trainer, target)
+	end
+
+	scratch:Destroy()
+end
+
+-- M3B-05: LifeService.HandleDeath's own branch logic (a live Humanoid.Died
+-- round-trip needs a real Player - Player.Character/:LoadCharacter() aren't
+-- fakeable the way DataService.ResetToTemplate's plain data table is, same
+-- limitation as DataService.Wipe/.NewLife above).
+local function testLifeService(results: { Check })
+	do
+		local data = ({ Character = { LivesLeft = 3 } } :: any) :: SaveSchema.Data
+		local outcome = LifeService.HandleDeath(data)
+		expect(
+			results,
+			"LifeService: a death with lives left just respawns the same character, no scene",
+			outcome == "respawn" and data.Character.LivesLeft == 2
+		)
+	end
+
+	do
+		local data = ({ Character = { LivesLeft = 1 } } :: any) :: SaveSchema.Data
+		local outcome = LifeService.HandleDeath(data)
+		expect(
+			results,
+			"LifeService: the death that takes the last life runs the afterlife scene",
+			outcome == "lastLife" and data.Character.LivesLeft == 0
+		)
+	end
+
+	do
+		expect(
+			results,
+			"SaveSchema: a fresh template starts with a full Character.LivesLeft",
+			SaveSchema.Template.Character.LivesLeft == Config.Life.LivesPerCharacter
+		)
+	end
+
+	-- REVIEW-M3B-05 M2(a): a combat knockout never reaches Humanoid.Died in
+	-- the first place - CombatService.ApplyHit floors a lethal hit at 1 HP
+	-- and applies Knocked instead of ever letting Health hit 0, so
+	-- LifeService.onDied is never even invoked. No Player/DataService is
+	-- involved in this scratch rig at all, which is itself the point: this
+	-- combat path has no LivesLeft to touch.
+	do
+		local attacker = Instance.new("Model")
+		attacker.Name = "SelfTestLifeKnockoutAttacker"
+		local attackerHrp = Instance.new("Part")
+		attackerHrp.Name = "HumanoidRootPart"
+		attackerHrp.Anchored = true
+		attackerHrp.CFrame = CFrame.new(Vector3.new(2100, 5, 0), Vector3.new(2100, 5, 1))
+		attackerHrp.Parent = attacker
+		attacker.Parent = Workspace
+
+		local target = Instance.new("Model")
+		target.Name = "SelfTestLifeKnockoutTarget"
+		local targetHrp = Instance.new("Part")
+		targetHrp.Name = "HumanoidRootPart"
+		targetHrp.Anchored = true
+		targetHrp.CFrame = CFrame.new(Vector3.new(2100, 5, 3), Vector3.new(2100, 5, 0))
+		targetHrp.Parent = target
+		local targetHumanoid = Instance.new("Humanoid")
+		targetHumanoid.MaxHealth = 100
+		targetHumanoid.Health = 3 -- less than the Jab's damage
+		targetHumanoid.Parent = target
+		target.Parent = Workspace
+
+		StatusService.Register(target)
+
+		local fist = Combat.styleFor("Fist") :: Combat.Style
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
+
+		expect(
+			results,
+			"LifeService: a lethal combat hit knocks out (Health 1, Knocked) instead of reaching Humanoid.Died - LivesLeft is never in play",
+			targetHumanoid.Health == 1 and StatusService.Has(target, "Knocked")
+		)
+
+		StatusService.Unregister(target)
+		target:Destroy()
+		attacker:Destroy()
+	end
+
+	-- REVIEW-M3B-05 M2(b): a fatal heart attack calls AgeService.
+	-- StartDeathSequence with cause = "heartAttack" unconditionally (see
+	-- AgeService.onBirthday/.ForceHeartAttack) - it never reads
+	-- Character.LivesLeft at all, so it still wipes even with a full 4 left.
+	-- DataService.NewLife's own reset pattern (capture Meta.Lives/keep the
+	-- combat unlock, ResetToTemplate, restore them) is exactly what that
+	-- path runs into.
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Character = { LivesLeft = Config.Life.LivesPerCharacter },
+			Meta = { Created = 222, LastSeen = 0, Lives = 2, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+		local keepLives = data.Meta.Lives + 1
+		local keepCreated = data.Meta.Created
+		local keepCombatUnlocked = data.Meta.Unlocks.Combat
+
+		DataService.ResetToTemplate(data)
+		data.Meta.Lives = keepLives
+		data.Meta.Created = keepCreated
+		data.Meta.Unlocks.Combat = keepCombatUnlocked
+
+		expect(
+			results,
+			"LifeService: a fatal heart attack with a full LivesLeft still wipes to a new character (Meta.Lives n -> n+1)",
+			data.Meta.Lives == 3
+		)
+		expect(
+			results,
+			"LifeService: the new character from a heart attack starts with a full LivesLeft again",
+			data.Character.LivesLeft == Config.Life.LivesPerCharacter
+		)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -1954,8 +2519,11 @@ function SelfTestService:Start()
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)
+		testCombatStance(collected)
 		testBehaviorTree(collected)
 		testNpcService(collected)
+		testTrainers(collected)
+		testLifeService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

@@ -25,6 +25,13 @@ export type Data = {
 		MouthShape: number,
 		Height: number, -- 10 = "not rolled yet" sentinel
 		GrowthProfile: string, -- "" until AgeHandler rolls one; format "v1|start|adult|spurtAge|fatEnd"
+		-- Schema v3 (M3B-05): this character's own remaining lives
+		-- (Config.Life.LivesPerCharacter at birth). A real death
+		-- (Humanoid.Died - not a combat knockout) costs one; the death
+		-- that takes the last one wipes to a brand-new character with a
+		-- fresh count (LifeService.luau). Distinct from Meta.Lives below,
+		-- which counts CHARACTERS, not lives within one.
+		LivesLeft: number,
 	},
 	Age: {
 		Years: number,
@@ -61,14 +68,39 @@ export type Data = {
 	Meta: {
 		Created: number, -- os.time() of first load; 0 until then
 		LastSeen: number, -- os.time() of the most recent load
+		-- The INCARNATION count - how many characters this player has had
+		-- (bumped by DataService.NewLife). Not the same thing as
+		-- Character.LivesLeft above, which is how many lives the CURRENT
+		-- character has left before it becomes the next incarnation.
 		Lives: number,
+		-- Schema v3 (M3B-01): combat is earned, not automatic (DESIGN: a
+		-- tutorial unlocks it; until that ships, Config.Combat.
+		-- UnlockedByDefault blanket-unlocks everyone regardless of this).
+		-- Lives in Meta, not Progress: it's per-player forever, not per-life -
+		-- DataService.NewLife carries it over the same way it carries
+		-- Meta.Lives/.Created; only DataService.Wipe clears it (a wipe makes a
+		-- brand-new player). CombatService.SetStance/.SetUnlocked are the
+		-- only writers.
+		Unlocks: { Combat: boolean },
 	},
 }
 
 local SaveSchema = {}
 
 local template: Data = {
-	Version = 1,
+	-- REVIEW-M3B-01 C1: a fresh template is already current - not 1, which
+	-- used to make Migrate walk a brand-new profile AND DataService.
+	-- ResetToTemplate (Wipe/NewLife) through every migration up to
+	-- Config.Data.SchemaVersion, including Migrations[3]'s own "grandfather
+	-- an EXISTING save" logic. That's backwards for anything actually new:
+	-- Migrations[3] set Meta.Unlocks.Combat = true and Character.LivesLeft
+	-- to a full count on a brand-new profile too, when the whole point of
+	-- both fields is that a genuinely new one starts at the template's own
+	-- values instead (false / already-full, respectively - Wipe/NewLife
+	-- never actually lost anything here, but the unlock flag becoming
+	-- unconditionally true broke the entire premise of "earned, not
+	-- automatic" the moment Bryan turns Config.Combat.UnlockedByDefault off).
+	Version = Config.Data.SchemaVersion,
 	Character = {
 		FirstName = "",
 		Gender = 0,
@@ -81,6 +113,7 @@ local template: Data = {
 		MouthShape = 1,
 		Height = 10,
 		GrowthProfile = "",
+		LivesLeft = Config.Life.LivesPerCharacter,
 	},
 	Age = {
 		Years = 13,
@@ -111,6 +144,7 @@ local template: Data = {
 		Created = 0,
 		LastSeen = 0,
 		Lives = 1,
+		Unlocks = { Combat = false },
 	},
 }
 
@@ -131,6 +165,27 @@ SaveSchema.Migrations = {} :: { [number]: (data: Data) -> () }
 -- version bump and the self-test's v1 -> v2 case both walk through a real
 -- migration, not just the loop's own version-number increment.
 SaveSchema.Migrations[2] = function(_data: Data) end
+
+-- v3 (M3B-01/M3B-05): adds Meta.Unlocks.Combat and Character.LivesLeft.
+-- Migrate is always called after Profile:Reconcile() (DataService.
+-- onPlayerAdded), which already backfilled both from the template's own
+-- defaults before this runs - so this only has to flip/set them, not
+-- create them. Unlocks.Combat is explicitly true here (not left at the
+-- template's false): an EXISTING save already had full combat access
+-- before v3 ever existed, and nobody should lose that just because the
+-- schema grew a flag for it. LivesLeft is set to a full
+-- Config.Life.LivesPerCharacter too, but that line is redundant on
+-- purpose (REVIEW-M3B-05 L3) - Reconcile's own backfill already gave an
+-- existing save this exact value before Migrate ever runs, same as it did
+-- for Unlocks.Combat's false; setting it again here just keeps both v3
+-- fields explicit and symmetric, not because anything would otherwise be
+-- missing. Only a save that's genuinely new as of v3 (never reconciled
+-- before, so there's no "existing access"/"already has lives" to
+-- preserve) starts at the template's own values.
+SaveSchema.Migrations[3] = function(data: Data)
+	data.Meta.Unlocks.Combat = true
+	data.Character.LivesLeft = Config.Life.LivesPerCharacter
+end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,
 -- in order. Call Profile:Reconcile() before this, so missing template keys

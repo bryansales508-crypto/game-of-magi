@@ -392,6 +392,20 @@ local function updateBleedVisual(character: Instance, stacks: number)
 	if not visuals then
 		visuals = buildBleedVisual(torso)
 		bleedVisualsByCharacter[character] = visuals
+		-- M3B-03 point 4: trainer dummies are ordinary characters, not
+		-- Players, so there's no CharacterRemoving to piggyback on for
+		-- them -- Instance.Destroying is the one signal every character
+		-- (player or NPC) fires exactly once when actually removed
+		-- (`.dummy clear`, a knockout reset that rebuilds the model,
+		-- ...), so this is the one place cleanup is guaranteed to run
+		-- regardless of what kind of character this is. The cloned
+		-- emitters/decal are parented inside the character and would be
+		-- destroyed right along with it either way; this just makes sure
+		-- the bookkeeping table (bleedVisualsByCharacter) drops them at
+		-- the same moment instead of waiting on the weak table's GC.
+		character.Destroying:Connect(function()
+			clearBleedVisual(character)
+		end)
 	end
 
 	for _, info in visuals.emitters do

@@ -27,6 +27,16 @@
 -- attribute triggers one impulse every `Combat.Knockback.everyHits` landed
 -- hits, from any source, then resets. Bleed stacks on hits that carry it;
 -- HealthService ticks it, floored at 1 HP so it never knocks out alone.
+--
+-- M3B-01 (Bryan, 2026-09-28) added the combat stance: combat is earned, not
+-- automatic. SetStance(true) is the ONLY way AttackStart/AttackCancel/Block
+-- ever become reachable (Dash/Run stay available regardless) - it needs
+-- CombatUnlocked (Meta.Unlocks.Combat, or the blanket
+-- Config.Combat.UnlockedByDefault until the tutorial ships) and a few
+-- "can't fight right now" statuses to be clear. The equipped style now
+-- comes from a weapon Tool in the character (a string `Weapon` attribute
+-- naming the style), not just Register's own default - see
+-- onToolEquipped/onToolUnequipped.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -35,12 +45,16 @@ local Workspace = game:GetService("Workspace")
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Config = require(ReplicatedStorage.Shared.Config)
+local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local PlayerService = require(script.Parent.PlayerService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local HealthService = require(script.Parent.HealthService)
 local DevService = require(script.Parent.DevService)
+-- M3B-01: CombatUnlocked (Meta.Unlocks.Combat). Safe to require - the
+-- reverse would be the cycle (DataService never requires CombatService).
+local DataService = require(script.Parent.DataService)
 
 local log = Log.new("CombatService")
 
@@ -134,6 +148,11 @@ type Entry = {
 	lastHitCountAt: number?,
 	ancestryConn: RBXScriptConnection?,
 	diedConn: RBXScriptConnection?,
+	-- M3B-01: watches the character for an equipped/unequipped weapon Tool
+	-- (a string `Weapon` attribute naming a style) - see onToolEquipped/
+	-- onToolUnequipped.
+	toolAddedConn: RBXScriptConnection?,
+	toolRemovedConn: RBXScriptConnection?,
 }
 
 local registered: { [Model]: Entry } = {}
@@ -202,6 +221,10 @@ local function clearAttack(character: Model, entry: Entry, nextAttackDelay: numb
 	entry.attack = nil
 	pcall(function()
 		character:SetAttribute("Attacking", false)
+		-- M3B-02: the trainer dummies read this to know whether a Light or a
+		-- Heavy is the one currently swinging (their own reaction window) -
+		-- "" once nothing is.
+		character:SetAttribute("CurrentHit", "")
 		character:SetAttribute("NextAttackAt", Workspace:GetServerTimeNow() + nextAttackDelay)
 	end)
 end
@@ -321,6 +344,16 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 			-- REVIEW-M3-FIX4-S L1: every knockout resets the count-based
 			-- knockback tracker, not just the ones ApplyHit itself causes.
 			resetHitCount(character)
+			-- REVIEW-M3B-01 H1: knockout drops a PLAYER out of the combat
+			-- stance ("knockout, death and the death scene clear it") -
+			-- never an NPC, which is always InCombat by design (NpcService
+			-- sets it once at registration and never toggles it).
+			local entry = registered[character]
+			if entry and entry.owner ~= nil then
+				pcall(function()
+					character:SetAttribute("InCombat", false)
+				end)
+			end
 		end
 		reconcileTier(character)
 		if not active then
@@ -747,6 +780,12 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	if entry == nil then
 		return false, nil
 	end
+	-- M3B-01: clicks outside the combat stance are nothing, on the server
+	-- as well as on the client. NPCs are always InCombat (NpcService sets
+	-- it at registration), so this never gates them.
+	if character:GetAttribute("InCombat") ~= true then
+		return false, nil
+	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil or humanoid.Health <= 0 then
@@ -795,6 +834,7 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	pcall(function()
 		character:SetAttribute("Attacking", true)
 		character:SetAttribute("ComboStep", 1)
+		character:SetAttribute("CurrentHit", style.chain[1].kind)
 	end)
 
 	Remotes.Server.FireAll("CombatEvent", "Swing", { character = character, style = entry.weaponSet, hitCount = #style.chain })
@@ -943,6 +983,11 @@ function CombatService.AttackHit(character: Model, index: number)
 		if combatLogEnabled then
 			log:Info(string.format("%s's attack complete, recovery %.2fs", character.Name, attack.style.recovery))
 		end
+	else
+		local nextChainHit = attack.style.chain[attack.nextHit]
+		pcall(function()
+			character:SetAttribute("CurrentHit", nextChainHit.kind)
+		end)
 	end
 end
 
@@ -960,6 +1005,13 @@ function CombatService.AttackCancel(character: Model)
 		if combatLogEnabled then
 			log:Warn(string.format("%s's AttackCancel dropped: no attack in progress", character.Name))
 		end
+		return
+	end
+	-- M3B-01: matches AttackStart's own gate. In practice this should
+	-- already be unreachable while an attack is genuinely in progress
+	-- (nothing turns InCombat off mid-swing on its own), but the contract
+	-- is explicit that AttackCancel is rejected outside the stance too.
+	if character:GetAttribute("InCombat") ~= true then
 		return
 	end
 	local attack = entry.attack :: PendingAttack
@@ -1056,6 +1108,13 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 	end
 
 	if on then
+		-- M3B-01: only gates STARTING a block - releasing one always has to
+		-- work regardless of InCombat, or a player who leaves the stance
+		-- (or gets Dying-frozen) mid-block would be stuck holding it
+		-- forever with no way to ever call this with `on = false` again.
+		if character:GetAttribute("InCombat") ~= true then
+			return
+		end
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid == nil or humanoid.Health <= 0 then
 			return
@@ -1110,6 +1169,91 @@ function CombatService.SetWeapon(character: Model, styleName: string): boolean
 	return true
 end
 
+-- M3B-01: the combat stance. AttackStart/AttackCancel/Block all require
+-- InCombat to be true (Dash/Run don't). Leaving is always accepted;
+-- entering needs the owning Player's own CombatUnlocked (a real registered
+-- Player only - an NPC never calls this, it's always InCombat from
+-- NpcService instead), alive, and clear of a short list of "can't fight
+-- right now" states. Returns whether the requested state was applied.
+function CombatService.SetStance(character: Model, on: boolean): boolean
+	local entry = registered[character]
+	if entry == nil then
+		return false
+	end
+
+	if not on then
+		pcall(function()
+			character:SetAttribute("InCombat", false)
+		end)
+		return true
+	end
+
+	local owner = entry.owner
+	if owner == nil then
+		return false
+	end
+	if owner:GetAttribute("CombatUnlocked") ~= true then
+		return false
+	end
+	-- The age-death scene (AgeService.startDeathSequence): frozen, about to
+	-- respawn into a fresh life - not a state to start a fight from.
+	if owner:GetAttribute("Dying") == true then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil or humanoid.Health <= 0 then
+		return false
+	end
+	if StatusService.Has(character, "Knocked") or StatusService.Has(character, "TrueStun") or StatusService.Has(character, "Recovery") then
+		return false
+	end
+
+	pcall(function()
+		character:SetAttribute("InCombat", true)
+	end)
+	return true
+end
+
+-- ==================== tool -> style ====================
+-- M3B-01: the equipped style comes from a weapon Tool in the character (a
+-- string `Weapon` attribute naming a Combat.Style) - CharacterService/
+-- backpack code decides what a player can equip, this just reacts to it.
+-- `.weapon [style] [player]` (below) keeps working as a dev override, but
+-- the next tool equip or unequip always wins over it, same as a real one
+-- would.
+
+local function onToolEquipped(character: Model, tool: Tool)
+	local weaponName = tool:GetAttribute("Weapon")
+	if type(weaponName) ~= "string" then
+		-- The common case: most Tools (non-weapons) don't carry this
+		-- attribute at all - nothing to warn about.
+		return
+	end
+	if Combat.styleFor(weaponName) == nil then
+		-- REVIEW-M3B-01 M1: unlike a missing attribute, a Weapon string that
+		-- names no real style (a typo, or a style retired later) is a real
+		-- misconfiguration - warn instead of silently leaving whatever style
+		-- was equipped before, and fall back to Fist so the combatant is
+		-- never left on a style the client can't actually see a Tool for.
+		log:Warn(string.format("%s's Tool %q has an unknown Weapon attribute %q; falling back to Fist", character.Name, tool.Name, weaponName))
+		CombatService.SetWeapon(character, "Fist")
+		return
+	end
+	CombatService.SetWeapon(character, weaponName)
+end
+
+-- Unequipping ANY weapon tool drops the style back to Fist outright - not
+-- "whatever it was before this one," which nothing here tracks and the
+-- design doesn't ask for (rule 2: "unequip -> Fist").
+local function onToolUnequipped(character: Model, tool: Tool)
+	local weaponName = tool:GetAttribute("Weapon")
+	if type(weaponName) ~= "string" or Combat.styleFor(weaponName) == nil then
+		return
+	end
+	CombatService.SetWeapon(character, "Fist")
+end
+
 -- ==================== register / unregister ====================
 
 function CombatService.Register(character: Model, owner: Player?, weaponSet: string?)
@@ -1134,7 +1278,11 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		character:SetAttribute("ComboStep", 1)
 		character:SetAttribute("NextAttackAt", 0)
 		character:SetAttribute("Attacking", false)
+		character:SetAttribute("CurrentHit", "")
 		character:SetAttribute("HitCount", 0)
+		-- M3B-01: NPCs are always InCombat - NpcService flips this right
+		-- after this same Register call; a player starts out of the stance.
+		character:SetAttribute("InCombat", false)
 	end)
 	MovementService.SetStyle(character, resolvedWeaponSet)
 
@@ -1155,12 +1303,50 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 	if humanoid then
 		local okDied, diedConn = pcall(function()
 			return humanoid.Died:Connect(function()
+				-- REVIEW-M3B-01 H1: a dead PLAYER's corpse shouldn't keep
+				-- playing the InCombat stance idle for other clients (an NPC
+				-- is always InCombat and Unregister tears its whole entry
+				-- down right after this regardless, so this is a no-op for
+				-- one).
+				if entry.owner ~= nil then
+					pcall(function()
+						character:SetAttribute("InCombat", false)
+					end)
+				end
 				CombatService.Unregister(character)
 			end)
 		end)
 		if okDied then
 			entry.diedConn = diedConn
 		end
+	end
+
+	-- M3B-01: the equipped style tracks whichever weapon Tool (if any) is
+	-- parented into the character right now, and every equip/unequip after.
+	for _, child in character:GetChildren() do
+		if child:IsA("Tool") then
+			onToolEquipped(character, child)
+		end
+	end
+	local okToolAdded, toolAddedConn = pcall(function()
+		return character.ChildAdded:Connect(function(child: Instance)
+			if child:IsA("Tool") then
+				onToolEquipped(character, child)
+			end
+		end)
+	end)
+	if okToolAdded then
+		entry.toolAddedConn = toolAddedConn
+	end
+	local okToolRemoved, toolRemovedConn = pcall(function()
+		return character.ChildRemoved:Connect(function(child: Instance)
+			if child:IsA("Tool") then
+				onToolUnequipped(character, child)
+			end
+		end)
+	end)
+	if okToolRemoved then
+		entry.toolRemovedConn = toolRemovedConn
 	end
 end
 
@@ -1185,6 +1371,46 @@ function CombatService.Unregister(character: Model)
 	end
 	if entry.diedConn then
 		entry.diedConn:Disconnect()
+	end
+	if entry.toolAddedConn then
+		entry.toolAddedConn:Disconnect()
+	end
+	if entry.toolRemovedConn then
+		entry.toolRemovedConn:Disconnect()
+	end
+end
+
+-- ==================== unlock ====================
+-- M3B-01: CombatUnlocked mirrors `data.Meta.Unlocks.Combat OR
+-- Config.Combat.UnlockedByDefault` - the blanket default lets everyone
+-- fight until the tutorial (a later milestone) actually exists to earn it
+-- properly; once Bryan flips that to false, this starts reflecting the
+-- save flag alone. Meta, not Progress: the unlock is per-player forever,
+-- not per-life (DataService.NewLife carries it over; only DataService.Wipe
+-- clears it, same as a brand-new player). RankService-style: a public API
+-- (for the future tutorial to call, same as AddMagoi/AddDeed) plus the same
+-- DataService.Loaded wiring RankService uses to refresh the attribute on
+-- load.
+
+local function refreshCombatUnlockedAttribute(player: Player, data: SaveSchema.Data)
+	player:SetAttribute("CombatUnlocked", data.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault)
+end
+
+function CombatService.SetUnlocked(player: Player, unlocked: boolean)
+	local data = DataService.Get(player)
+	if data == nil then
+		log:Warn(string.format("SetUnlocked(%s, %s): no save loaded", player.Name, tostring(unlocked)))
+		return
+	end
+	data.Meta.Unlocks.Combat = unlocked
+	refreshCombatUnlockedAttribute(player, data)
+	log:Info(string.format("%s's combat unlock: %s", player.Name, tostring(unlocked)))
+
+	-- REVIEW-M3B-01 L1: locking someone already in the stance has to
+	-- actually leave it - CombatUnlocked going false doesn't do that on its
+	-- own (SetStance only ever checks it on the way IN).
+	if not unlocked and player.Character then
+		CombatService.SetStance(player.Character, false)
 	end
 end
 
@@ -1318,6 +1544,30 @@ local function registerDevCommands()
 		end
 		return formatStyle(entry.weaponSet, style)
 	end)
+
+	DevService.Register("unlock", "combat [player] - unlock combat", function(caller, args)
+		if args[1] ~= "combat" then
+			return "usage: .unlock combat [player]"
+		end
+		local target, err = DevService.ResolvePlayer(caller, args[2])
+		if target == nil then
+			return err or "player not found"
+		end
+		CombatService.SetUnlocked(target, true)
+		return string.format("%s's combat: unlocked", target.Name)
+	end)
+
+	DevService.Register("lock", "combat [player] - lock combat", function(caller, args)
+		if args[1] ~= "combat" then
+			return "usage: .lock combat [player]"
+		end
+		local target, err = DevService.ResolvePlayer(caller, args[2])
+		if target == nil then
+			return err or "player not found"
+		end
+		CombatService.SetUnlocked(target, false)
+		return string.format("%s's combat: locked", target.Name)
+	end)
 end
 
 -- ==================== service ====================
@@ -1353,6 +1603,13 @@ function CombatService:Init()
 		end
 	end)
 
+	Remotes.Server.On("SetStance", function(player: Player, on: boolean)
+		local character = player.Character
+		if character then
+			CombatService.SetStance(character, on)
+		end
+	end)
+
 	PlayerService.Ready:Connect(function(player: Player, character: Model)
 		CombatService.Register(character, player, "Fist")
 	end)
@@ -1367,6 +1624,26 @@ function CombatService:Init()
 	end)
 end
 
-function CombatService:Start() end
+function CombatService:Start()
+	-- M3B-01: same catch-up pattern RankService uses for its own attributes
+	-- - a player whose save already loaded before this connection was made
+	-- (Start() runs after every service's Init()) still gets CombatUnlocked
+	-- set from their own data, not left unset.
+	DataService.Loaded:Connect(function(player: Player)
+		local data = DataService.Get(player)
+		if data then
+			refreshCombatUnlockedAttribute(player, data)
+		end
+	end)
+
+	for _, player in Players:GetPlayers() do
+		if DataService.IsLoaded(player) then
+			local data = DataService.Get(player)
+			if data then
+				refreshCombatUnlockedAttribute(player, data)
+			end
+		end
+	end
+end
 
 return CombatService

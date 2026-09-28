@@ -67,6 +67,16 @@ Conventions in the new code: services on the server live in `src/ServerScriptSer
 - **`Server/Services/NpcService/init.luau`**: finds models under `Workspace.NPC` (or tagged `NPC`), reads the `NpcType` attribute (`Dummy` default, `Target` chases), registers each NPC with Status, Movement, Health and Combat exactly like a player, keeps a template in `ServerStorage.NpcTemplates` to re-clone a destroyed one. Dev: `.npc list|reset|type <name> Dummy|Target`.
 - **Numbers:** `Config.Npc` in `Shared/Config.luau`: `TickSeconds`, `ChaseRadius` (30), `GiveUpRadius` (40), `AttackRange` (4), `AttackCooldown`, `WanderRadius`, `MaxHealth` per type, `Animations`.
 
+### Tuning or adding a training dummy (M3B-02)
+
+- **Retune an existing one:** everything is in `Config.Npc.Trainers.<Key>` (`Shared/Config.luau`) - `reactionSeconds` (delay before a dummy reacts to what it reads off the target), `rhythmSeconds` (its own throw/re-throw pace, unrelated to the target), `engageRadius` (12 by default - it only fights its spawner or the nearest player this close), and Sparring Sinbad's own `weights = { throw, cancel, parry, dash }`. No code change needed for any of these.
+- **Add a new one:**
+  1. Add its `Config.Npc.Trainers.<Key>` entry (`displayName`, whichever of `reactionSeconds`/`rhythmSeconds`/`engageRadius`/`weights` it needs) and append the key to `Config.Npc.TrainerOrder`, then freeze it alongside the others at the bottom of `Config.luau` (same pattern as the seven already there).
+  2. Write its `<key>Decide(bb, cfg): BehaviorTree.Status` function in `Server/Services/NpcService/Trees.luau` (the "Training dummies (M3B-02)" section) - it only ever acts through `CombatService.Attack`/`.AttackCancel`/`.SetBlocking` and `MovementService.Dash`, and reads its target off `bb.target`'s `Attacking`/`CurrentHit` attributes (`"Light"` / `"Heavy"` / `""`, set by `CombatService` as a swing progresses). Keep any reaction-window state on the blackboard itself (`bb.phase`/`bb.phaseAt`, `os.clock()`-timed), not a nested `BehaviorTree.Wait` - see Jabbing Jamal/Parry Pete/Dashing Dalila for the pattern (their timer has to restart if what they're reading stops, which a `Wait` node's own fixed closure can't do).
+  3. Add it to `TRAINER_DECIDERS` in the same file.
+  4. `.dummy spawn <Key> [player]` (section 16) spawns it for testing; add a self-test in `SelfTestService.luau`'s `testTrainers` following the existing seven (register a real fake trainer, set the fake target's attributes directly, tick the tree, check the resulting attribute/status).
+- **Spawning mechanics:** `.dummy spawn/clear/list` and the reset-on-knockout behaviour (full health, `Bleed` cleared, `HitCount` reset - a deliberate override of the normal partial-health knockout recovery) live in `NpcService/init.luau`, not `Trees.luau`.
+
 ---
 
 ## Rank and Rukh

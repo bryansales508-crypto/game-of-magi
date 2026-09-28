@@ -15,8 +15,10 @@ local Players = game:GetService("Players")
 local Log = require(ReplicatedStorage.Shared.Log)
 local Config = require(ReplicatedStorage.Shared.Config)
 local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
+local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local StatusService = require(script.Parent.Parent.StatusService)
 local CombatService = require(script.Parent.Parent.CombatService)
+local MovementService = require(script.Parent.Parent.MovementService)
 
 local log = Log.new("NpcService")
 
@@ -275,6 +277,364 @@ function Trees.BuildTarget(): BehaviorTree.Node
 		}),
 		BehaviorTree.Action(acquireTarget),
 		BehaviorTree.Action(wander),
+	})
+end
+
+-- ==================== Training dummies (M3B-02) ====================
+-- docs/M3B-PLAN.md section 3, Bryan's roster, approved 2026-09-28. Every
+-- trainer is Fist style, spawned by NpcService's `.dummy spawn` (not
+-- auto-discovered like Dummy/Target above) - see NpcService for the
+-- spawn/reset/name-tag side of this. Each tree only acts through
+-- CombatService.Attack/.AttackCancel/.SetBlocking and MovementService.Dash -
+-- AttackCancel joins the two Bryan named explicitly (Attack/SetBlocking/
+-- Dash) because Feinting Mohammed's whole habit (throw the light, cancel
+-- the telegraphed heavy, re-jab) has no other way to exist: it's an
+-- existing public CombatService entry point, not a new one.
+--
+-- A trainer never chases or wanders - it stands still and reacts, so
+-- there's no path-finding half here the way Target has. Each decide
+-- function below keeps its own tiny state machine on the blackboard itself
+-- (`bb.phase`/`bb.phaseAt`, os.clock()-timed) rather than nesting more
+-- BehaviorTree.Wait/Cooldown nodes: those keep one fixed timer in their own
+-- closure that doesn't reset when the condition guarding them goes false
+-- and true again (fine for Sam/Sinbad's flat rhythin below, wrong for
+-- Jamal/Pete/Dalila's "the read has to restart if what they're reading
+-- stops" reaction windows).
+
+-- The trainer's own target: prefers whatever bb.target already validly is
+-- (a self-test sets this directly; a live trainer just keeps its last
+-- acquired target as long as it's still alive) before trying to acquire a
+-- new one (spawner in range, else the nearest player in range).
+local function findTrainerTarget(bb: any): Model?
+	local engageRadius = (bb.engageRadius :: number?) or 12
+
+	local spawner = bb.spawner :: Player?
+	if spawner then
+		local character = spawner.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if character and root and root:IsA("BasePart") and humanoid and humanoid.Health > 0 then
+			if distance(bb.rootPart.Position, (root :: BasePart).Position) <= engageRadius then
+				return character
+			end
+		end
+	end
+
+	local nearest: Model? = nil
+	local nearestDistance = engageRadius
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if character and root and root:IsA("BasePart") and humanoid and humanoid.Health > 0 then
+			local d = distance(bb.rootPart.Position, (root :: BasePart).Position)
+			if d <= nearestDistance then
+				nearest = character
+				nearestDistance = d
+			end
+		end
+	end
+	return nearest
+end
+
+local function engageTrainerTarget(bb: any): boolean
+	if targetRoot(bb) ~= nil then
+		return true
+	end
+	local found = findTrainerTarget(bb)
+	bb.target = found
+	return found ~= nil
+end
+
+-- x/z away from the target, in the trainer's own local space
+-- (MovementService.Dash's own contract) - correct regardless of which way
+-- the trainer happens to be facing.
+local function dashAway(bb: any): boolean
+	local root = targetRoot(bb)
+	if root == nil then
+		return false
+	end
+	local away = bb.rootPart.Position - root.Position
+	local flat = Vector3.new(away.X, 0, away.Z)
+	if flat.Magnitude < 1e-3 then
+		flat = bb.rootPart.CFrame.LookVector * -1
+	end
+	local localDir = bb.rootPart.CFrame:VectorToObjectSpace(flat.Unit)
+	return MovementService.Dash(bb.character, localDir.X, localDir.Z)
+end
+
+-- Straight Sam: light-heavy straight on a fixed rhythm, never cancels
+-- (CombatService.Attack throws the WHOLE chain itself - there's nothing
+-- here that could cancel it even if it wanted to), never blocks.
+local function samDecide(bb: any, cfg: any): BehaviorTree.Status
+	local now = os.clock()
+	if bb.character:GetAttribute("Attacking") == true then
+		return "Running"
+	end
+	if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
+		return "Failure"
+	end
+	CombatService.Attack(bb.character)
+	bb.phaseAt = now
+	return "Success"
+end
+
+-- Turtle Tariq: holds block always, never attacks. "Never parries": once
+-- already blocking, SetBlocking(true) is a no-op (CombatService.SetBlocking
+-- returns early on an already-active block), so the one parry window
+-- StatusService opened on the FIRST Apply expires on its own
+-- (Combat.Block.parryWindow) and is never refreshed.
+local function tariqDecide(bb: any, _cfg: any): BehaviorTree.Status
+	CombatService.SetBlocking(bb.character, true)
+	return "Success"
+end
+
+-- Jabbing Jamal: idle (blocking) until the target's Heavy wind-up starts
+-- (CurrentHit == "Heavy" while they're mid-swing), then jabs after
+-- reactionSeconds - the bait-and-punish Bryan's teaching order wants here.
+local function jamalDecide(bb: any, cfg: any): BehaviorTree.Status
+	local target = bb.target :: Model
+	local now = os.clock()
+	local heavyWindup = target:GetAttribute("Attacking") == true and target:GetAttribute("CurrentHit") == "Heavy"
+
+	if not heavyWindup then
+		bb.phase = "idle"
+		bb.phaseAt = nil
+		CombatService.SetBlocking(bb.character, true)
+		return "Success"
+	end
+
+	if bb.phase ~= "reacting" then
+		bb.phase = "reacting"
+		bb.phaseAt = now
+	end
+	if now - (bb.phaseAt :: number) >= (cfg.reactionSeconds or 0) then
+		CombatService.Attack(bb.character)
+		bb.phase = "idle"
+		bb.phaseAt = nil
+		return "Success"
+	end
+	return "Running"
+end
+
+-- Parry Pete: idle until the target's first Light of a swing, then times a
+-- real parry (a fresh Block Apply - not just holding it, which is what
+-- actually opens a live parry window) reactionSeconds later. The read
+-- resets if the swing ends (or moves past Light) before the timer fires.
+local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
+	local target = bb.target :: Model
+	local now = os.clock()
+	local attacking = target:GetAttribute("Attacking") == true
+	local currentHit = target:GetAttribute("CurrentHit")
+
+	if bb.phase == "reacting" then
+		if not (attacking and currentHit == "Light") then
+			bb.phase = "idle"
+			bb.phaseAt = nil
+			return "Failure"
+		end
+		if now - (bb.phaseAt :: number) >= (cfg.reactionSeconds or 0) then
+			CombatService.SetBlocking(bb.character, true)
+			bb.phase = "idle"
+			bb.phaseAt = nil
+			return "Success"
+		end
+		return "Running"
+	end
+
+	if attacking and currentHit == "Light" then
+		bb.phase = "reacting"
+		bb.phaseAt = now
+		return "Running"
+	end
+
+	return "Failure"
+end
+
+-- Feinting Mohammed: throws the light-heavy Fist chain, but cancels his OWN
+-- heavy the instant its cancelUntil passes (a scripted, telegraphed feint,
+-- not a reaction to the target), then re-jabs immediately (Fist's
+-- cancelInto is "Any" - nothing auto-fires the way Dagger's "Jab" would).
+-- Repeats on rhythmSeconds; never blocks.
+local FIST_HEAVY_CANCEL_UNTIL = (Combat.styleFor("Fist") :: Combat.Style).chain[2].cancelUntil
+
+local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
+	local now = os.clock()
+	local attacking = bb.character:GetAttribute("Attacking") == true
+	local currentHit = bb.character:GetAttribute("CurrentHit")
+
+	if bb.phase == nil or bb.phase == "idle" then
+		if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
+			return "Failure"
+		end
+		CombatService.Attack(bb.character)
+		bb.phase = "thrown"
+		bb.phaseAt = now
+		return "Running"
+	end
+
+	if bb.phase == "thrown" then
+		if not attacking then
+			-- Landed clean some other way (a target it interrupted, e.g.) -
+			-- the rhythm timer restarts from here either way.
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Failure"
+		end
+		if currentHit == "Heavy" and now - (bb.phaseAt :: number) >= FIST_HEAVY_CANCEL_UNTIL then
+			CombatService.AttackCancel(bb.character)
+			bb.phase = "cancelled"
+			bb.phaseAt = now
+			return "Running"
+		end
+		return "Running"
+	end
+
+	-- bb.phase == "cancelled"
+	CombatService.Attack(bb.character)
+	bb.phase = "idle"
+	bb.phaseAt = now
+	return "Success"
+end
+
+-- Dashing Dalila: dashes away the moment the target's Heavy wind-up starts
+-- (reactionSeconds later, the same read as Jamal); otherwise jabs on
+-- rhythmSeconds like Sam's first hit alone.
+local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
+	local target = bb.target :: Model
+	local now = os.clock()
+	local heavyWindup = target:GetAttribute("Attacking") == true and target:GetAttribute("CurrentHit") == "Heavy"
+
+	if heavyWindup then
+		if bb.phase ~= "reacting" then
+			bb.phase = "reacting"
+			bb.phaseAt = now
+		end
+		if now - (bb.phaseAt :: number) >= (cfg.reactionSeconds or 0) then
+			dashAway(bb)
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Success"
+		end
+		return "Running"
+	end
+
+	-- REVIEW-M3B-02: a lone jab, not the full chain - the exact same
+	-- self-cancel Feinting Mohammed uses (CombatService.AttackCancel once
+	-- her own CurrentHit becomes "Heavy"), just without his re-jab: she
+	-- just pokes once per rhythmSeconds and waits for the next cycle,
+	-- never committing to a heavy on her own initiative.
+	if bb.phase == "jabbing" then
+		if bb.character:GetAttribute("Attacking") ~= true then
+			-- Ended some other way (interrupted, say) before ever reaching
+			-- the heavy - the rhythm timer restarts from here either way.
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Failure"
+		end
+		if bb.character:GetAttribute("CurrentHit") == "Heavy" then
+			CombatService.AttackCancel(bb.character)
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Success"
+		end
+		return "Running"
+	end
+
+	bb.phase = "idle"
+	if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
+		return "Failure"
+	end
+	CombatService.Attack(bb.character)
+	bb.phase = "jabbing"
+	bb.phaseAt = now
+	return "Running"
+end
+
+-- Sparring Sinbad: picks throw/cancel/parry/dash by Config.Npc.Trainers.
+-- SparringSinbad.weights every rhythmSeconds. "Reacts to the target's own
+-- state" shows up in what each pick actually DOES rather than in the pick
+-- itself: a cancel with nothing in progress, or a dash with no target in
+-- range, are already safe no-ops in the services underneath (nothing extra
+-- to gate here).
+local SINBAD_ACTIONS = { "throw", "cancel", "parry", "dash" }
+
+-- Exposed (not local) so self-tests can prove the weighting math directly,
+-- with a fixed roll, independent of math.random() and of Config's own
+-- frozen tables.
+function Trees.WeightedPick(weights: { [string]: number }, roll: number): string
+	local total = 0
+	for _, key in SINBAD_ACTIONS do
+		total += math.max(weights[key] or 0, 0)
+	end
+	if total <= 0 then
+		return SINBAD_ACTIONS[1]
+	end
+	local target = math.clamp(roll, 0, 1) * total
+	local sum = 0
+	for _, key in SINBAD_ACTIONS do
+		sum += math.max(weights[key] or 0, 0)
+		if target < sum then
+			return key
+		end
+	end
+	return SINBAD_ACTIONS[#SINBAD_ACTIONS]
+end
+
+local function sinbadDecide(bb: any, cfg: any): BehaviorTree.Status
+	local now = os.clock()
+	if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
+		return "Failure"
+	end
+	bb.phaseAt = now
+
+	local choice = Trees.WeightedPick(cfg.weights or {}, math.random())
+	if choice == "throw" then
+		CombatService.Attack(bb.character)
+	elseif choice == "cancel" then
+		CombatService.AttackCancel(bb.character)
+	elseif choice == "parry" then
+		CombatService.SetBlocking(bb.character, true)
+	elseif choice == "dash" then
+		dashAway(bb)
+	end
+	return "Success"
+end
+
+local TRAINER_DECIDERS: { [string]: (bb: any, cfg: any) -> BehaviorTree.Status } = {
+	StraightSam = samDecide,
+	TurtleTariq = tariqDecide,
+	JabbingJamal = jamalDecide,
+	ParryPete = peteDecide,
+	FeintingMohammed = mohammedDecide,
+	DashingDalila = dalilaDecide,
+	SparringSinbad = sinbadDecide,
+}
+
+-- `cfgOverride` lets a self-test swap in tiny reaction/rhythm numbers (and,
+-- for Sinbad, a skewed weight table) instead of waiting out Config.Npc.
+-- Trainers' own real-feel placeholders, and instead of touching Config's
+-- own frozen tables to do it. A live trainer (NpcService's `.dummy spawn`)
+-- always calls this with no override.
+function Trees.BuildTrainer(key: string, cfgOverride: { [string]: any }?): BehaviorTree.Node
+	local decide = TRAINER_DECIDERS[key]
+	if decide == nil then
+		error(string.format("Trees.BuildTrainer: unknown trainer %q", key))
+	end
+	local cfg = cfgOverride or Config.Npc.Trainers[key]
+
+	return BehaviorTree.Selector({
+		BehaviorTree.Sequence({
+			BehaviorTree.Condition(isKnocked),
+			BehaviorTree.Wait(Config.Npc.TickSeconds),
+		}),
+		BehaviorTree.Sequence({
+			BehaviorTree.Condition(engageTrainerTarget),
+			BehaviorTree.Action(function(bb: any): BehaviorTree.Status
+				return decide(bb, cfg)
+			end),
+		}),
+		idle,
 	})
 end
 

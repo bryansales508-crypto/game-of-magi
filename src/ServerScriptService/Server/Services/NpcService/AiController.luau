@@ -21,6 +21,15 @@ export type Blackboard = {
 	waypoints: { PathWaypoint }?,
 	waypointIndex: number,
 	pathComputedAt: number?,
+	-- M3B-02: training-dummy-only fields (nil for Dummy/Target) - NpcService
+	-- sets these right after AiController.new for a spawned trainer;
+	-- Trees.luau's trainer decide functions read/write trainerKey/spawner/
+	-- engageRadius and the small phase/phaseAt state machine each one keeps.
+	trainerKey: string?,
+	spawner: Player?,
+	engageRadius: number?,
+	phase: string?,
+	phaseAt: number?,
 }
 
 export type AiController = {

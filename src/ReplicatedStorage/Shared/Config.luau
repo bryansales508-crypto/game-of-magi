@@ -29,7 +29,9 @@ Config.Debug = {
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
 	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
-	SchemaVersion = 2,
+	-- v3 (M3B-01/M3B-05): Meta.Unlocks.Combat, Character.LivesLeft,
+	-- SaveSchema.Migrations[3].
+	SchemaVersion = 3,
 }
 
 -- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.
@@ -71,6 +73,19 @@ Config.Aging = {
 	SceneTimeout = 30,
 	-- How often the online aging loop ticks, in real seconds.
 	Tick = 10,
+}
+
+-- M3B-05 (Bryan, 2026-09-28): a character ("a life") gets this many lives
+-- before a real death (Humanoid.Died - falling, the void, drowning, later
+-- executions; a combat knockout never touches this) wipes to a brand-new
+-- character. See Character.LivesLeft, SaveSchema.luau, LifeService.luau.
+Config.Life = {
+	LivesPerCharacter = 4,
+	-- REVIEW-M3B-05 M1: how long a death with lives left waits before
+	-- respawning the same character - long enough to read as a real death
+	-- moment, short enough not to feel like a hang (Players.RespawnTime,
+	-- the engine's own default, is left alone).
+	RespawnDelay = 3,
 }
 
 -- M2-03: max health and block (DESIGN.md section 3a "Rank raises max
@@ -135,6 +150,29 @@ Config.Combat = {
 	-- the server never reads this, it only ever validates hitWindow/
 	-- cancelUntil, so retuning this doesn't need to match any server timing.
 	WindupSpeed = 0.5,
+	-- M3B-01/M3B-03: the combat stance (docs/M3B-PLAN.md section 1). The
+	-- key toggles SetStance(not InCombat); clicks/Block/cancel only work
+	-- while InCombat (a click with a weapon Tool equipped is the one
+	-- exception -- it enters the stance first). Bryan can rebind the key
+	-- freely.
+	StanceKey = Enum.KeyCode.C,
+	-- One looping idle animation id per style, played on any character
+	-- while InCombat (own and others) so everyone can see who's ready to
+	-- fight; empty = no animation for that style yet. Bryan fills these in.
+	StanceAnimations = {
+		Fist = "",
+		Dagger = "",
+	},
+	-- Matches the server's default (docs/M3B-PLAN.md section 2) only in
+	-- spirit -- the server's CombatUnlocked attribute is the real source
+	-- of truth; this client never decides unlock state itself, it only
+	-- reads that attribute. Until the tutorial (a later milestone) exists,
+	-- every new life starts unlocked - once earned for real, it's for every
+	-- future character too (Meta.Unlocks.Combat survives DataService.
+	-- NewLife; only Wipe clears it).
+	UnlockedByDefault = true,
+	-- How long the "you don't know how to fight yet" line stays up.
+	LockedMessageSeconds = 2,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -187,6 +225,64 @@ Config.Npc = {
 	-- Animation-instance lookup on the model itself is tried first; this
 	-- is only a fallback for when the art doesn't have one).
 	Animations = { Walk = "", Run = "", Flinch = "" },
+	-- M3B-02: the seven training dummies (docs/M3B-PLAN.md section 3,
+	-- Bryan's roster, approved 2026-09-28). All Fist style. reactionSeconds
+	-- is the delay before a dummy reacts to something it read off the
+	-- player's own attributes (CurrentHit/Attacking); rhythmSeconds paces a
+	-- dummy that throws on its own schedule rather than reacting; weights
+	-- are Sparring Sinbad's own throw/cancel/parry/dash mix. engageRadius
+	-- (12): a trainer only fights its spawner or the nearest player within
+	-- this many studs - PLACEHOLDERS, Bryan retunes every number here once
+	-- he's felt each dummy against the real animations.
+	Trainers = {
+		StraightSam = {
+			displayName = "Straight Sam",
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		TurtleTariq = {
+			displayName = "Turtle Tariq",
+			engageRadius = 12,
+		},
+		JabbingJamal = {
+			displayName = "Jabbing Jamal",
+			reactionSeconds = 0.3,
+			engageRadius = 12,
+		},
+		ParryPete = {
+			displayName = "Parry Pete",
+			reactionSeconds = 0.3,
+			engageRadius = 12,
+		},
+		FeintingMohammed = {
+			displayName = "Feinting Mohammed",
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		DashingDalila = {
+			displayName = "Dashing Dalila",
+			reactionSeconds = 0.25,
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		SparringSinbad = {
+			displayName = "Sparring Sinbad",
+			rhythmSeconds = 2.0,
+			engageRadius = 12,
+			weights = { throw = 0.4, cancel = 0.2, parry = 0.2, dash = 0.2 },
+		},
+	},
+	-- The teaching order (docs/M3B-PLAN.md section 3's own table) - also
+	-- `.dummy list`'s print order, since Lua tables don't keep one.
+	TrainerOrder = {
+		"StraightSam",
+		"TurtleTariq",
+		"JabbingJamal",
+		"ParryPete",
+		"FeintingMohammed",
+		"DashingDalila",
+		"SparringSinbad",
+	},
 }
 
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
@@ -214,6 +310,7 @@ for _, point in Config.Aging.DeathChance do
 end
 table.freeze(Config.Aging.DeathChance)
 table.freeze(Config.Aging)
+table.freeze(Config.Life)
 table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
@@ -224,11 +321,22 @@ table.freeze(Config.Combat.Markers.Dagger.Windup)
 table.freeze(Config.Combat.Markers.Dagger.Hit)
 table.freeze(Config.Combat.Markers.Dagger)
 table.freeze(Config.Combat.Markers)
+table.freeze(Config.Combat.StanceAnimations)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
+table.freeze(Config.Npc.Trainers.StraightSam)
+table.freeze(Config.Npc.Trainers.TurtleTariq)
+table.freeze(Config.Npc.Trainers.JabbingJamal)
+table.freeze(Config.Npc.Trainers.ParryPete)
+table.freeze(Config.Npc.Trainers.FeintingMohammed)
+table.freeze(Config.Npc.Trainers.DashingDalila)
+table.freeze(Config.Npc.Trainers.SparringSinbad.weights)
+table.freeze(Config.Npc.Trainers.SparringSinbad)
+table.freeze(Config.Npc.Trainers)
+table.freeze(Config.Npc.TrainerOrder)
 table.freeze(Config.Npc)
 table.freeze(Config.Rukh.Emitters.White)
 table.freeze(Config.Rukh.Emitters.Gold)
