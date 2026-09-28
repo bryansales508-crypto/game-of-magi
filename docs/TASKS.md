@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build. Milestone 5 Phase 5A (currency) merged 2026-09-29, awaiting Bryan's playtest; combat package (M3B) also awaiting his playtest** (see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build. Phases 5A (currency) and 5B (clothing shop) merged 2026-09-29, awaiting Bryan's playtests; combat package (M3B) also awaiting his playtest** (see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -147,6 +147,6 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
 | M5B-00 | Read-only Studio dump of the stand model and the ClothingSpawn script for the builders | lead (agent) | done (106k Sonnet tokens) | `docs/reference/m5b-studio-dump.md` |
-| M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | built, in review | Same stock and look; no double charge; colour-aware ownership |
-| M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | done (lead-checked; client branch, merges with M5B-01) | Only you see your highlight |
-| M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | scenarios drafted | Bryan OK |
+| M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | done (merged) | Same stock and look; no double charge; colour-aware ownership |
+| M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | done (merged) | Only you see your highlight |
+| M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | ready: Bryan plays when home | Bryan OK |
