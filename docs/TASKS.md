@@ -116,4 +116,4 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | --- | --- | --- | --- | --- |
 | M4-01 | RankService (rank-up detection, pending epithet choice in the save, ChooseEpithet, AddMagoi/AddDeed API, attributes) + schema v2 | server-builder | done (merged) | `.magoi 300` sends RankUp with 3 choices; choice persists across rejoin; bad ChooseEpithet rejected; v1 save migrates to v2 |
 | M4-02 | RankController: Rukh flutter in the alignment colour + epithet card (menu style), origin choice at birth | client-builder | done (merged) | Flutter and card on rank-up; 1/2/3 or click chooses; card returns if a choice is pending at join |
-| M4-03 | PLAYTEST.md M4 scenarios; Bryan plays the moments, agent checks the remote | Bryan + lead + playtester | scenarios ready; agent check next, then Bryan | All pass |
+| M4-03 | PLAYTEST.md M4 scenarios; Bryan plays the moments, agent checks the remote | Bryan + lead + playtester | agent remote check PASS (rejections and throttling); join stalled at Loaded in that run (BUG-27, needs Bryan to confirm); Bryan pass pending | All pass |
