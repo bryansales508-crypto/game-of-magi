@@ -56,6 +56,13 @@ local player = Players.LocalPlayer
 
 local MissionController = {}
 
+-- Connections that live for the whole controller (Start() runs once, so
+-- these are never torn down -- tracked anyway for consistency with the
+-- board/run connections below rather than left dangling off the stack).
+-- selene: allow(unused_variable) -- write-only on purpose; nothing ever
+-- needs to read this back since the controller itself never tears down.
+local controllerConnections: { RBXScriptConnection } = {}
+
 -- ==================== constants ====================
 
 local WAIT_SECONDS = 15
@@ -71,6 +78,10 @@ local BEACON_COLOR = Color3.fromRGB(239, 187, 65)
 local TIME_CRUNCH_NAME = "Time Crunch"
 local COURIER_LOOP_NAME = "Courier Loop"
 local COURIER_LOOP_RETURN_TEXT = "Return with the package to complete the Quest."
+-- Old code's Time Crunch fail state (MissionDeliniation.luau's
+-- conEnd/AncestryChanged branch): the Constraint text and the BONUS
+-- button's own text both go this grey once the timer runs out.
+local TIME_CRUNCH_FAILED_COLOR = Color3.fromRGB(43, 43, 43)
 
 -- Cosmetic only (ProximityPrompt.ObjectText before the board replies with
 -- real destination data) -- exact text from m5c-studio-dump.md section 1,
@@ -127,6 +138,7 @@ type RunState = {
 	boxOnScreen: boolean,
 	modifierInstances: { Instance },
 	timeCrunchConstraint: TextLabel?,
+	timeCrunchBonusButton: TextButton?,
 	timerEnds: number?,
 	loopThread: thread?,
 }
@@ -250,7 +262,7 @@ local function watchMissionFolder(folder: Instance)
 		end
 	end
 
-	folder.ChildAdded:Connect(tryPart)
+	table.insert(controllerConnections, folder.ChildAdded:Connect(tryPart))
 	for _, child in folder:GetChildren() do
 		tryPart(child)
 	end
@@ -365,6 +377,11 @@ local function watchBoardDistance(originPart: BasePart)
 			local character = player.Character
 			local root = character and character:FindFirstChild("HumanoidRootPart")
 			if root and root:IsA("BasePart") and (root.Position - originPart.Position).Magnitude > BOARD_CLOSE_RANGE then
+				-- Clear the handle to our OWN thread before calling closeBoard(),
+				-- which task.cancel()s it -- cancelling the thread you're
+				-- currently running on aborts the rest of this function, which
+				-- would abort closeBoard() itself mid-cleanup (REVIEW-M5C-02 #1).
+				boardWatchThread = nil
 				closeBoard()
 				return
 			end
@@ -407,6 +424,10 @@ local function openBoard(board: any)
 			boardConnections,
 			xButton.Activated:Connect(function()
 				Remotes.Client.Fire("MissionExit")
+				-- Don't wait on the server's MissionBoard nil reply (REVIEW-M5C-02
+				-- #2): the X should feel instant even if the reply is slow or
+				-- M5C-01 isn't wired up yet. Start stays server-driven.
+				closeBoard()
 			end)
 		)
 	end
@@ -513,18 +534,7 @@ local function teardownRun()
 	end
 end
 
--- Real named MISSION parts are preferred (matches the old tracker exactly);
--- CourierLoop's returnPosition has no named part, so an invisible anchor is
--- created and destroyed with the run.
-local function resolveTrackerTarget(cityKey: string?, position: { number }?): (BasePart, boolean)
-	if cityKey then
-		local missionFolder = getMissionFolder()
-		local part = missionFolder and missionFolder:FindFirstChild(cityKey .. "Delivery")
-		if part and part:IsA("BasePart") then
-			return part, false
-		end
-	end
-
+local function createTrackerAnchor(position: { number }?): Part
 	local anchor = Instance.new("Part")
 	anchor.Name = "MissionTrackerAnchor"
 	anchor.Anchored = true
@@ -537,7 +547,28 @@ local function resolveTrackerTarget(cityKey: string?, position: { number }?): (B
 		anchor.Position = Vector3.new(position[1] or 0, position[2] or 0, position[3] or 0)
 	end
 	anchor.Parent = Workspace
-	return anchor, true
+	return anchor
+end
+
+-- MissionUpdate's own destinationPosition/returnPosition is authoritative
+-- (REVIEW-M5C-02 #3: with placeholder routes it can differ from the
+-- `<City>Delivery` part) -- an anchor Part is created there and destroyed
+-- with the run. The named MISSION part is only a fallback for when the
+-- server sends no position at all.
+local function resolveTrackerTarget(cityKey: string?, position: { number }?): (BasePart, boolean)
+	if position then
+		return createTrackerAnchor(position), true
+	end
+
+	if cityKey then
+		local missionFolder = getMissionFolder()
+		local part = missionFolder and missionFolder:FindFirstChild(cityKey .. "Delivery")
+		if part and part:IsA("BasePart") then
+			return part, false
+		end
+	end
+
+	return createTrackerAnchor(nil), true
 end
 
 local function updateRunDistances(run: RunState)
@@ -555,7 +586,19 @@ local function updateRunDistances(run: RunState)
 	run.boxDistanceLabel.Text = text
 
 	if run.timeCrunchConstraint and run.timerEnds then
-		run.timeCrunchConstraint.Text = formatCountdown(run.timerEnds - Workspace:GetServerTimeNow())
+		local remaining = run.timerEnds - Workspace:GetServerTimeNow()
+		if remaining <= 0 then
+			-- Old code's fail state (MissionDeliniation.luau's conEnd
+			-- branch): grey out the "!!!" button and say so, rather than
+			-- sitting on "Complete in 0:00" until the server's own Failed
+			-- update tears the tracker down.
+			run.timeCrunchConstraint.Text = "Failed."
+			if run.timeCrunchBonusButton then
+				run.timeCrunchBonusButton.TextColor3 = TIME_CRUNCH_FAILED_COLOR
+			end
+		else
+			run.timeCrunchConstraint.Text = formatCountdown(remaining)
+		end
 	end
 
 	-- old feel: the QuestLineBox's own distance label only shows once the
@@ -612,6 +655,7 @@ local function startRun(update: any)
 		boxOnScreen = false,
 		modifierInstances = {},
 		timeCrunchConstraint = nil,
+		timeCrunchBonusButton = nil,
 		timerEnds = if typeof(update.timerEnds) == "number" then update.timerEnds else nil,
 		loopThread = nil,
 	}
@@ -627,8 +671,10 @@ local function startRun(update: any)
 			buildModifierRow({ { name = modifier.name, chance = modifier.chance, text = text } }, modRow, modFrame or questLineGui, run.modifierInstances)
 			if modifier.name == TIME_CRUNCH_NAME then
 				-- buildModifierRow just inserted (container, popOut), in that order.
+				local container = run.modifierInstances[#run.modifierInstances - 1]
 				local popOut = run.modifierInstances[#run.modifierInstances]
 				run.timeCrunchConstraint = (popOut :: any).Constraint
+				run.timeCrunchBonusButton = (container :: any).BONUS
 			end
 		end
 	end
@@ -697,7 +743,7 @@ local function wireBeaconForCharacter(character: Model)
 end
 
 local function wireOtherPlayer(otherPlayer: Player)
-	otherPlayer.CharacterAdded:Connect(wireBeaconForCharacter)
+	table.insert(controllerConnections, otherPlayer.CharacterAdded:Connect(wireBeaconForCharacter))
 	if otherPlayer.Character then
 		wireBeaconForCharacter(otherPlayer.Character)
 	end
@@ -734,7 +780,7 @@ function MissionController:Start()
 	for _, otherPlayer in Players:GetPlayers() do
 		wireOtherPlayer(otherPlayer)
 	end
-	Players.PlayerAdded:Connect(wireOtherPlayer)
+	table.insert(controllerConnections, Players.PlayerAdded:Connect(wireOtherPlayer))
 
 	log:Info("ready")
 end
