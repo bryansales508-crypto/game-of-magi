@@ -263,18 +263,13 @@ local function deepCopy(value: any): any
 	return copy
 end
 
--- Resets Data to a fresh template in place (same table identity, so every
--- existing DataService.Get(player) caller keeps seeing live data), re-runs
--- the first-load setup, and refreshes the legacy bridge. Used by M1-05's
--- dev "fresh save" command.
-function DataService.Wipe(player: Player)
-	local profile = profiles[player]
-	if profile == nil then
-		log:Warn(string.format("Wipe requested for %s but no profile is loaded", player.Name))
-		return
-	end
-
-	local data = profile.Data :: any
+-- Resets `data` in place (same table identity, so every existing
+-- DataService.Get(player) caller keeps seeing live data) to a fresh,
+-- migrated template with SaveSchema.NewLife's random appearance roll
+-- applied. Shared by Wipe and NewLife below - data-only, no Player or
+-- ProfileStore involved, so self-tests can exercise the exact reset both of
+-- them build on directly.
+function DataService.ResetToTemplate(data: any)
 	for key in data do
 		data[key] = nil
 	end
@@ -287,6 +282,22 @@ function DataService.Wipe(player: Player)
 	end
 	SaveSchema.Migrate(data :: Data)
 	SaveSchema.NewLife(data :: Data)
+end
+
+-- Resets Data to a fresh template in place, re-runs the first-load setup,
+-- and refreshes the legacy bridge. Used by M1-05's dev "fresh save"
+-- command. A wipe makes a brand-new player: Meta.Unlocks.Combat resets to
+-- the template's false along with everything else (M3B-01, Bryan
+-- 2026-09-28 - unlike NewLife below, nothing here is carried over).
+function DataService.Wipe(player: Player)
+	local profile = profiles[player]
+	if profile == nil then
+		log:Warn(string.format("Wipe requested for %s but no profile is loaded", player.Name))
+		return
+	end
+
+	local data = profile.Data :: any
+	DataService.ResetToTemplate(data)
 
 	local now = os.time()
 	data.Meta.Created = now
@@ -298,8 +309,11 @@ function DataService.Wipe(player: Player)
 end
 
 -- M2-02: a death's "completely fresh life" (DESIGN.md section 3a). Like
--- Wipe, but keeps Meta.Lives (incremented) and Meta.Created (the save's
--- original creation time), since a death isn't the same as a dev reset.
+-- Wipe, but keeps Meta.Lives (incremented), Meta.Created (the save's
+-- original creation time) and Meta.Unlocks.Combat (M3B-01: the combat
+-- unlock is per-player forever, not per-life - a death isn't the same as a
+-- dev reset, and losing it every life would defeat the point of earning it
+-- once via the tutorial).
 function DataService.NewLife(player: Player)
 	local profile = profiles[player]
 	if profile == nil then
@@ -310,20 +324,15 @@ function DataService.NewLife(player: Player)
 	local data = profile.Data :: any
 	local keepLives = profile.Data.Meta.Lives + 1
 	local keepCreated = profile.Data.Meta.Created
+	local keepCombatUnlocked = profile.Data.Meta.Unlocks.Combat
 
-	for key in data do
-		data[key] = nil
-	end
-	for key, value in (SaveSchema.Template :: any) do
-		data[key] = deepCopy(value)
-	end
-	SaveSchema.Migrate(data :: Data)
-	SaveSchema.NewLife(data :: Data)
+	DataService.ResetToTemplate(data)
 
 	local now = os.time()
 	data.Meta.Created = keepCreated
 	data.Meta.LastSeen = now
 	data.Meta.Lives = keepLives
+	data.Meta.Unlocks.Combat = keepCombatUnlocked
 	data.Age.TimePassed = now
 
 	LegacyBridge.Refresh(player, profile.Data)

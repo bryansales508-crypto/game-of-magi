@@ -29,7 +29,8 @@ Config.Debug = {
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
 	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
-	SchemaVersion = 2,
+	-- v3 (M3B-01): Meta.Unlocks.Combat, SaveSchema.Migrations[3].
+	SchemaVersion = 3,
 }
 
 -- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.
@@ -124,6 +125,22 @@ Config.Combat = {
 	-- validates hitWindow, so retuning this doesn't need to match any
 	-- server timing.
 	WindupSpeed = 0.5,
+	-- M3B-01: the combat stance. StanceKey/StanceAnimations are client-only
+	-- (the server never reads them - it just validates SetStance and the
+	-- InCombat attribute it produces).
+	StanceKey = Enum.KeyCode.C,
+	-- One looping idle per style, played on the character while InCombat so
+	-- everyone can see who's ready to fight; "" = none. Bryan fills in ids.
+	StanceAnimations = { Fist = "", Dagger = "" },
+	-- Until the tutorial (a later milestone) exists, every new life starts
+	-- with combat unlocked - CombatService.SetStance's own CombatUnlocked
+	-- check is `Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault`,
+	-- so this true blanket-unlocks everyone regardless of their own save;
+	-- Bryan flips it to false once the teacher NPC ships, and only players
+	-- who've actually done the tutorial (or were grandfathered by the v3
+	-- migration) stay unlocked - and once earned, it's for every future
+	-- character too (Meta survives DataService.NewLife; only Wipe clears it).
+	UnlockedByDefault = true,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -209,6 +226,7 @@ table.freeze(Config.Health)
 table.freeze(Config.Combat.Markers.Windup)
 table.freeze(Config.Combat.Markers.Hit)
 table.freeze(Config.Combat.Markers)
+table.freeze(Config.Combat.StanceAnimations)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)

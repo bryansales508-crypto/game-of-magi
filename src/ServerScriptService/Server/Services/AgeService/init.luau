@@ -214,6 +214,17 @@ local function startDeathSequence(player: Player, data: Data)
 		humanoid.JumpPower = 0
 		humanoid.JumpHeight = 0
 	end
+	-- M3B-01: the death scene isn't a state to keep fighting from - same
+	-- direct-attribute pattern as the WalkSpeed/Jump freeze just above
+	-- (CombatService owns InCombat, but this is the one moment old and new
+	-- code alike already reach straight into a frozen character's own
+	-- attributes rather than going through the service that normally owns
+	-- them).
+	if character then
+		pcall(function()
+			character:SetAttribute("InCombat", false)
+		end)
+	end
 
 	-- R2: NewLife runs now, before the scene wait, not after - a player
 	-- who leaves mid-scene (or during the timeout) then never keeps the

@@ -135,6 +135,12 @@ setupNpc = function(model: Model)
 	StatusService.Register(model, nil)
 	MovementService.Register(model, nil)
 	CombatService.Register(model, nil, "Fist")
+	-- M3B-01: NPCs don't earn or toggle the combat stance - they're always
+	-- in it, so CombatService.Attack/SetBlocking work for them exactly as
+	-- before the stance existed.
+	pcall(function()
+		model:SetAttribute("InCombat", true)
+	end)
 
 	local controller = AiController.new(model, npcType, buildTree(npcType))
 	if controller then

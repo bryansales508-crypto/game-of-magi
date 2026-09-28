@@ -14,6 +14,7 @@ local Log = require(ReplicatedStorage.Shared.Log)
 local Validate = require(ReplicatedStorage.Shared.Validate)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
+local DataService = require(script.Parent.DataService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
@@ -233,6 +234,59 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v1 -> v2 migration leaves PendingEpithet nil (nothing to fill)", data.Progress.PendingEpithet == nil)
 	end
 
+	-- M3B-01: schema v3 adds Meta.Unlocks.Combat. The fake input already has
+	-- Unlocks pre-populated (simulating what Profile:Reconcile() would have
+	-- already backfilled in production, before Migrate ever runs - same
+	-- reasoning as Migrations[3]'s own comment).
+	do
+		local data = ({
+			Version = 2,
+			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v2 -> v3 migration bumps Version to 3", data.Version == 3)
+		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
+	end
+
+	do
+		expect(results, "SaveSchema: a fresh template starts Meta.Unlocks.Combat false (earned, not automatic)", SaveSchema.Template.Meta.Unlocks.Combat == false)
+		local wouldBeUnlocked = SaveSchema.Template.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault
+		expect(
+			results,
+			"CombatService: CombatUnlocked follows Config.Combat.UnlockedByDefault for a fresh save (blanket-unlocked until the tutorial ships)",
+			wouldBeUnlocked == Config.Combat.UnlockedByDefault
+		)
+	end
+
+	-- M3B-01 (Bryan's refinement, 2026-09-28): the combat unlock is
+	-- per-player forever, not per-life - DataService.ResetToTemplate is the
+	-- exact reset both Wipe and NewLife build on, so exercising it directly
+	-- proves what each of them actually does to Meta.Unlocks.Combat, with no
+	-- Player/ProfileStore involved.
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+		local keepCombatUnlocked = data.Meta.Unlocks.Combat
+
+		DataService.ResetToTemplate(data)
+		data.Meta.Unlocks.Combat = keepCombatUnlocked -- NewLife's own restore step
+
+		expect(results, "DataService: NewLife's reset carries Meta.Unlocks.Combat over (per-player forever, not per-life)", data.Meta.Unlocks.Combat == true)
+	end
+
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+
+		DataService.ResetToTemplate(data)
+
+		expect(results, "DataService: Wipe's reset (no restore step) clears Meta.Unlocks.Combat back to the template's false", data.Meta.Unlocks.Combat == false)
+	end
+
 	do
 		local data: SaveSchema.Data = {
 			Version = 1,
@@ -256,7 +310,7 @@ local function testDataService(results: { Check })
 			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
 			Family = {},
 			Magic = {},
-			Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
 		}
 
 		local standIn = Instance.new("Folder")
@@ -473,7 +527,7 @@ local function fakeCharacterData(): SaveSchema.Data
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
 		Family = {},
 		Magic = {},
-		Meta = { Created = 0, LastSeen = 0, Lives = 1 },
+		Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
 	}
 end
 
@@ -1809,6 +1863,104 @@ local function testCombatService(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3B-01: the combat stance - SetStance gating (locked/knocked), AttackStart
+-- rejected outside the stance, and the tool -> style mapping.
+local function testCombatStance(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestCombatStance"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model
+	end
+
+	do
+		local fakePlayerInstance = Instance.new("Folder")
+		fakePlayerInstance.Name = "SelfTestStancePlayer"
+		fakePlayerInstance.Parent = scratch
+		local fakePlayer = (fakePlayerInstance :: any) :: Player
+
+		local character = buildFakeCombatant("SelfTestStanceAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, fakePlayer, "Fist")
+
+		local startedLocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance is rejected while combat is locked (CombatUnlocked not true)",
+			startedLocked == false and character:GetAttribute("InCombat") ~= true
+		)
+
+		local startedOutsideStance = CombatService.AttackStart(character)
+		expect(results, "CombatService: AttackStart is rejected outside the combat stance", startedOutsideStance == false)
+
+		fakePlayer:SetAttribute("CombatUnlocked", true)
+		local startedUnlocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance succeeds once CombatUnlocked is true",
+			startedUnlocked == true and character:GetAttribute("InCombat") == true
+		)
+
+		CombatService.SetStance(character, false)
+		StatusService.Apply(character, "Knocked", 5)
+		local startedKnocked = CombatService.SetStance(character, true)
+		expect(
+			results,
+			"CombatService: SetStance is rejected while knocked",
+			startedKnocked == false and character:GetAttribute("InCombat") ~= true
+		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	do
+		local character = buildFakeCombatant("SelfTestToolAttacker", Vector3.new(1220, 5, 0), Vector3.new(1220, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		character:SetAttribute("InCombat", true) -- no stance gating needed for this check
+
+		local tool = Instance.new("Tool")
+		tool:SetAttribute("Weapon", "Dagger")
+		tool.Parent = character
+		local equipped = pollUntil(1, function()
+			return character:GetAttribute("WeaponSet") == "Dagger"
+		end)
+		expect(results, "CombatService: equipping a weapon Tool sets WeaponSet to its own style", equipped)
+
+		CombatService.AttackStart(character)
+		expect(results, "CombatService: tool-equip setup - an attack is in progress", character:GetAttribute("Attacking") == true)
+
+		tool:Destroy() -- unequip
+		local unequipped = pollUntil(1, function()
+			return character:GetAttribute("WeaponSet") == "Fist" and character:GetAttribute("Attacking") == false
+		end)
+		expect(results, "CombatService: unequipping the weapon Tool drops the style to Fist and cancels the in-progress attack", unequipped)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	scratch:Destroy()
+end
+
 -- M3-04: BehaviorTree node semantics (Selector short-circuit, Sequence
 -- failure, Running propagation, Cooldown), pure and self-contained - no
 -- Roblox instances needed, just counters and canned statuses.
@@ -1954,6 +2106,7 @@ function SelfTestService:Start()
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)
+		testCombatStance(collected)
 		testBehaviorTree(collected)
 		testNpcService(collected)
 		testCompatShims(collected)

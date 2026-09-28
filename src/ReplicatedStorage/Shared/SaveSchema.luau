@@ -62,6 +62,15 @@ export type Data = {
 		Created: number, -- os.time() of first load; 0 until then
 		LastSeen: number, -- os.time() of the most recent load
 		Lives: number,
+		-- Schema v3 (M3B-01): combat is earned, not automatic (DESIGN: a
+		-- tutorial unlocks it; until that ships, Config.Combat.
+		-- UnlockedByDefault blanket-unlocks everyone regardless of this).
+		-- Lives in Meta, not Progress: it's per-player forever, not per-life -
+		-- DataService.NewLife carries it over the same way it carries
+		-- Meta.Lives/.Created; only DataService.Wipe clears it (a wipe makes a
+		-- brand-new player). CombatService.SetStance/.SetUnlocked are the
+		-- only writers.
+		Unlocks: { Combat: boolean },
 	},
 }
 
@@ -111,6 +120,7 @@ local template: Data = {
 		Created = 0,
 		LastSeen = 0,
 		Lives = 1,
+		Unlocks = { Combat = false },
 	},
 }
 
@@ -131,6 +141,19 @@ SaveSchema.Migrations = {} :: { [number]: (data: Data) -> () }
 -- version bump and the self-test's v1 -> v2 case both walk through a real
 -- migration, not just the loop's own version-number increment.
 SaveSchema.Migrations[2] = function(_data: Data) end
+
+-- v3 (M3B-01): adds Meta.Unlocks.Combat. Migrate is always called after
+-- Profile:Reconcile() (DataService.onPlayerAdded), which already backfilled
+-- the whole Unlocks table from the template's own {Combat = false} default
+-- before this runs - so this only has to flip it, not create it. Explicitly
+-- true here (not left at the template's false): an EXISTING save already
+-- had full combat access before v3 ever existed, and nobody should lose
+-- that just because the schema grew a flag for it. Only a save that's
+-- genuinely new as of v3 (never reconciled before, so there's no "existing
+-- access" to preserve) starts at the template's own false.
+SaveSchema.Migrations[3] = function(data: Data)
+	data.Meta.Unlocks.Combat = true
+end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,
 -- in order. Call Profile:Reconcile() before this, so missing template keys
