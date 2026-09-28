@@ -145,6 +145,26 @@ Config.Npc = {
 	Animations = { Walk = "", Run = "", Flinch = "" },
 }
 
+-- M3-FIX3 (Bryan, 2026-09-28): one click plays one fist animation
+-- containing two punches; the client reports each punch off the
+-- animation's own events. The real marker names can't be read from the
+-- .rbxm file, so Markers below is a starting guess -- Bryan edits it to
+-- match his animation's actual event names. With LogMarkers on (the
+-- default), CombatController logs every KeyframeReached AND every
+-- configured marker that's actually reached on the fist track
+-- (`Log:Info("marker: <name> at <t>s")`), so the real names and their
+-- timing show up in Output even before the guess is right.
+Config.Combat = {
+	Markers = {
+		Windup = { "Windup1", "Windup2" },
+		Hit = { "Hit1", "Hit2" },
+	},
+	LogMarkers = true,
+	-- How long EffectsController flashes the "Cancel" Highlight for a
+	-- cancelled (not interrupted) attack.
+	CancelFlashSeconds = 0.25,
+}
+
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
 -- Emitters are exactly the ParticleEmitter names under
 -- ReplicatedFirst.VFX.RukhEffects; Bryan can rename, add or remap any of
@@ -178,6 +198,10 @@ table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
 table.freeze(Config.Npc)
+table.freeze(Config.Combat.Markers.Windup)
+table.freeze(Config.Combat.Markers.Hit)
+table.freeze(Config.Combat.Markers)
+table.freeze(Config.Combat)
 table.freeze(Config.Rukh.Emitters.White)
 table.freeze(Config.Rukh.Emitters.Gold)
 table.freeze(Config.Rukh.Emitters.Black)
