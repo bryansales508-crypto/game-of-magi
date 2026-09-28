@@ -12,7 +12,7 @@ Follows the fighting-style framework (M3-FIX4). Bryan's direction, 2026-09-28: p
 
 ## 2. Unlock
 
-- Save field `Progress.Unlocks = { Combat = false }` (schema v3, migration fills `Combat = true` for existing saves so nobody loses what they have). The tutorial sets it later; for now `.unlock combat [player]` and `.lock combat [player]`.
+- Save field `Meta.Unlocks = { Combat = false }` (schema v3; in `Meta` so it survives death: once a player completes the tutorial, every future life starts with fist combat; a wipe makes a new player again; migration fills `Combat = true` for existing saves). Bryan 2026-09-28: per player for ever, repeatable later, no menu indicator needed. The tutorial sets it later; for now `.unlock combat [player]` and `.lock combat [player]`.
 - `Config.Combat.UnlockedByDefault = true` until the tutorial exists (new lives start unlocked in Studio and live); Bryan flips it to false when the teacher NPC ships. Locked players can't enter the stance; the client shows a short "You don't know how to fight yet" line in the menu font.
 
 ## 3. Training dummies (each is an NPC style of its own, behavior tree + config, Fist style)

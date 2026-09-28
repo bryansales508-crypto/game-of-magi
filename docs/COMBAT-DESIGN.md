@@ -39,7 +39,7 @@ Swords, spears and everything else come later on the same rules with their own c
 
 - **Stance key** `C` (config). Attack, block and cancel need the stance; dash and run don't.
 - **Weapons:** the style comes from the equipped tool on the server. With a weapon tool equipped, pressing `C` or clicking enters the stance with that weapon, and the click is its first hit. Unequip drops you to Fist. Until the shop exists, `.weapon Fist|Dagger` is the shortcut and the dagger is a visual in the hand.
-- **Unlock:** combat is a flag on the save. New lives start unlocked until the tutorial exists (a config switch); the alley teacher will set it later. Locked players see "You don't know how to fight yet."
+- **Unlock:** combat is a per-player flag in the part of the save that survives death (`Meta.Unlocks.Combat`): complete the tutorial once and every future life starts with fist combat; a wipe makes a new player. New players start unlocked until the tutorial exists (a config switch); the alley teacher will set it later, and the tutorial stays repeatable. Locked players see "You don't know how to fight yet."
 - **Stance animations:** one idle per style, empty placeholders until Bryan makes them.
 
 ## 5. Training dummies (dev-spawned now; the tutorial NPC presents them later)
