@@ -118,7 +118,7 @@ local function styleHitData(styleName: string, hitIndex: number): any
 	if typeof(style) ~= "table" then
 		return nil
 	end
-	local hits = style.hits
+	local hits = style.chain
 	if typeof(hits) ~= "table" then
 		return nil
 	end
