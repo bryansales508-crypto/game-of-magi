@@ -419,7 +419,11 @@ function RankController:Start()
 	-- always carries the fresh choices needed to render the card, including
 	-- on rejoin with a pending choice (the server re-sends it); the
 	-- EpithetPending attribute below is what actually decides when to fade.
-	Remotes.Client.On("RankUp", function(title: any, rankIndex: any, alignment: any, choices: any, origin: any)
+	Remotes.Client.On("RankUp", function(payload: any)
+		-- BUG-28: the server sends ONE table (M4-PLAN contract), not five values.
+		local p: any = if typeof(payload) == "table" then payload else {}
+		local title: any, rankIndex: any, alignment: any, choices: any, origin: any =
+			p.title, p.rankIndex, p.alignment, p.choices, p.origin
 		if
 			typeof(title) ~= "string"
 			or typeof(rankIndex) ~= "number"
@@ -440,7 +444,8 @@ function RankController:Start()
 		showCard(title, choices :: { string }, origin)
 	end)
 
-	Remotes.Client.On("AlignmentChanged", function(alignment: any)
+	Remotes.Client.On("AlignmentChanged", function(payload: any)
+		local alignment: any = if typeof(payload) == "table" then payload.alignment else nil
 		if typeof(alignment) ~= "string" then
 			log:Warn("AlignmentChanged: unexpected payload")
 			return
