@@ -141,3 +141,12 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M5A-01 | `Shared/Data/Economy.luau` (1/100/10,000, whole-coin rounding rule) + `EconomyService` (wallet, exact-coin Pay, Give, reward rounding, attributes, coin messages; bridge stops writing the purse) | server-builder | done (merged) | Rounding table passes; 120 Copper cannot pay 1 Silver; purse follows attributes |
 | M5A-02 | `CurrencyController`: the old purse HUD from attributes; coin messages posted as the character speaking | client-builder | done (merged) | Same look; messages show |
 | M5A-03 | PLAYTEST.md 5A scenarios; Bryan plays | Bryan + lead | ready: Bryan plays when home | Bryan OK |
+
+### Phase 5B Clothing shop (approved 2026-09-29)
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M5B-00 | Read-only Studio dump of the stand model and the ClothingSpawn script for the builders | lead (agent) | running | `docs/reference/m5b-studio-dump.md` |
+| M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | todo | Same stock and look; no double charge; colour-aware ownership |
+| M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | todo | Only you see your highlight |
+| M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | scenarios drafted | Bryan OK |

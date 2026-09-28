@@ -526,3 +526,21 @@ Dev commands: `.coins <copper> [silver] [gold]`, `.coins+ ...`, `.price <copper>
 
 ### M5A-D Rejoin
 - Set coins, Stop, Play: same purse; `.state` matches the HUD. **Pass.**
+
+---
+
+## M5B Clothing shop (Bryan runs)
+
+Setup: `.coins 500 5 0` so you can afford things. Walk to the Qarzin clothes stand.
+
+### M5B-A Stock and look
+- The hat table, nine mannequins and cloak stands are stocked as before, five seconds after the server starts; colours are White, Tan or Black by rarity; prompts show a whole-coin price (e.g. "1 Silver"). **Pass:** looks like before; no decimal prices; only one stocking (no duplicates).
+
+### M5B-B Buying
+- Buy a hat (E): it goes on, the purse drops by the shown coin, the coin sound plays. Buy a shirt: same, the old one is replaced. Buy a cloak. **Pass:** all three; `.state` and a Stop/Play keep them.
+
+### M5B-C Refusals before charging
+- With Silver 0, try a Silver-priced item: refused, the character says the line, purse unchanged. Wear three hats, try a fourth: refused before paying. Try to buy the exact shirt and colour you wear: refused; a different colour of the same shirt: allowed. **Pass:** every refusal charges nothing.
+
+### M5B-D Hover
+- Hover a mannequin: it highlights for you. A second player (or the F8 overlay on a second client) does not see your highlight. If you can't run two clients, skip and say so. **Pass.**

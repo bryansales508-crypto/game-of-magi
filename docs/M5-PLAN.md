@@ -21,6 +21,7 @@ Bryan's direction: break it into phases, get each right before the next. Keep ev
 - Playtest: rounding table, buying with automatic change, purse display.
 
 ### Phase 5B: Clothing shop
+- Approved 2026-09-29. Rarity colours: White, Tan, Black (Bryan: tan and gold are the same colour; "Tan" is the name).
 - `ShopService` + `Shared/Data/Shop.luau`: the Qarzin stand stocked from data exactly as the Studio-only script does now (hat table, mannequins, cloak stands, the same random pools and rarity colours), prompts server-side, purchase through `EconomyService.Pay`, wear through `ItemService` (the old `ItemHandler` ported to strict; item codes unchanged), the hat-slot check before charging, colour-aware ownership.
 - Client `ShopController`: hover highlight for the hovering player only; purchase feedback; the flavour line in chat.
 - The Studio-only `ClothingSpawn` script is deleted by Bryan after the phase passes.
