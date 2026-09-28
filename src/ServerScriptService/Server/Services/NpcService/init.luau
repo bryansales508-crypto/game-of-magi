@@ -37,9 +37,19 @@ local log = Log.new("NpcService")
 
 local NPC_TAG = "NPC"
 local TEMPLATES_FOLDER_NAME = "NpcTemplates"
+local TRAINERS_FOLDER_NAME = "Trainers"
 
 local controllers: { [Model]: AiController.AiController } = {}
 local templatesFolder: Folder? = nil
+local trainersFolder: Folder? = nil
+
+-- M3B-02: every currently-spawned training dummy, keyed by its own
+-- character Model (so `.dummy clear`/list and the knockout-reset
+-- subscriber below can tell a trainer apart from a Dummy/Target NPC without
+-- another attribute round-trip). Never auto-discovered/respawned the way
+-- Workspace.NPC's own children are - `.dummy spawn`/`clear` own their
+-- lifetime outright.
+local trainers: { [Model]: { key: string } } = {}
 
 local NpcService = {}
 
@@ -70,6 +80,53 @@ local function getTemplatesFolder(): Folder
 	return folder
 end
 
+-- M3B-02: trainers live in their own Workspace folder, never Workspace.NPC -
+-- that folder's own ChildAdded (watchForNew below) would otherwise
+-- auto-register a spawned trainer a second time, as a plain Dummy, clobbering
+-- the trainer controller/tree this module just built for it.
+local function getTrainersFolder(): Folder
+	if trainersFolder then
+		return trainersFolder
+	end
+
+	local existing = Workspace:FindFirstChild(TRAINERS_FOLDER_NAME)
+	if existing and not existing:IsA("Folder") then
+		existing:Destroy()
+		existing = nil
+	end
+
+	local folder: Folder
+	if existing and existing:IsA("Folder") then
+		folder = existing
+	else
+		local created = Instance.new("Folder")
+		created.Name = TRAINERS_FOLDER_NAME
+		created.Parent = Workspace
+		folder = created
+	end
+
+	trainersFolder = folder
+	return folder
+end
+
+-- "the one under ServerStorage.NpcTemplates from M3-04; if two templates
+-- exist use the Dummy one" - templates are keyed by the source model's own
+-- Name (setupNpc below), so this prefers one literally named "Dummy" and
+-- falls back to whatever else got templated first.
+local function findDummyTemplate(): Model?
+	local templates = getTemplatesFolder()
+	local named = templates:FindFirstChild("Dummy")
+	if named and named:IsA("Model") then
+		return named
+	end
+	for _, child in templates:GetChildren() do
+		if child:IsA("Model") then
+			return child
+		end
+	end
+	return nil
+end
+
 function NpcService.ResolveNpcType(model: Instance): string
 	local attr = model:GetAttribute("NpcType")
 	if attr == "Dummy" or attr == "Target" then
@@ -95,6 +152,131 @@ local function unregisterNpc(model: Model)
 	StatusService.Unregister(model)
 	MovementService.Unregister(model)
 	CombatService.Unregister(model)
+end
+
+-- ==================== training dummies (M3B-02) ====================
+
+-- Bryan's menu style (docs/TINKER.md: name (255,224,152), Merriweather) on
+-- a dark card, over the head - same read as any other name tag.
+local function addTrainerNameTag(model: Model, displayName: string)
+	local head = model:FindFirstChild("Head")
+	local attachTo = if head and head:IsA("BasePart") then head else model:FindFirstChild("HumanoidRootPart")
+	if attachTo == nil or not attachTo:IsA("BasePart") then
+		return
+	end
+
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "TrainerNameTag"
+	gui.Size = UDim2.fromScale(4, 1.2)
+	gui.StudsOffset = Vector3.new(0, 1.5, 0)
+	gui.AlwaysOnTop = true
+
+	local card = Instance.new("Frame")
+	card.Size = UDim2.fromScale(1, 1)
+	card.BackgroundColor3 = Color3.fromRGB(20, 16, 10)
+	card.BackgroundTransparency = 0.2
+	card.BorderSizePixel = 0
+	card.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = card
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = displayName
+	label.TextColor3 = Color3.fromRGB(255, 224, 152)
+	label.FontFace = Font.new(Font.fromEnum(Enum.Font.Merriweather).Family, Enum.FontWeight.Regular, Enum.FontStyle.Normal)
+	label.TextScaled = true
+	label.Parent = card
+
+	gui.Parent = attachTo :: BasePart
+end
+
+-- Clones the Dummy template 6 studs in front of `targetPlayer`, facing
+-- them, registers it through the exact same HealthService/StatusService/
+-- MovementService/CombatService.Register calls setupNpc uses for any other
+-- NPC (so it takes hits, blocks and gets knocked identically), but with
+-- Trees.BuildTrainer(key)'s own tree instead of buildTree's Dummy/Target
+-- pick, and never auto-respawns.
+local function spawnTrainer(caller: Player, key: string, targetPlayer: Player): (Model?, string?)
+	local cfg = Config.Npc.Trainers[key]
+	if cfg == nil then
+		return nil, string.format("no trainer named %q", key)
+	end
+
+	local template = findDummyTemplate()
+	if template == nil then
+		return nil, "no dummy template found yet (a Dummy NPC has to exist in the place at least once first)"
+	end
+
+	local playerCharacter = targetPlayer.Character
+	local playerRoot = playerCharacter and playerCharacter:FindFirstChild("HumanoidRootPart")
+	if playerCharacter == nil or playerRoot == nil or not playerRoot:IsA("BasePart") then
+		return nil, string.format("%s has no character to spawn against", targetPlayer.Name)
+	end
+
+	local playerCFrame = (playerRoot :: BasePart).CFrame
+	local spawnPosition = playerCFrame.Position + playerCFrame.LookVector * 6
+	local spawnCFrame = CFrame.lookAt(spawnPosition, playerCFrame.Position)
+
+	local ok, cloneOrErr = pcall(function()
+		return template:Clone()
+	end)
+	if not ok then
+		return nil, string.format("couldn't clone the dummy template: %s", tostring(cloneOrErr))
+	end
+	local model = cloneOrErr :: Model
+	model.Name = string.format("Trainer_%s", key)
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	local rootPart = model:FindFirstChild("HumanoidRootPart")
+	if humanoid == nil or rootPart == nil or not rootPart:IsA("BasePart") then
+		model:Destroy()
+		return nil, "the dummy template has no Humanoid/HumanoidRootPart"
+	end
+
+	pcall(function()
+		model:SetAttribute("NpcType", "Dummy")
+	end)
+	model:PivotTo(spawnCFrame)
+	model.Parent = getTrainersFolder()
+
+	HealthService.Register(model, { maxHealth = Config.Npc.MaxHealth.Dummy })
+	StatusService.Register(model, nil)
+	MovementService.Register(model, nil)
+	CombatService.Register(model, nil, "Fist")
+	pcall(function()
+		model:SetAttribute("InCombat", true)
+	end)
+
+	local controller = AiController.new(model, "Dummy", Trees.BuildTrainer(key))
+	if controller == nil then
+		unregisterNpc(model)
+		model:Destroy()
+		return nil, "couldn't build the trainer's AI controller"
+	end
+	controller.blackboard.trainerKey = key
+	controller.blackboard.spawner = targetPlayer
+	controller.blackboard.engageRadius = cfg.engageRadius or 12
+	controllers[model] = controller
+	trainers[model] = { key = key }
+
+	addTrainerNameTag(model, cfg.displayName or key)
+
+	local ancestryConn: RBXScriptConnection
+	ancestryConn = model.AncestryChanged:Connect(function(_child, parent)
+		if parent ~= nil then
+			return
+		end
+		ancestryConn:Disconnect()
+		trainers[model] = nil
+		unregisterNpc(model)
+	end)
+
+	log:Info(string.format("%s spawned trainer %s (%s) for %s", caller.Name, key, cfg.displayName or key, targetPlayer.Name))
+	return model, nil
 end
 
 -- Forward-declared: setupNpc's own AncestryChanged handler re-clones from
@@ -282,6 +464,57 @@ local function registerDevCommands()
 		end
 		return "usage: .npc list|reset|type <name> Dummy|Target"
 	end)
+
+	-- M3B-02.
+	DevService.Register("dummy", "spawn <name> [player] | clear | list", function(caller, args)
+		local sub = args[1]
+		if sub == "spawn" then
+			local key = args[2]
+			if key == nil then
+				return "usage: .dummy spawn <name> [player]"
+			end
+			local targetPlayer, err = DevService.ResolvePlayer(caller, args[3])
+			if targetPlayer == nil then
+				return err or "player not found"
+			end
+			local model, spawnErr = spawnTrainer(caller, key, targetPlayer)
+			if model == nil then
+				return spawnErr or "couldn't spawn the trainer"
+			end
+			return string.format("Spawned %s for %s", key, targetPlayer.Name)
+		elseif sub == "clear" then
+			local names: { string } = {}
+			for model in trainers do
+				table.insert(names, model.Name)
+				trainers[model] = nil
+				unregisterNpc(model)
+				model:Destroy()
+			end
+			return string.format("Cleared %d trainer(s): %s", #names, table.concat(names, ", "))
+		elseif sub == "list" then
+			local lines: { string } = { "Trainers (spawn order):" }
+			for _, key in Config.Npc.TrainerOrder do
+				local cfg = Config.Npc.Trainers[key]
+				local liveCount = 0
+				for _, info in trainers do
+					if info.key == key then
+						liveCount += 1
+					end
+				end
+				table.insert(
+					lines,
+					string.format(
+						"  %s (%s)%s",
+						cfg and cfg.displayName or key,
+						key,
+						if liveCount > 0 then string.format(" - %d live", liveCount) else ""
+					)
+				)
+			end
+			return table.concat(lines, "\n")
+		end
+		return "usage: .dummy spawn <name> [player] | clear | list"
+	end)
 end
 
 -- ==================== service ====================
@@ -293,6 +526,26 @@ end
 function NpcService:Start()
 	discoverExisting()
 	watchForNew()
+
+	-- M3B-02: trainers reset after a knockout - full health, Bleed cleared,
+	-- HitCount back to 0 - instead of the general Combat.Knockout.
+	-- healthOnGetUp partial heal every other combatant gets, so a lesson
+	-- doesn't stay half-broken for the next player to try it. One shared
+	-- subscriber, same reasoning as CombatService's own single onStatusChanged
+	-- owner: it fires for every combatant, `trainers` is just the filter.
+	StatusService.Changed:Connect(function(character: Model, status: string, active: boolean)
+		if status ~= "Knocked" or active or trainers[character] == nil then
+			return
+		end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.Health = humanoid.MaxHealth
+		end
+		StatusService.Remove(character, "Bleed")
+		pcall(function()
+			character:SetAttribute("HitCount", 0)
+		end)
+	end)
 
 	task.spawn(function()
 		while true do

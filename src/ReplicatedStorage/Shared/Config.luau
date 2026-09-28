@@ -193,6 +193,64 @@ Config.Npc = {
 	-- Animation-instance lookup on the model itself is tried first; this
 	-- is only a fallback for when the art doesn't have one).
 	Animations = { Walk = "", Run = "", Flinch = "" },
+	-- M3B-02: the seven training dummies (docs/M3B-PLAN.md section 3,
+	-- Bryan's roster, approved 2026-09-28). All Fist style. reactionSeconds
+	-- is the delay before a dummy reacts to something it read off the
+	-- player's own attributes (CurrentHit/Attacking); rhythmSeconds paces a
+	-- dummy that throws on its own schedule rather than reacting; weights
+	-- are Sparring Sinbad's own throw/cancel/parry/dash mix. engageRadius
+	-- (12): a trainer only fights its spawner or the nearest player within
+	-- this many studs - PLACEHOLDERS, Bryan retunes every number here once
+	-- he's felt each dummy against the real animations.
+	Trainers = {
+		StraightSam = {
+			displayName = "Straight Sam",
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		TurtleTariq = {
+			displayName = "Turtle Tariq",
+			engageRadius = 12,
+		},
+		JabbingJamal = {
+			displayName = "Jabbing Jamal",
+			reactionSeconds = 0.3,
+			engageRadius = 12,
+		},
+		ParryPete = {
+			displayName = "Parry Pete",
+			reactionSeconds = 0.3,
+			engageRadius = 12,
+		},
+		FeintingMohammed = {
+			displayName = "Feinting Mohammed",
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		DashingDalila = {
+			displayName = "Dashing Dalila",
+			reactionSeconds = 0.25,
+			rhythmSeconds = 2.5,
+			engageRadius = 12,
+		},
+		SparringSinbad = {
+			displayName = "Sparring Sinbad",
+			rhythmSeconds = 2.0,
+			engageRadius = 12,
+			weights = { throw = 0.4, cancel = 0.2, parry = 0.2, dash = 0.2 },
+		},
+	},
+	-- The teaching order (docs/M3B-PLAN.md section 3's own table) - also
+	-- `.dummy list`'s print order, since Lua tables don't keep one.
+	TrainerOrder = {
+		"StraightSam",
+		"TurtleTariq",
+		"JabbingJamal",
+		"ParryPete",
+		"FeintingMohammed",
+		"DashingDalila",
+		"SparringSinbad",
+	},
 }
 
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
@@ -232,6 +290,16 @@ table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
+table.freeze(Config.Npc.Trainers.StraightSam)
+table.freeze(Config.Npc.Trainers.TurtleTariq)
+table.freeze(Config.Npc.Trainers.JabbingJamal)
+table.freeze(Config.Npc.Trainers.ParryPete)
+table.freeze(Config.Npc.Trainers.FeintingMohammed)
+table.freeze(Config.Npc.Trainers.DashingDalila)
+table.freeze(Config.Npc.Trainers.SparringSinbad.weights)
+table.freeze(Config.Npc.Trainers.SparringSinbad)
+table.freeze(Config.Npc.Trainers)
+table.freeze(Config.Npc.TrainerOrder)
 table.freeze(Config.Npc)
 table.freeze(Config.Rukh.Emitters.White)
 table.freeze(Config.Rukh.Emitters.Gold)

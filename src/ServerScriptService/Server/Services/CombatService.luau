@@ -221,6 +221,10 @@ local function clearAttack(character: Model, entry: Entry, nextAttackDelay: numb
 	entry.attack = nil
 	pcall(function()
 		character:SetAttribute("Attacking", false)
+		-- M3B-02: the trainer dummies read this to know whether a Light or a
+		-- Heavy is the one currently swinging (their own reaction window) -
+		-- "" once nothing is.
+		character:SetAttribute("CurrentHit", "")
 		character:SetAttribute("NextAttackAt", Workspace:GetServerTimeNow() + nextAttackDelay)
 	end)
 end
@@ -820,6 +824,7 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	pcall(function()
 		character:SetAttribute("Attacking", true)
 		character:SetAttribute("ComboStep", 1)
+		character:SetAttribute("CurrentHit", style.chain[1].kind)
 	end)
 
 	Remotes.Server.FireAll("CombatEvent", "Swing", { character = character, style = entry.weaponSet, hitCount = #style.chain })
@@ -968,6 +973,11 @@ function CombatService.AttackHit(character: Model, index: number)
 		if combatLogEnabled then
 			log:Info(string.format("%s's attack complete, recovery %.2fs", character.Name, attack.style.recovery))
 		end
+	else
+		local nextChainHit = attack.style.chain[attack.nextHit]
+		pcall(function()
+			character:SetAttribute("CurrentHit", nextChainHit.kind)
+		end)
 	end
 end
 
@@ -1246,6 +1256,7 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		character:SetAttribute("ComboStep", 1)
 		character:SetAttribute("NextAttackAt", 0)
 		character:SetAttribute("Attacking", false)
+		character:SetAttribute("CurrentHit", "")
 		character:SetAttribute("HitCount", 0)
 		-- M3B-01: NPCs are always InCombat - NpcService flips this right
 		-- after this same Register call; a player starts out of the stance.

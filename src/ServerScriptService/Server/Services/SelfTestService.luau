@@ -2082,6 +2082,224 @@ local function testNpcService(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3B-02: each trainer tree ticks without error through its main branch,
+-- against a real registered trainer (so CombatService.Attack/AttackCancel/
+-- SetBlocking and MovementService.Dash have live state to act on) and a
+-- plain fake target Model whose Attacking/CurrentHit attributes are set
+-- directly (a trainer only ever reads those two off its target, so there's
+-- nothing for the target to be registered with).
+local function testTrainers(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestTrainers"
+	scratch.Parent = Workspace
+
+	local function buildFakeCombatant(name: string, position: Vector3, lookAt: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Size = Vector3.new(2, 2, 1)
+		hrp.Anchored = true
+		hrp.CanCollide = false
+		hrp.CFrame = CFrame.new(position, lookAt)
+		hrp.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		return model
+	end
+
+	local function buildTrainerBlackboard(trainer: Model, target: Model, engageRadius: number): any
+		local humanoid = trainer:FindFirstChildOfClass("Humanoid") :: Humanoid
+		local rootPart = trainer:FindFirstChild("HumanoidRootPart") :: BasePart
+		return {
+			character = trainer,
+			humanoid = humanoid,
+			rootPart = rootPart,
+			npcType = "Dummy",
+			home = rootPart.Position,
+			target = target,
+			wanderGoal = nil,
+			path = nil,
+			waypoints = nil,
+			waypointIndex = 1,
+			pathComputedAt = nil,
+			engageRadius = engageRadius,
+		}
+	end
+
+	local function registerTrainer(trainer: Model)
+		StatusService.Register(trainer)
+		MovementService.Register(trainer, nil)
+		CombatService.Register(trainer, nil, "Fist")
+		pcall(function()
+			trainer:SetAttribute("InCombat", true) -- a live trainer is always in the stance, same as any NPC
+		end)
+	end
+
+	local function teardown(trainer: Model, target: Model)
+		StatusService.Unregister(trainer)
+		MovementService.Unregister(trainer)
+		CombatService.Unregister(trainer)
+		trainer:Destroy()
+		target:Destroy()
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestSam", Vector3.new(2000, 5, 0), Vector3.new(2000, 5, 1))
+		local target = buildFakeCombatant("SelfTestSamTarget", Vector3.new(2000, 5, 3), Vector3.new(2000, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("StraightSam", { rhythmSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Straight Sam throws on rhythm", trainer:GetAttribute("Attacking") == true)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestTariq", Vector3.new(2010, 5, 0), Vector3.new(2010, 5, 1))
+		local target = buildFakeCombatant("SelfTestTariqTarget", Vector3.new(2010, 5, 3), Vector3.new(2010, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("TurtleTariq", { engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Turtle Tariq blocks", StatusService.Has(trainer, "Block"))
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestJamalIdle", Vector3.new(2020, 5, 0), Vector3.new(2020, 5, 1))
+		local target = buildFakeCombatant("SelfTestJamalTargetIdle", Vector3.new(2020, 5, 3), Vector3.new(2020, 5, 4))
+		target:SetAttribute("Attacking", false)
+		target:SetAttribute("CurrentHit", "")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(
+			results,
+			"Trainers: Jabbing Jamal doesn't jab without a Heavy wind-up (blocks instead)",
+			trainer:GetAttribute("Attacking") ~= true and StatusService.Has(trainer, "Block")
+		)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestJamalReact", Vector3.new(2030, 5, 0), Vector3.new(2030, 5, 1))
+		local target = buildFakeCombatant("SelfTestJamalTargetReact", Vector3.new(2030, 5, 3), Vector3.new(2030, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.05, engageRadius = 50 })
+		local jabbed = pollUntil(1, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Jabbing Jamal jabs only when the target's CurrentHit == \"Heavy\"", jabbed)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestPeteLight", Vector3.new(2040, 5, 0), Vector3.new(2040, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetLight", Vector3.new(2040, 5, 3), Vector3.new(2040, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Light")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.05, engageRadius = 50 })
+		local parried = pollUntil(1, function()
+			tree.Tick(bb)
+			return StatusService.Has(trainer, "Block")
+		end)
+		expect(results, "Trainers: Parry Pete parries the target's first Light", parried)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestPeteHeavy", Vector3.new(2050, 5, 0), Vector3.new(2050, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetHeavy", Vector3.new(2050, 5, 3), Vector3.new(2050, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.02, engageRadius = 50 })
+		for _ = 1, 5 do
+			tree.Tick(bb)
+		end
+		expect(results, "Trainers: Parry Pete never parries a Heavy", not StatusService.Has(trainer, "Block"))
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestMohammed", Vector3.new(2060, 5, 0), Vector3.new(2060, 5, 1))
+		local target = buildFakeCombatant("SelfTestMohammedTarget", Vector3.new(2060, 5, 3), Vector3.new(2060, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("FeintingMohammed", { rhythmSeconds = 0.01, engageRadius = 50 })
+		tree.Tick(bb)
+		expect(results, "Trainers: Feinting Mohammed throws its light-heavy chain", trainer:GetAttribute("Attacking") == true)
+
+		-- Combat.Styles.Fist.chain[2] (Heavy)'s own cancelUntil is 1.05s;
+		-- its hitWindow doesn't open until 1.45s - a cancel caught well
+		-- before that proves it didn't just land normally.
+		local cancelled = pollUntil(1.3, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == false
+		end)
+		expect(results, "Trainers: Feinting Mohammed cancels its own heavy at cancelUntil", cancelled)
+
+		local rejabbed = pollUntil(0.5, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Feinting Mohammed re-jabs right after cancelling", rejabbed)
+		teardown(trainer, target)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestDalila", Vector3.new(2080, 5, 0), Vector3.new(2080, 5, 1))
+		local target = buildFakeCombatant("SelfTestDalilaTarget", Vector3.new(2080, 5, 3), Vector3.new(2080, 5, 4))
+		target:SetAttribute("Attacking", true)
+		target:SetAttribute("CurrentHit", "Heavy")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.05, engageRadius = 50 })
+		local dashed = pollUntil(1, function()
+			tree.Tick(bb)
+			local nextDashAt = trainer:GetAttribute("NextDashAt")
+			return typeof(nextDashAt) == "number" and (nextDashAt :: number) > 0
+		end)
+		expect(results, "Trainers: Dashing Dalila dashes away on the target's Heavy wind-up", dashed)
+		teardown(trainer, target)
+	end
+
+	do
+		expect(results, "Trees.WeightedPick: a single 100% option always wins", NpcTrees.WeightedPick({ throw = 1, cancel = 0, parry = 0, dash = 0 }, 0.5) == "throw")
+		expect(results, "Trees.WeightedPick: picks the option the roll actually falls into", NpcTrees.WeightedPick({ throw = 0, cancel = 1, parry = 0, dash = 0 }, 0.999) == "cancel")
+		expect(
+			results,
+			"Trees.WeightedPick: falls back to the first action when every weight is 0",
+			NpcTrees.WeightedPick({ throw = 0, cancel = 0, parry = 0, dash = 0 }, 0.5) == "throw"
+		)
+	end
+
+	do
+		local trainer = buildFakeCombatant("SelfTestSinbad", Vector3.new(2090, 5, 0), Vector3.new(2090, 5, 1))
+		local target = buildFakeCombatant("SelfTestSinbadTarget", Vector3.new(2090, 5, 3), Vector3.new(2090, 5, 4))
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("SparringSinbad", { rhythmSeconds = 0.01, engageRadius = 50, weights = { throw = 1, cancel = 0, parry = 0, dash = 0 } })
+		tree.Tick(bb)
+		expect(results, "Trainers: Sparring Sinbad picks by weights (100% throw always throws)", trainer:GetAttribute("Attacking") == true)
+		teardown(trainer, target)
+	end
+
+	scratch:Destroy()
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -2109,6 +2327,7 @@ function SelfTestService:Start()
 		testCombatStance(collected)
 		testBehaviorTree(collected)
 		testNpcService(collected)
+		testTrainers(collected)
 		testCompatShims(collected)
 		return collected
 	end)
