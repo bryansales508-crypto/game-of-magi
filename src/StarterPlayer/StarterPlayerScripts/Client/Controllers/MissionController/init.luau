@@ -8,8 +8,11 @@
 -- Contract with the server (M5C-01, Shared/Remotes.luau):
 --   MissionBoard (server -> client): one table
 --     { city, destinations = { {key, name, color = {r,g,b} (0-1), lore,
---       image, pay, modifiers = { {name, chance, text} } } } }
---     or nil to close.
+--       image, pay, modifiers = { {name, chance, text} } } }, intercepted?,
+--       offerMultiplier? }
+--     or nil to close. `pay` already has offerMultiplier folded in
+--     (Bryan, follow-up): when intercepted > 0, one line on the board says
+--     so (offers at floor(offerMultiplier*100)%); hidden otherwise.
 --   MissionOpenBoard(cityKey), MissionStart(destinationKey), MissionExit()
 --     (client -> server intentions only).
 --   MissionUpdate (server -> client):
@@ -403,6 +406,35 @@ local function buildCityButton(destination: Destination, parent: Instance, layou
 	end)
 end
 
+local INTERCEPTED_NOTICE_FORMAT = "Merchants doubt you. Offers at %d%% until you deliver."
+
+-- Bryan (follow-up): board.intercepted/offerMultiplier -- the pay numbers
+-- shown are already multiplied by the server, this is just the one line
+-- explaining why. `fontSource` is an existing Balthazar Italic 14 label
+-- from the same clone (CityDesc) -- copied rather than guessed, same
+-- reasoning as RankController's `copyFont` (this file's header comment).
+local function buildInterceptedNotice(board: any, outsideFrame: Instance, fontSource: TextLabel)
+	local intercepted = board.intercepted
+	local offerMultiplier = board.offerMultiplier
+	if typeof(intercepted) ~= "number" or intercepted <= 0 or typeof(offerMultiplier) ~= "number" then
+		return
+	end
+
+	local notice = Instance.new("TextLabel")
+	notice.Name = "InterceptedNotice"
+	notice.AnchorPoint = Vector2.new(0.5, 0.5)
+	notice.Size = UDim2.fromScale(0.9, 0.06)
+	notice.Position = UDim2.fromScale(0.5, 0.97)
+	notice.BackgroundTransparency = 1
+	notice.TextColor3 = Color3.new(1, 1, 1)
+	notice.TextXAlignment = Enum.TextXAlignment.Center
+	notice.TextYAlignment = Enum.TextYAlignment.Center
+	notice.TextSize = 14
+	notice.FontFace = fontSource.FontFace
+	notice.Text = string.format(INTERCEPTED_NOTICE_FORMAT, math.floor(offerMultiplier * 100))
+	notice.Parent = outsideFrame
+end
+
 local function watchBoardDistance(originPart: BasePart)
 	boardWatchThread = task.spawn(function()
 		while true do
@@ -512,6 +544,8 @@ local function openBoard(board: any)
 			end)
 		)
 	end
+
+	buildInterceptedNotice(board, outsideFrame :: Instance, (textContainer :: any).CityDesc)
 
 	clone.Parent = player:WaitForChild("PlayerGui")
 	boardGui = clone
