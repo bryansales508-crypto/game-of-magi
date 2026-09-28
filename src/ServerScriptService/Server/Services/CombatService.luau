@@ -65,11 +65,18 @@ local BLOCKS_BLOCK_START: { [string]: boolean } = {
 local ENDS_BLOCK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, LightStun = true }
 -- Statuses that also interrupt an in-progress attack the instant they turn
 -- on, regardless of what caused them (a real hit, a dev command, anything)
--- - onStatusChanged below reacts to all three. NOT LightStun or Recovery:
--- a Light "cannot be interrupted" (rule 1), and Recovery only ever turns on
--- once a feint's own AttackHit has already resolved (see applyBlockedHit).
--- The Heavy-landed-during-a-Heavy's-own-wind-up interrupt is a SEPARATE,
--- kind-conditional check in ApplyHit below, not this status-based one.
+-- - onStatusChanged below reacts to all three. This is what actually
+-- interrupts a target whenever a HEAVY lands on them, whatever they were
+-- doing (a Heavy always applies a real Stun - see ApplyHit) - confirmed
+-- intended, REVIEW-M3-FIX4-S M2: heavy stun overrides even a Light in
+-- progress. A LANDED LIGHT never reaches this table (every Light's own
+-- `stun` is 0) - it can only interrupt a target through the separate,
+-- kind-conditional check in ApplyHit below (only when the target's own
+-- next unlanded hit is a Heavy), matching rule 1: "a Light cannot be
+-- interrupted [by another Light]". NOT LightStun or Recovery here: rule 1
+-- doesn't gate an attack on LightStun at all, and Recovery only ever turns
+-- on once a feint's own AttackHit has already resolved and ended that
+-- chain itself (see applyBlockedHit, H2).
 local INTERRUPTS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
 
 -- Statuses that also freeze/slow movement while active - a single named
@@ -223,6 +230,25 @@ local function interruptAttack(character: Model)
 	end
 end
 
+-- M3-FIX4-S: resets the count-based knockback tracker (Combat.Knockback -
+-- see registerHitCount below). Defined up here, ahead of onStatusChanged,
+-- which is the ONE place that calls it (REVIEW-M3-FIX4-S L1: a knockout
+-- resets HitCount no matter what caused it - a landed hit, `.knock`, or
+-- any other StatusService.Apply(..., "Knocked") - matching this file's own
+-- "one place owns what happens when a status turns on" rule, the same one
+-- onStatusChanged itself already follows for everything else).
+local function resetHitCount(target: Model)
+	local entry = registered[target]
+	if entry == nil then
+		return
+	end
+	entry.hitCount = 0
+	entry.lastHitCountAt = nil
+	pcall(function()
+		target:SetAttribute("HitCount", 0)
+	end)
+end
+
 -- ==================== movement/status/health coupling ====================
 
 -- REVIEW-M3-03 M2: HealthService.SetTier(player, "Combat") on any hit
@@ -291,6 +317,11 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 	end
 
 	if status == "Knocked" then
+		if active then
+			-- REVIEW-M3-FIX4-S L1: every knockout resets the count-based
+			-- knockback tracker, not just the ones ApplyHit itself causes.
+			resetHitCount(character)
+		end
 		reconcileTier(character)
 		if not active then
 			-- Recovered, whether by the getUpSeconds timer or an early
@@ -393,18 +424,6 @@ local function registerHitCount(attacker: Model, target: Model)
 	end)
 end
 
-local function resetHitCount(target: Model)
-	local entry = registered[target]
-	if entry == nil then
-		return
-	end
-	entry.hitCount = 0
-	entry.lastHitCountAt = nil
-	pcall(function()
-		target:SetAttribute("HitCount", 0)
-	end)
-end
-
 -- M3-FIX4-S: stacks a hit's own bleedStacks onto the target's Bleed status,
 -- capped at the causing style's own maxStacks, refreshing (not extending)
 -- the duration on every new stack - the config (tick rate/duration/cap)
@@ -466,8 +485,21 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 			if recoverySeconds > 0 then
 				StatusService.Apply(attacker, "Recovery", recoverySeconds)
 			end
+			-- REVIEW-M3-FIX4-S H2: a blocked (not parried) feint ends the
+			-- feinter's WHOLE chain outright, not just this one hit -
+			-- Recovery alone isn't enough, since it's short (feintRecovery-
+			-- Seconds) and entry.attack would otherwise still be "in
+			-- progress": once Recovery's own duration ran out, a later
+			-- chain hit still inside its own hitWindow (+tolerance) could
+			-- land anyway, letting the feinter's combo continue right past
+			-- the punish it was supposed to eat.
+			local attackerEntry = registered[attacker]
+			if attackerEntry and attackerEntry.attack then
+				clearAttack(attacker, attackerEntry, 0)
+				Remotes.Server.FireAll("CombatEvent", "AttackCancelled", { character = attacker, reason = "interrupted" })
+			end
 			if combatLogEnabled then
-				log:Info(string.format("%s's feint was blocked (not parried) - %.2fs of Recovery", attacker.Name, recoverySeconds))
+				log:Info(string.format("%s's feint was blocked (not parried) - %.2fs of Recovery, chain ended", attacker.Name, recoverySeconds))
 			end
 		end
 		if combatLogEnabled then
@@ -526,11 +558,17 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 		StatusService.Remove(target, "Block")
 	end
 
-	-- M3-FIX4-S rule 2: only interrupts the TARGET's own in-progress attack
-	-- when its next unlanded hit is a Heavy - a Light "cannot be
-	-- interrupted" (rule 1), whatever kind of hit just landed on it. A
-	-- parry/block returned above already, so this only ever runs for a
-	-- hit that actually connects.
+	-- M3-FIX4-S rule 2: this kind-conditional check only covers a LIGHT
+	-- landing while the target's own next unlanded hit is a Heavy - rule
+	-- 1's "a Light cannot be interrupted" is about what kind of hit the
+	-- TARGET is throwing, not what kind just landed on them. A HEAVY
+	-- landing interrupts the target's attack EITHER WAY, Light or Heavy
+	-- pending: not through this check, but because every Heavy applies a
+	-- real `Stun` below, and Stun turning on interrupts unconditionally via
+	-- onStatusChanged (INTERRUPTS_ATTACK). REVIEW-M3-FIX4-S M2, confirmed
+	-- intended (Bryan): heavy stun overrides a Light in progress; only a
+	-- Light can never interrupt a Light. A parry/block returned above
+	-- already, so this only ever runs for a hit that actually connects.
 	local targetEntry = registered[target]
 	if targetEntry and targetEntry.attack then
 		local pendingHit = targetEntry.attack.style.chain[targetEntry.attack.nextHit]
@@ -549,8 +587,9 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 	local wouldBeHealth = targetHumanoid.Health - hit.damage
 	if wouldBeHealth <= 0 then
 		targetHumanoid.Health = 1
+		-- Resets HitCount too, via onStatusChanged's own Knocked handler
+		-- (REVIEW-M3-FIX4-S L1) - one place, regardless of what caused it.
 		StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, { by = by })
-		resetHitCount(target)
 		Remotes.Server.FireAll("CombatEvent", "Knocked", { target = target, by = by })
 		if combatLogEnabled then
 			log:Info(string.format("%s knocked out %s", attacker.Name, target.Name))
@@ -910,9 +949,11 @@ end
 -- Shared by the AttackCancel remote and CombatService.Attack (NPCs, in
 -- principle - NpcService doesn't cancel today, but nothing stops it later).
 -- M3-FIX4-S: cancel is per-hit now (the next unlanded hit's own
--- cancelUntil, not a single swing-level window) and always costs nothing -
--- what happens next depends on the style's cancelInto trait (see the
--- comment above Moves.Fist in Shared/Data/Combat.luau).
+-- cancelUntil, not a single swing-level window). Free before any hit has
+-- landed (the bait); costs a full chain's own cooldown once at least one
+-- has (REVIEW-M3-FIX4-S H3, below). What happens next depends on the
+-- style's cancelInto trait (see the comment above Combat.Styles.Fist in
+-- Shared/Data/Combat.luau).
 function CombatService.AttackCancel(character: Model)
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -947,7 +988,27 @@ function CombatService.AttackCancel(character: Model)
 
 	local style = attack.style
 	local cancelledAtHit = attack.nextHit
-	clearAttack(character, entry, 0)
+
+	-- REVIEW-M3-FIX4-S H3: cancelling is free ONLY before any hit in this
+	-- chain has landed (cancelledAtHit == 1 still) - that's the intended
+	-- bait, a swing that never committed to anything. Cancelling once at
+	-- least one hit already landed is a different move (finish a Jab, then
+	-- bail on the rest of the chain) and must cost the same cooldown a full
+	-- chain would, or "land hit 1, cancel, restart" beats a full chain's
+	-- own DPS for free every time. NextAttackAt = startedAt + style.recovery
+	-- + chain[1].hitWindow.min: the earliest the NEXT swing's own first hit
+	-- could land is then startedAt + recovery + 2 x chain[1].hitWindow.min,
+	-- matching a full chain's own first-hit-to-first-hit cadence instead of
+	-- beating it. beginAttack (including the cancel-into-jab path just
+	-- below) already checks NextAttackAt, so setting it here is enough - a
+	-- feint that follows a landed hit simply waits for it; a feint after a
+	-- free cancel (no hit landed) stays free, which is the bait.
+	if cancelledAtHit > 1 then
+		local cooldownEndsAt = attack.startedAt + style.recovery + style.chain[1].hitWindow.min
+		clearAttack(character, entry, cooldownEndsAt - now)
+	else
+		clearAttack(character, entry, 0)
+	end
 	Remotes.Server.FireAll("CombatEvent", "AttackCancelled", { character = character, reason = "cancelled" })
 	if combatLogEnabled then
 		log:Info(string.format("%s's attack cancelled at hit %d (elapsed %.2fs)", character.Name, cancelledAtHit, elapsed))

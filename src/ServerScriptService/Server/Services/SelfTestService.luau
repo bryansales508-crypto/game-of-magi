@@ -1452,10 +1452,54 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- M3-FIX4-S rule 1/2: a Light "cannot be interrupted"; a Heavy can - ANY
-	-- hit landing on a combatant interrupts their attack while their own
-	-- next unlanded hit is a Heavy, independent of what kind of hit just
-	-- landed on them.
+	-- REVIEW-M3-FIX4-S H3: cancelling is free only before any hit in the
+	-- chain has landed (the block right above this one). Cancelling AFTER a
+	-- hit already landed costs the same cooldown a full chain would
+	-- (NextAttackAt = startedAt + style.recovery + chain[1].hitWindow.min),
+	-- so "land hit 1, cancel, restart" can't out-DPS a full chain.
+	do
+		local attacker = buildFakeCombatant("SelfTestCancelAfterHitAttacker", Vector3.new(980, 5, 0), Vector3.new(980, 5, 1))
+		StatusService.Register(attacker)
+		CombatService.Register(attacker, nil, "Fist")
+
+		local startedAt = Workspace:GetServerTimeNow()
+		CombatService.AttackStart(attacker)
+
+		local function waitUntilElapsed(targetElapsed: number)
+			local remaining = targetElapsed - (Workspace:GetServerTimeNow() - startedAt)
+			if remaining > 0 then
+				task.wait(remaining)
+			end
+		end
+
+		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
+		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2
+
+		CombatService.AttackCancel(attacker) -- still well inside hit 2's own cancelUntil
+		expect(results, "CombatService: AttackCancel after hit 1 landed still ends the attack", attacker:GetAttribute("Attacking") == false)
+
+		local restartedTooSoon = CombatService.AttackStart(attacker)
+		expect(
+			results,
+			"CombatService: cancelling after a landed hit is NOT free - an immediate restart is rejected (on cooldown)",
+			restartedTooSoon == false
+		)
+
+		waitUntilElapsed(fist.recovery + fist.chain[1].hitWindow.min + Config.Combat.HitTolerance + 0.1)
+		local restartedAfterCooldown = CombatService.AttackStart(attacker)
+		expect(results, "CombatService: once that cooldown passes, the attacker can restart normally", restartedAfterCooldown == true)
+
+		StatusService.Unregister(attacker)
+		CombatService.Unregister(attacker)
+		attacker:Destroy()
+	end
+
+	-- M3-FIX4-S rule 1/2: a Light "cannot be interrupted [by another
+	-- Light]"; a Heavy always can - via the kind-conditional check in
+	-- ApplyHit while the TARGET's own next unlanded hit is a Heavy, OR
+	-- (REVIEW-M3-FIX4-S M2, confirmed intended) via the ordinary Stun path
+	-- whenever a HEAVY lands on them, whatever they were doing - heavy stun
+	-- overrides even a Light in progress.
 	do
 		local attacker = buildFakeCombatant("SelfTestInterruptLightAttacker", Vector3.new(1000, 5, 0), Vector3.new(1000, 5, 3))
 		local target = buildFakeCombatant("SelfTestInterruptLightTarget", Vector3.new(1000, 5, 3), Vector3.new(1000, 5, 0))
@@ -1472,6 +1516,44 @@ local function testCombatService(results: { Check })
 			results,
 			"CombatService: a Light can't be interrupted - getting hit while the next unlanded hit is Light leaves the attack running",
 			target:GetAttribute("Attacking") == true
+		)
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	-- REVIEW-M3-FIX4-S M2: unlike the Light-on-Light case right above, a
+	-- landed HEAVY interrupts a target's Light in progress too - not
+	-- through the kind-conditional check (which only fires for the
+	-- target's own pending Heavy), but through the ordinary Stun-turns-on
+	-- path (every Heavy applies a real Stun). That path is a deferred
+	-- BindableEvent (StatusService.Changed), so this polls for it instead
+	-- of asserting immediately (BUG-26's own fix pattern) - unlike the
+	-- kind-conditional check, which runs synchronously inside ApplyHit
+	-- itself and needs no poll.
+	do
+		local attacker = buildFakeCombatant("SelfTestInterruptHeavyOnLightAttacker", Vector3.new(1010, 5, 0), Vector3.new(1010, 5, 3))
+		local target = buildFakeCombatant("SelfTestInterruptHeavyOnLightTarget", Vector3.new(1010, 5, 3), Vector3.new(1010, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		CombatService.AttackStart(target)
+		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is a Light", target:GetAttribute("Attacking") == true)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- a Heavy landing
+		local interrupted = pollUntil(1, function()
+			return target:GetAttribute("Attacking") == false
+		end)
+		expect(
+			results,
+			"CombatService: a landed Heavy interrupts a target's Light in progress too (heavy stun overrides)",
+			interrupted
 		)
 
 		StatusService.Unregister(attacker)
@@ -1535,6 +1617,12 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
+	-- REVIEW-M3-FIX4-S H2: a blocked feint doesn't just punish with Recovery -
+	-- it ends the feinter's WHOLE chain outright, so a later chain hit can
+	-- never sneak through once Recovery's own (short) duration runs out.
+	-- Drives a REAL in-progress attack (AttackStart, not just a bare
+	-- ApplyHit call) so entry.attack is genuinely live when the blocked hit
+	-- resolves, exercising the actual clearAttack path.
 	do
 		local attacker = buildFakeCombatant("SelfTestFeintBlockedAttacker", Vector3.new(1060, 5, 0), Vector3.new(1060, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestFeintBlockedBlocker", Vector3.new(1060, 5, 2), Vector3.new(1060, 5, 0))
@@ -1543,6 +1631,11 @@ local function testCombatService(results: { Check })
 		StatusService.Register(blocker)
 		CombatService.Register(attacker, nil, "Dagger")
 		CombatService.Register(blocker, nil, "Fist")
+
+		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
+
+		CombatService.AttackStart(attacker)
+		expect(results, "CombatService: feint-block setup - the attacker has a real attack in progress", attacker:GetAttribute("Attacking") == true)
 
 		-- Not parrying (past the parry window, still holding): resolves to
 		-- a plain Blocked outcome, not a Parried one.
@@ -1553,6 +1646,18 @@ local function testCombatService(results: { Check })
 			results,
 			"CombatService: a blocked (not parried) feint hit punishes the attacker with Recovery",
 			StatusService.Has(attacker, "Recovery")
+		)
+		expect(
+			results,
+			"CombatService: a blocked feint ends the feinter's whole chain - Attacking clears immediately",
+			attacker:GetAttribute("Attacking") == false
+		)
+
+		CombatService.AttackHit(attacker, 2) -- the chain's own hit 2, reported anyway
+		expect(
+			results,
+			"CombatService: a hit-2 report after a blocked feint is dropped - there's no attack left to advance",
+			blockerHumanoid.Health == 100 and attacker:GetAttribute("Attacking") == false
 		)
 
 		HealthService.Unregister(blocker)
