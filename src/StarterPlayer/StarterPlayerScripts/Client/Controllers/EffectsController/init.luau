@@ -11,13 +11,22 @@
 -- two controllers don't fight over the same tween/track.
 --
 -- Every character (not just the local player) gets its Hit/Blocked/
--- Parried/BlockBroken/Dash reaction here: sounds and particles don't
--- replicate on their own the way animations do, so every client's copy
--- of this controller reacts independently to the same broadcast, each
--- playing its own local copy of the character's own Sound/ParticleEmitter
--- instances (correctly spatialised per listener). Only the knockout
--- blind screen and input freeze are local-player-only, since those are
--- the local player's own screen and controls.
+-- Parried/BlockBroken/Dash/AttackCancelled reaction here: sounds and
+-- particles don't replicate on their own the way animations do, so every
+-- client's copy of this controller reacts independently to the same
+-- broadcast, each playing its own local copy of the character's own
+-- Sound/ParticleEmitter instances (correctly spatialised per listener).
+-- Only the knockout blind screen and input freeze are local-player-only,
+-- since those are the local player's own screen and controls.
+--
+-- M3-FIX3 (Bryan, 2026-09-28): AttackCancelled{reason} splits two ways --
+-- "cancelled" (a right-click before the first wind-up marker) flashes the
+-- character's old "Cancel" Highlight; "interrupted" (hit mid wind-up)
+-- plays the same stagger reaction as a landed Hit and stops that
+-- character's fist track if the local CombatController (their own, on
+-- their own machine) left one playing. This file has no access to
+-- CombatController's private swing state -- for the interrupted case it
+-- finds the actual playing track itself, generically, by animation id.
 --
 -- Assets reused:
 --   Cloned onto every character's Torso/Head already, by CharacterService
@@ -67,6 +76,7 @@ local Debris = game:GetService("Debris")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
+local Config = require(Shared:WaitForChild("Config"))
 
 local log = Log.new("EffectsController")
 local player = Players.LocalPlayer
@@ -74,6 +84,7 @@ local player = Players.LocalPlayer
 local VFX = ReplicatedFirst:WaitForChild("VFX")
 local HitEffects = VFX:WaitForChild("HitEffects")
 local MiscEffects = VFX:WaitForChild("MiscEffects")
+local CancelTemplate = MiscEffects:WaitForChild("Cancel")
 local BlindTemplate = ReplicatedFirst:WaitForChild("GUI"):WaitForChild("MiscGUI"):WaitForChild("Blind")
 
 local EffectsController = {}
@@ -101,14 +112,30 @@ local BLOCK_STAGGER_ID = "rbxassetid://15430386843"
 local BLOCK_BREAK_ID = "rbxassetid://86794346470329"
 local STUNNED_POLL_SECONDS = 0.15
 
+-- Same ids as CombatController's ANIMATION_IDS.Fist/Dagger. Duplicated
+-- (not required from there) because CombatController's swing track is
+-- private, per-local-character state; this only needs the id to find
+-- WHICHEVER client's copy is actually playing on a given Animator, not a
+-- reference to it.
+local SWING_ANIMATION_IDS = {
+	["rbxassetid://125726557974534"] = true,
+	["rbxassetid://115894342135428"] = true,
+}
+
 -- ==================== per-character caches (weak keys: no manual cleanup needed) ====================
 
 type BlockReactionTracks = { blockStagger: AnimationTrack, blockBreak: AnimationTrack }
 
+-- One swing's miss-sound bookkeeping: `generation` invalidates any still-
+-- pending checks from a PREVIOUS swing on this character (so a fast
+-- second attack can't play a miss sound for the first one after the
+-- fact), `hit` marks which punch indices already landed for THIS swing.
+type SwingMissState = { generation: number, hit: { [number]: boolean } }
+
 local lastRandomIndex = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { [string]: number } }
 local staggerTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { AnimationTrack } }
 local blockReactionTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BlockReactionTracks }
-local pendingSwingGeneration = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: number }
+local swingMissState = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: SwingMissState }
 local stunnedWatcherRunning = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: boolean }
 
 local function pickIndex(character: Instance, key: string, count: number): number
@@ -234,6 +261,45 @@ local function applyHitStop(character: Instance, duration: number)
 				track:AdjustSpeed(originalSpeed)
 			end
 		end)
+	end
+end
+
+-- ==================== AttackCancelled reactions (M3-FIX3) ====================
+
+local function flashCancelHighlight(character: Instance)
+	local highlight = character:FindFirstChild("Cancel")
+	if not (highlight and highlight:IsA("Highlight")) then
+		if not CancelTemplate:IsA("Highlight") then
+			return
+		end
+		local clone = CancelTemplate:Clone()
+		clone.Parent = character
+		highlight = clone
+	end
+
+	local cancelHighlight = highlight :: Highlight
+	cancelHighlight.Enabled = true
+	task.delay(Config.Combat.CancelFlashSeconds, function()
+		if cancelHighlight.Parent then
+			cancelHighlight.Enabled = false
+		end
+	end)
+end
+
+-- Finds and stops whichever AnimationTrack on this character's Animator
+-- is actually the fist swing, wherever it came from -- see this file's
+-- header comment on why it can't just hold CombatController's reference.
+local function stopSwingTrackIfPlaying(character: Instance, fadeTime: number?)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		return
+	end
+	for _, track in animator:GetPlayingAnimationTracks() do
+		local animation = track.Animation
+		if animation and SWING_ANIMATION_IDS[animation.AnimationId] then
+			track:Stop(fadeTime)
+		end
 	end
 end
 
@@ -421,21 +487,37 @@ end
 
 -- ==================== CombatEvent reactions ====================
 
-local function onSwing(character: Instance)
-	local generation = (pendingSwingGeneration[character] or 0) + 1
-	pendingSwingGeneration[character] = generation
-	task.delay(MISS_GRACE_SECONDS, function()
-		if pendingSwingGeneration[character] == generation then
-			playSound(character, "MissSound" .. pickIndex(character, "miss", MISS_SOUND_COUNT))
-		end
-	end)
+-- M3-FIX3: a swing can carry several punches (`punchCount`), each with
+-- its own Hit report (`punchIndex`); a punch that gets no Hit within its
+-- own window plays its own miss sound, independent of the others. Staggers
+-- each punch's check by MISS_GRACE_SECONDS * punchIndex, since the real
+-- per-punch hitWindow (Shared/Data/Combat.luau, server-only) isn't
+-- available here -- same flagged fallback as before, just applied per
+-- punch instead of once per swing.
+local function onSwing(character: Instance, punchCount: number)
+	local previous = swingMissState[character]
+	local generation = (previous and previous.generation or 0) + 1
+	local state: SwingMissState = { generation = generation, hit = {} }
+	swingMissState[character] = state
+
+	for punchIndex = 1, punchCount do
+		task.delay(MISS_GRACE_SECONDS * punchIndex, function()
+			if swingMissState[character] == state and not state.hit[punchIndex] then
+				playSound(character, "MissSound" .. pickIndex(character, "miss", MISS_SOUND_COUNT))
+			end
+		end)
+	end
 end
 
 local function onHit(data: any)
 	local attacker = data.attacker
 	if typeof(attacker) == "Instance" then
-		-- The swing landed; cancel that attacker's pending miss sound.
-		pendingSwingGeneration[attacker] = nil
+		-- The punch landed; mark it so its own miss check is a no-op.
+		local state = swingMissState[attacker]
+		if state then
+			local punchIndex = if typeof(data.punchIndex) == "number" then data.punchIndex else 1
+			state.hit[punchIndex] = true
+		end
 	end
 
 	local target = data.target
@@ -519,6 +601,19 @@ local function onRecovered(data: any)
 	setRagdollHumanoidState(target, false)
 end
 
+local function onAttackCancelled(data: any)
+	local character = data.character
+	if typeof(character) ~= "Instance" then
+		return
+	end
+	if data.reason == "cancelled" then
+		flashCancelHighlight(character)
+	elseif data.reason == "interrupted" then
+		playStagger(character)
+		stopSwingTrackIfPlaying(character, 0.1)
+	end
+end
+
 local function onDash(data: any)
 	local character = data.character
 	if typeof(character) ~= "Instance" then
@@ -561,7 +656,8 @@ local function onCombatEvent(kind: any, data: any)
 	if kind == "Swing" then
 		local character = data.character
 		if typeof(character) == "Instance" then
-			onSwing(character)
+			local punchCount = if typeof(data.punchCount) == "number" then data.punchCount else 1
+			onSwing(character, punchCount)
 		end
 	elseif kind == "Hit" then
 		onHit(data)
@@ -575,6 +671,8 @@ local function onCombatEvent(kind: any, data: any)
 		onKnocked(data)
 	elseif kind == "Recovered" then
 		onRecovered(data)
+	elseif kind == "AttackCancelled" then
+		onAttackCancelled(data)
 	elseif kind == "Dash" then
 		onDash(data)
 	end

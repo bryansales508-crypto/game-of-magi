@@ -1,12 +1,24 @@
 --!strict
 -- Input -> combat intentions, and the swing/dash/run animations that play
 -- in lockstep with the server's own timing. See docs/SYSTEMS.md #8-9,
--- docs/AUDIT.md H6/H10/L11, docs/TRIAGE.md #11, docs/M3-PLAN.md M3-05.
+-- docs/AUDIT.md H6/H10/L11, docs/TRIAGE.md #11, docs/M3-PLAN.md M3-05,
+-- docs/TINKER.md "Combat" (M3-FIX3, Bryan 2026-09-28).
 --
--- The client never decides a hit or a cooldown: it only sends Attack /
--- Block / Dash / Run intentions, and only plays an animation once the
--- server's own CombatEvent or attribute confirms it (H6 -- the old script
--- played the swing on click and let clicks stack Hit-marker listeners).
+-- The client never decides a hit or a cooldown: it only sends
+-- AttackStart / AttackHit / AttackCancel / Block / Dash / Run intentions,
+-- and only plays an animation once the server's own CombatEvent or
+-- attribute confirms it (H6 -- the old script played the swing on click
+-- and let clicks stack Hit-marker listeners).
+--
+-- M3-FIX3: one click plays ONE fist animation containing several punches
+-- (right then left today). The animation's own markers drive the report:
+-- a "wind-up" marker per punch (checked for an interrupt, and the first
+-- one gates the cancel window) and a "hit" marker per punch (reports
+-- AttackHit(index) at that instant, so client and server timing agree).
+-- The real marker names can't be read from the .rbxm, so they're
+-- editable data: Shared/Config.luau's Config.Combat.Markers, with
+-- Config.Combat.LogMarkers logging every keyframe/marker reached on the
+-- fist track so Bryan can read the real names out of Output.
 --
 -- Animation ids kept from the old SCS/Scripts/PhysicalHandler.client.luau
 -- (785 lines) so the feel is unchanged:
@@ -31,6 +43,7 @@ local Workspace = game:GetService("Workspace")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
+local Config = require(Shared:WaitForChild("Config"))
 
 local log = Log.new("CombatController")
 
@@ -88,6 +101,49 @@ local runningTween: Tween? = nil
 -- down. Connections close over the local itself, not its value at
 -- connect-time, so this is safe.
 local cancelBlock: () -> ()
+local tryCancelAttack: () -> ()
+
+-- ==================== swing state (M3-FIX3: animation-driven punches) ====================
+
+type SwingState = {
+	track: AnimationTrack,
+	setName: string,
+	punchCount: number,
+	firstWindupReached: boolean,
+	stopped: boolean,
+	connections: { RBXScriptConnection },
+	-- REVIEW-M3-FIX3-C: which hit indices have already fired AttackHit
+	-- for this swing, so a marker that reaches twice (a re-entrant
+	-- GetMarkerReachedSignal firing, a looped/seeked track, ...) never
+	-- reports the same punch twice.
+	hit: { [number]: boolean },
+}
+
+local currentSwing: SwingState? = nil
+
+-- Idempotent: disconnects the marker connections and stops the track
+-- (with an optional fade), whether called from a marker handler, the
+-- track's own Stopped signal, AttackCancelled, or CharacterRemoving. Safe
+-- to call more than once for the same swing (only the first call does
+-- anything -- "both paths stop it once", point 2).
+local function stopSwing(fadeTime: number?)
+	local swing = currentSwing
+	if not swing or swing.stopped then
+		return
+	end
+	swing.stopped = true
+	currentSwing = nil
+	for _, conn in swing.connections do
+		conn:Disconnect()
+	end
+	table.clear(swing.connections)
+	-- Restore full speed before stopping, so a wind-up slowdown never
+	-- bleeds into the fade-out or, since this track is reused next swing
+	-- (only overridden by the explicit speed on the next Play() call),
+	-- sits at WindupSpeed while idle in between.
+	swing.track:AdjustSpeed(1)
+	swing.track:Stop(fadeTime)
+end
 
 local function loadTrack(animator: Animator, id: string, priority: Enum.AnimationPriority): AnimationTrack
 	local animation = Instance.new("Animation")
@@ -179,6 +235,8 @@ end
 -- ==================== teardown / setup ====================
 
 local function teardownCharacter()
+	stopSwing(nil)
+
 	for _, conn in characterConns do
 		conn:Disconnect()
 	end
@@ -231,6 +289,7 @@ local function onCharacterAdded(character: Model)
 				characterConns,
 				humanoid.StateChanged:Connect(function(_old, new)
 					if new == Enum.HumanoidStateType.Jumping then
+						tryCancelAttack()
 						cancelBlock()
 					end
 				end)
@@ -244,7 +303,10 @@ end
 
 -- ==================== Attack ====================
 
-local function tryAttack()
+-- M1: fires AttackStart() only -- it never plays anything itself. The
+-- swing (and its per-punch markers) only starts once the server's own
+-- Swing event arrives, below.
+local function tryAttackStart()
 	local character = currentCharacter
 	if not character then
 		return
@@ -254,16 +316,21 @@ local function tryAttack()
 		or character:GetAttribute("Knocked") == true
 		or character:GetAttribute("TrueStunned") == true
 		or character:GetAttribute("Blocking") == true
+		or character:GetAttribute("Attacking") == true
 	then
 		return
 	end
 
+	-- Always read fresh (no cached cooldown of our own): a cancelled
+	-- attack costs no recovery, so the server sets NextAttackAt to "now"
+	-- rather than a future time, and the very next click here already
+	-- sees that -- nothing else to do for that case.
 	local nextAttackAt = character:GetAttribute("NextAttackAt")
 	if typeof(nextAttackAt) == "number" and Workspace:GetServerTimeNow() < nextAttackAt then
 		return
 	end
 
-	Remotes.Client.Fire("Attack")
+	Remotes.Client.Fire("AttackStart")
 end
 
 -- ==================== Block ====================
@@ -276,13 +343,27 @@ local function setBlockHeld(held: boolean)
 	Remotes.Client.Fire("Block", held)
 end
 
--- Right-click / jump: there is no client cancel of a server swing any
--- more (the old "cancel highlight" is dropped); this just releases block
--- early, same as letting go of F.
+-- Right-click / jump also releases a held block early, same as letting
+-- go of F (independent of tryCancelAttack below, which is what handles
+-- the swing/cancel-highlight side of these same two inputs).
 cancelBlock = function()
 	if blockHeld then
 		setBlockHeld(false)
 	end
+end
+
+-- Right-click/jump ALSO tries to cancel an in-progress attack, but only
+-- before its first wind-up marker (point 3); past that, the swing must
+-- carry through, so this just does nothing. Never stops the track
+-- locally -- that only ever happens once the server's own AttackCancelled
+-- arrives, so client and server never disagree about whether the swing
+-- is still live.
+tryCancelAttack = function()
+	local swing = currentSwing
+	if not swing or swing.firstWindupReached then
+		return
+	end
+	Remotes.Client.Fire("AttackCancel")
 end
 
 -- ==================== Dash ====================
@@ -364,6 +445,84 @@ local function stopRun()
 	Remotes.Client.Fire("Run", false)
 end
 
+-- ==================== Swing (M3-FIX3: animation-driven punches) ====================
+
+-- Starts the swing track and wires its markers: a configured wind-up name
+-- per punch (interrupt check + the cancel-window flag) and a configured
+-- hit name per punch (reports AttackHit(index)), plus KeyframeReached
+-- purely for the log -- see Config.Combat's own comment on why both exist
+-- (markers need the right name guessed already; named keyframes surface
+-- themselves for free).
+local function onLocalSwing(character: Model, tracks: Tracks, data: any)
+	-- A fresh Swing always supersedes whatever was still running.
+	stopSwing(nil)
+
+	local setName = typeof(data.setName) == "string" and data.setName or "Fist"
+	local punchCount = if typeof(data.punchCount) == "number" then data.punchCount else 1
+	local track = tracks.swing[setName] or tracks.swing.Fist
+
+	local swing: SwingState = {
+		track = track,
+		setName = setName,
+		punchCount = punchCount,
+		firstWindupReached = false,
+		stopped = false,
+		connections = {},
+		hit = {},
+	}
+	currentSwing = swing
+
+	local function addConn(conn: RBXScriptConnection)
+		table.insert(swing.connections, conn)
+	end
+
+	if Config.Combat.LogMarkers then
+		addConn(track.KeyframeReached:Connect(function(keyframeName: string)
+			log:Info(string.format("marker: %s at %.3fs", keyframeName, track.TimePosition))
+		end))
+	end
+
+	for windupIndex, name in Config.Combat.Markers.Windup do
+		addConn(track:GetMarkerReachedSignal(name):Connect(function()
+			if Config.Combat.LogMarkers then
+				log:Info(string.format("marker: %s at %.3fs", name, track.TimePosition))
+			end
+			if windupIndex == 1 then
+				swing.firstWindupReached = true
+			end
+			-- Bryan (2026-09-28): slow the punch so it's readable -- and
+			-- so the loop below (cancel to bait, interrupt to punish)
+			-- actually has a window to react in.
+			track:AdjustSpeed(Config.Combat.WindupSpeed)
+			if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
+				-- The server reaches the same conclusion and sends its own
+				-- AttackCancelled; stopSwing is idempotent either way.
+				stopSwing(0.1)
+			end
+		end))
+	end
+
+	for hitIndex, name in Config.Combat.Markers.Hit do
+		addConn(track:GetMarkerReachedSignal(name):Connect(function()
+			if Config.Combat.LogMarkers then
+				log:Info(string.format("marker: %s at %.3fs", name, track.TimePosition))
+			end
+			track:AdjustSpeed(1)
+			if swing.hit[hitIndex] then
+				return
+			end
+			swing.hit[hitIndex] = true
+			Remotes.Client.Fire("AttackHit", hitIndex)
+		end))
+	end
+
+	addConn(track.Stopped:Connect(function()
+		stopSwing(nil)
+	end))
+
+	track:Play(0.05, 1, SWING_SPEEDS[setName] or SWING_SPEEDS.Fist)
+end
+
 -- ==================== CombatEvent (server -> client) ====================
 
 -- Only ever animates the LOCAL character: a swing/dash played on your own
@@ -371,6 +530,18 @@ end
 -- animations from whichever client owns the character), so there is
 -- nothing for this controller to do about another character's Swing or
 -- Dash -- that plays on their own client instead.
+--
+-- This is also why the wind-up slowdown (onLocalSwing's AdjustSpeed
+-- calls, Bryan 2026-09-28) doesn't need its own "other characters" path:
+-- it's a runtime change to the SAME track that's already replicating, so
+-- everyone watching an attacker sees the same slowdown through that
+-- existing replication, the same way they already see the swing itself.
+-- Deliberately NOT loading and playing a second, independent copy of the
+-- track for every observer here -- that would double up with the
+-- replicated one and fight it (two tracks driving the same joints).
+-- FLAG FOR PLAYTEST: confirm the slowdown is visible to other players;
+-- if AdjustSpeed turns out not to replicate reliably, that's the fallback
+-- to build instead.
 local function onCombatEvent(kind: any, data: any)
 	if typeof(kind) ~= "string" or typeof(data) ~= "table" then
 		log:Warn("CombatEvent: unexpected payload")
@@ -384,15 +555,26 @@ local function onCombatEvent(kind: any, data: any)
 	end
 
 	if kind == "Swing" then
-		local setName = typeof(data.setName) == "string" and data.setName or "Fist"
-		local track = tracks.swing[setName] or tracks.swing.Fist
-		track:Play(0.05, 1, SWING_SPEEDS[setName] or SWING_SPEEDS.Fist)
+		onLocalSwing(character, tracks, data)
+	elseif kind == "AttackCancelled" then
+		-- Both "cancelled" and "interrupted" stop the local track the same
+		-- way; EffectsController handles the highlight/stagger visuals.
+		stopSwing(0.1)
 	elseif kind == "Dash" then
 		local x = if typeof(data.x) == "number" then data.x else 0
 		local z = if typeof(data.z) == "number" then data.z else 0
 		pickDashTrack(x, z, tracks):Play()
 	end
 end
+
+-- The intended read-and-react loop this all serves (Bryan, 2026-09-28):
+-- you swing -> the enemy reads your wind-up and swings back to interrupt
+-- you -> next time, you cancel before your first wind-up to bait their
+-- interrupt-swing -> then swing for real and interrupt THEM mid wind-up.
+-- Every step of that is just these pieces: tryAttackStart, tryCancelAttack
+-- (only before firstWindupReached), and the server's own interrupt on a
+-- landed Hit -- nothing here plays a role beyond sending the right
+-- intention at the right moment.
 
 -- ==================== input wiring (bound once; nothing here depends on the character) ====================
 
@@ -403,10 +585,11 @@ local function handleInputAction(_actionName: string, inputState: Enum.UserInput
 
 	if inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
 		if inputState == Enum.UserInputState.Begin then
-			tryAttack()
+			tryAttackStart()
 		end
 	elseif inputObject.UserInputType == Enum.UserInputType.MouseButton2 then
 		if inputState == Enum.UserInputState.Begin then
+			tryCancelAttack()
 			cancelBlock()
 		end
 	elseif inputObject.KeyCode == Enum.KeyCode.F then
