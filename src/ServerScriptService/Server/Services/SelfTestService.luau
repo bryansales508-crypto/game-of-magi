@@ -40,6 +40,8 @@ local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
 local NpcService = require(script.Parent.NpcService)
 local NpcTrees = require(script.Parent.NpcService.Trees)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
+local Cities = require(ReplicatedStorage.Shared.Data.Cities)
+local MissionService = require(script.Parent.MissionService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -254,6 +256,25 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
 	end
 
+	-- M5C-01: schema v4 adds Progress.DeliveryStreak, Progress.Routes and
+	-- (the intercepted mark, added later while still unmerged) Progress.
+	-- Intercepted - an intentional no-op migration (same reasoning as
+	-- v1 -> v2 above - all three new fields already read the same as their
+	-- template default before Migrate ever runs).
+	do
+		local data = ({
+			Version = 3,
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v3 -> v4 migration bumps Version to 4", data.Version == 4)
+		expect(
+			results,
+			"SaveSchema: v3 -> v4 migration leaves DeliveryStreak/Routes/Intercepted at their already-backfilled defaults",
+			data.Progress.DeliveryStreak == 0 and next(data.Progress.Routes) == nil and data.Progress.Intercepted == 0
+		)
+	end
+
 	do
 		expect(results, "SaveSchema: a fresh template starts Meta.Unlocks.Combat false (earned, not automatic)", SaveSchema.Template.Meta.Unlocks.Combat == false)
 		local wouldBeUnlocked = SaveSchema.Template.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault
@@ -342,7 +363,7 @@ local function testDataService(results: { Check })
 				LivesLeft = Config.Life.LivesPerCharacter,
 			},
 			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 			Bounty = 0,
 			Economy = { Copper = 20, Silver = 0, Gold = 0 },
 			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -385,6 +406,65 @@ local function testDataService(results: { Check })
 		if built then
 			LegacyBridge.Destroy(fakePlayer)
 		end
+		standIn:Destroy()
+	end
+
+	-- REVIEW-M5C-01B F1: DataService.RunReleasing must run every registered
+	-- OnReleasing handler BEFORE `endSession` - profile:EndSession() fires
+	-- ProfileStore's own OnSessionEnd synchronously, which nils
+	-- `profiles[player]` before onPlayerRemoving even returns, so a plain
+	-- Players.PlayerRemoving connection made by another service (however
+	-- early) can never see the save before it's released. This is the
+	-- mechanism M5C-01's "leaving mid-run" fix relies on - see
+	-- MissionService's own DataService.OnReleasing registration, and
+	-- TrySettle/ApplyFailure below for the actual "zeroes the streak" math
+	-- this now runs in time for.
+	do
+		local order: { string } = {}
+		DataService.OnReleasing(function()
+			table.insert(order, "handler")
+		end)
+		local standIn = Instance.new("Folder")
+		local fakePlayer = (standIn :: any) :: Player
+		DataService.RunReleasing(fakePlayer, function()
+			table.insert(order, "released")
+		end)
+		expect(
+			results,
+			"DataService: RunReleasing runs every OnReleasing handler before the release itself (REVIEW-M5C-01B F1)",
+			#order == 2 and order[1] == "handler" and order[2] == "released"
+		)
+		standIn:Destroy()
+	end
+
+	-- REVIEW-M5C-01C L1: a single misbehaving OnReleasing handler must not
+	-- block the release - RunReleasing pcalls each handler individually, so
+	-- one that errors still lets every later handler run AND still lets
+	-- endSession run.
+	do
+		local ranAfterError = false
+		local released = false
+		DataService.OnReleasing(function()
+			error("REVIEW-M5C-01C L1: deliberate self-test error")
+		end)
+		DataService.OnReleasing(function()
+			ranAfterError = true
+		end)
+		local standIn = Instance.new("Folder")
+		local fakePlayer = (standIn :: any) :: Player
+		DataService.RunReleasing(fakePlayer, function()
+			released = true
+		end)
+		expect(
+			results,
+			"DataService: RunReleasing still runs handlers registered after one that errors (REVIEW-M5C-01C L1)",
+			ranAfterError
+		)
+		expect(
+			results,
+			"DataService: RunReleasing still runs endSession even when an OnReleasing handler errors (REVIEW-M5C-01C L1)",
+			released
+		)
 		standIn:Destroy()
 	end
 end
@@ -560,7 +640,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 		Bounty = 0,
 		Economy = { Copper = 20, Silver = 0, Gold = 0 },
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -2146,6 +2226,46 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
+	-- REVIEW-M5C-01 M5: HitLanded fires for EVERY landed hit, Light or
+	-- Heavy alike - unlike the bridged `Hit` status (Heavy-only,
+	-- M3-FIX4-S), which is what let a Light-hit courier through untouched
+	-- against FragilePackage/VIP before this signal existed.
+	do
+		local attacker = buildFakeCombatant("SelfTestHitLandedAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 3))
+		local target = buildFakeCombatant("SelfTestHitLandedTarget", Vector3.new(1200, 5, 3), Vector3.new(1200, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		local landed: { string } = {}
+		local conn = CombatService.HitLanded:Connect(function(hitTarget: Model, _hitAttacker: Model, kind: string)
+			if hitTarget == target then
+				table.insert(landed, kind)
+			end
+		end)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1) -- Light
+		local sawLight = pollUntil(1, function()
+			return #landed >= 1
+		end)
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- Heavy
+		local sawBoth = pollUntil(1, function()
+			return #landed >= 2
+		end)
+
+		conn:Disconnect()
+		expect(results, "CombatService: HitLanded fires for a landed Light hit (not just Heavy - REVIEW-M5C-01 M5)", sawLight and landed[1] == "Light")
+		expect(results, "CombatService: HitLanded fires for a landed Heavy hit too", sawBoth and landed[2] == "Heavy")
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
 	scratch:Destroy()
 end
 
@@ -2747,6 +2867,458 @@ local function testLifeService(results: { Check })
 	end
 end
 
+local function fakeMissionData(routes: { [string]: number }?, streak: number?, intercepted: number?): SaveSchema.Data
+	return ({
+		Bounty = 0,
+		Progress = {
+			Magoi = 0,
+			GoldRukh = 0,
+			BlackRukh = 0,
+			Epithet = "",
+			DeliveryStreak = streak or 0,
+			Routes = routes or {},
+			Intercepted = intercepted or 0,
+		},
+	} :: any) :: SaveSchema.Data
+end
+
+-- A canned nextRoll sequence for Cities.RollModifiers's self-test: returns
+-- the queued values in order, so a modifier draw is fully deterministic
+-- with no math.random involved.
+local function cannedRolls(queue: { number }): (max: number) -> number
+	local i = 0
+	return function(_max: number): number
+		i += 1
+		return queue[i] :: number
+	end
+end
+
+local function fakeMod(key: string, payMultiplier: number): Cities.ModifierRoll
+	return { key = key, displayName = key, chance = 20, text = "", payMultiplier = payMultiplier }
+end
+
+-- M5C-01: delivery missions. Every check here is against the pure core
+-- (Cities.RollModifiers/CombinedMultiplier, MissionService.FactorsFor/
+-- BaseAmount/ComputePay/CurrentPay/TrySettle/MarkFailed/OnArrival/
+-- CanIntercept/GetOrRoll/ApplySuccess/ApplyFailure/ApplyInterception/
+-- IsOnRoute) - no Player, Instance or remote involved, same as every other
+-- service's self-test in this file.
+local function testMissionService(results: { Check })
+	-- H7: route validation rejects an off-route city.
+	expect(results, "MissionService: IsOnRoute accepts a real route destination", MissionService.IsOnRoute("Qarzin", "Saleh"))
+	expect(results, "MissionService: IsOnRoute rejects a destination not on that city's route", not MissionService.IsOnRoute("Qarzin", "Rathole"))
+	expect(results, "MissionService: IsOnRoute rejects an unknown city key entirely", not MissionService.IsOnRoute("Nope", "Qarzin"))
+
+	-- The two old broken route names are fixed to real cities (never nil).
+	expect(results, "Cities: Saleh's route no longer names the broken \"JADDATYSHUT\"", MissionService.IsOnRoute("Saleh", "JaddatysHut"))
+	expect(results, "Cities: Rathole's route no longer names the broken \"CITYF\"", MissionService.IsOnRoute("Rathole", "Sahraqin"))
+
+	-- REVIEW-M5C-01 H1: every real modifier's displayName is the old
+	-- MissionDeliniation.Modifiers[*].Name, word for word - the client
+	-- matches pop-outs (and Time Crunch/Courier Loop's own special cases)
+	-- on this field, not the internal key.
+	local expectedDisplayNames: { [string]: string } = {
+		TimeCrunch = "Time Crunch",
+		CourierLoop = "Courier Loop",
+		HighlyValuable = "Highly Valuable",
+		HeavyCargo = "Heavy Cargo",
+		VIP = "Very Important Noble",
+		FragilePackage = "Fragile Package",
+		CleartheRoute = "Clear the Route",
+	}
+	for _, def in Cities.Modifiers do
+		local expected = expectedDisplayNames[def.key]
+		if expected then
+			expect(results, string.format("Cities: %s's displayName matches the old GUI's title (\"%s\")", def.key, expected), def.displayName == expected)
+		end
+	end
+
+	-- L15: payout formula with the old numbers - rank 1 (the dead "level"
+	-- used to divide by zero here) no longer errors or blows up.
+	do
+		local pay = MissionService.ComputePay(1, 4, 0, {})
+		expect(results, "MissionService: ComputePay at rank 1 doesn't divide by zero (AUDIT L15)", pay == math.floor(1 + 10 / 1 + 4 * 1.25 + 0 * 1.25))
+	end
+	do
+		local withMods = MissionService.ComputePay(2, 10, 3, { fakeMod("TimeCrunch", 1.2) })
+		local base = math.floor(1 + 10 / 2 + 10 * 1.25 + 3 * 1.25)
+		expect(results, "MissionService: ComputePay applies the modifier multiplier on top of the base (AUDIT L14)", withMods == math.floor(base * 1.2))
+	end
+
+	-- Bryan's refinement: CurrentPay is ComputePay's live equivalent once
+	-- some rolled modifiers may have failed mid-run - a failed one's own
+	-- multiplier just drops out of the sum, everything else still counts.
+	do
+		local base = MissionService.BaseAmount(2, 10, 3)
+		local modifiers = { fakeMod("TimeCrunch", 1.2), fakeMod("HeavyCargo", 1.3) }
+		local allIntact = MissionService.CurrentPay(base, modifiers, {})
+		expect(results, "MissionService: CurrentPay with nothing failed matches ComputePay", allIntact == MissionService.ComputePay(2, 10, 3, modifiers))
+
+		-- M5/Bryan's refinement: a timer expiry or a landed hit against
+		-- FragilePackage/VIP marks the modifier failed and drops its share
+		-- of the payout - the run itself was never touched here at all
+		-- (there's no run in this test, only the pure pay math).
+		local timeCrunchFailed = MissionService.CurrentPay(base, modifiers, { TimeCrunch = true })
+		expect(
+			results,
+			"MissionService (M5C-01 refinement): a failed modifier's multiplier drops out of CurrentPay, the rest still counts",
+			timeCrunchFailed == math.floor(base * 1.3) and timeCrunchFailed < allIntact
+		)
+
+		local bothFailed = MissionService.CurrentPay(base, modifiers, { TimeCrunch = true, HeavyCargo = true })
+		expect(results, "MissionService: every modifier failed leaves just the base amount", bothFailed == base)
+	end
+
+	-- M4: Clear the Route's bonus is conditional (earned a knockout during
+	-- the run) - CurrentPay treats a not-yet-cleared CleartheRoute exactly
+	-- like any other failed modifier once finishRun marks it so.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("CleartheRoute", 1.5) }
+		local cleared = MissionService.CurrentPay(base, modifiers, {})
+		local notCleared = MissionService.CurrentPay(base, modifiers, { CleartheRoute = true })
+		expect(results, "MissionService (M4): Clear the Route's multiplier only counts when credited", cleared == math.floor(base * 1.5) and notCleared == base)
+	end
+
+	-- Bryan's refinement: MarkFailed is idempotent - a caller fires the
+	-- ModifierFailed update/log exactly once per modifier per run, even if
+	-- the same trigger (e.g. several landed hits) fires repeatedly.
+	do
+		local failedKeys: { [string]: boolean } = {}
+		expect(results, "MissionService: MarkFailed succeeds the first time", MissionService.MarkFailed(failedKeys, "FragilePackage"))
+		expect(results, "MissionService: MarkFailed refuses a second time for the same key", not MissionService.MarkFailed(failedKeys, "FragilePackage"))
+		expect(results, "MissionService: a different key still marks independently", MissionService.MarkFailed(failedKeys, "VIP"))
+	end
+
+	-- REVIEW-M5C-01B F3: every MissionUpdate carries the failed-keys SET as
+	-- an array, so the client can re-grey them on any rebuild.
+	do
+		local failedKeys: { [string]: boolean } = { TimeCrunch = true, VIP = true }
+		local list = MissionService.FailedKeysList(failedKeys)
+		table.sort(list)
+		expect(results, "MissionService (F3): FailedKeysList returns every failed key", #list == 2 and list[1] == "TimeCrunch" and list[2] == "VIP")
+		expect(results, "MissionService (F3): FailedKeysList is empty when nothing has failed", #MissionService.FailedKeysList({}) == 0)
+	end
+
+	-- REVIEW-M5C-01B F4 (Bryan's call): the interceptor is paid the amount
+	-- as it stood BEFORE the knocking blow's own Fragile/VIP reaction, and
+	-- Clear the Route never counts for an interceptor at all.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("VIP", 2), fakeMod("FragilePackage", 1.3) }
+
+		-- The killing blow's own onHitLanded marks VIP/Fragile failed in
+		-- `failedKeys`, but `preHitFailedKeys` (snapshotted just before that)
+		-- is still empty - InterceptPay must use the snapshot, not the
+		-- post-hit state, so the SAME hit that ends the run doesn't also
+		-- cost the interceptor what it just failed for the courier.
+		local postHitFailedKeys: { [string]: boolean } = { VIP = true, FragilePackage = true }
+		local preHitFailedKeys: { [string]: boolean } = {}
+		local intercepted = MissionService.InterceptPay(base, modifiers, preHitFailedKeys)
+		expect(
+			results,
+			"MissionService (F4): the interceptor gets the pre-hit pay, not the post-hit (post-fail) pay",
+			intercepted == MissionService.CurrentPay(base, modifiers, preHitFailedKeys)
+				and intercepted > MissionService.CurrentPay(base, modifiers, postHitFailedKeys)
+		)
+
+		-- Clear the Route is force-excluded for an interceptor regardless of
+		-- whether it happened to already be credited (the courier's own
+		-- ApplySuccess/finishRun path is the only place it should ever pay).
+		local withClearTheRoute = { fakeMod("CleartheRoute", 1.5) }
+		local interceptedWithCtr = MissionService.InterceptPay(base, withClearTheRoute, {})
+		expect(results, "MissionService (F4): Clear the Route never counts toward an interceptor's payout", interceptedWithCtr == base)
+	end
+
+	-- REVIEW-M5C-01B F5: the wire builder itself is pinned, not just the
+	-- underlying data (H1's own fix) - `{key, name, chance, text}`, `name`
+	-- is the DISPLAY name, `payMultiplier` never leaks onto the wire.
+	do
+		local wire = MissionService.WireModifiers({
+			{ key = "TimeCrunch", displayName = "Time Crunch", chance = 20, text = "Complete in 3:00.", payMultiplier = 1.2 },
+		})
+		expect(results, "MissionService (F5): WireModifiers sends exactly one entry per modifier", #wire == 1)
+		local entry = wire[1]
+		expect(
+			results,
+			"MissionService (F5): WireModifiers pins {key, name, chance, text} - name is the display name, not the internal key",
+			entry.key == "TimeCrunch" and entry.name == "Time Crunch" and entry.chance == 20 and entry.text == "Complete in 3:00." and entry.payMultiplier == nil
+		)
+	end
+
+	-- The intercepted mark (Bryan): OfferMultiplier halves per stack with a
+	-- 10% floor - 0.5, 0.25, floor at 0.1 once the halving would drop below
+	-- it (0.5^4 = 0.0625).
+	do
+		expect(results, "MissionService (intercepted mark): 0 stacks is no reduction at all", MissionService.OfferMultiplier(0) == 1)
+		expect(results, "MissionService (intercepted mark): 1 stack halves the offer", MissionService.OfferMultiplier(1) == 0.5)
+		expect(results, "MissionService (intercepted mark): 2 stacks quarters it", MissionService.OfferMultiplier(2) == 0.25)
+		expect(results, "MissionService (intercepted mark): 3 stacks is still above the floor (0.125)", math.abs(MissionService.OfferMultiplier(3) - 0.125) < 1e-9)
+		expect(results, "MissionService (intercepted mark): 4+ stacks floors at 0.1, never reaches 0", MissionService.OfferMultiplier(4) == 0.1 and MissionService.OfferMultiplier(10) == 0.1)
+	end
+
+	-- ApplyOfferMultiplier/MarkIntercepted/ClearIntercepted: the pure pieces
+	-- board offers, a courier's own reduced payout, and one delivery washing
+	-- the mark away are all built from.
+	do
+		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier halves and floors", MissionService.ApplyOfferMultiplier(101, 0.5) == 50)
+		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier at 1x changes nothing", MissionService.ApplyOfferMultiplier(101, 1) == 101)
+
+		local data = fakeMissionData(nil, nil, 2)
+		MissionService.MarkIntercepted(data)
+		expect(results, "MissionService (intercepted mark): MarkIntercepted advances the stack by exactly one", data.Progress.Intercepted == 3)
+		MissionService.ClearIntercepted(data)
+		expect(results, "MissionService (intercepted mark): ClearIntercepted wipes every stack, not just decrements", data.Progress.Intercepted == 0)
+	end
+
+	-- Board offers are reduced the same way a courier's own finish payout
+	-- is - both are BaseAmount/ComputePay combined with the SAME
+	-- OfferMultiplier, so a marked player's board and their eventual payout
+	-- never disagree.
+	do
+		local rankIndex, population, streak = 2, 10, 3
+		local modifiers = { fakeMod("TimeCrunch", 1.2) }
+		local base = MissionService.ComputePay(rankIndex, population, streak, modifiers)
+		local oneStackOffer = MissionService.ApplyOfferMultiplier(base, MissionService.OfferMultiplier(1))
+		local twoStackOffer = MissionService.ApplyOfferMultiplier(base, MissionService.OfferMultiplier(2))
+		expect(results, "MissionService (intercepted mark): a marked player's board offer is half the unmarked one", oneStackOffer == math.floor(base * 0.5))
+		expect(results, "MissionService (intercepted mark): two stacks quarters the offer, not just halves it again", twoStackOffer == math.floor(base * 0.25))
+	end
+
+	-- REVIEW-M5C-01C H1: the exact scenario the review found broken - open
+	-- a board (cached), get intercepted on a DIFFERENT run, reopen the SAME
+	-- board without it ever re-rolling: the cached destination must still
+	-- show the new, reduced price (and a run started from it must carry
+	-- the new offerMultiplier and withhold the interceptor's Black Rukh),
+	-- because the fix stores NO multiplier in the cache at all - PreviewPay
+	-- applies whatever `Progress.Intercepted` says right now, every call.
+	do
+		local cache: { [string]: any } = {}
+		local modifiers = { fakeMod("HeavyCargo", 1.3) }
+		local baseAmount = MissionService.BaseAmount(2, 0, 0)
+		local rolls = 0
+		local function roll()
+			rolls += 1
+			return { key = "Qarzin", modifiers = modifiers, baseAmount = baseAmount }
+		end
+
+		-- First open: 0 stacks, cached at "full price".
+		local dest = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local fullPrice = MissionService.PreviewPay(dest.baseAmount, dest.modifiers, MissionService.OfferMultiplier(0))
+		expect(results, "MissionService (H1): the destination is rolled exactly once", rolls == 1)
+
+		-- Simulate this player getting intercepted on a DIFFERENT run (their
+		-- own stacks go 0 -> 1) - the cached entry for THIS destination is
+		-- never touched, never re-rolled, never told about the mark.
+		local stacksAfterInterception = 1
+
+		-- Reopen the SAME board: GetOrRoll hits the cache (still 1 total
+		-- roll), but PreviewPay must reflect the NEW multiplier.
+		local destAgain = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local halvedPrice = MissionService.PreviewPay(destAgain.baseAmount, destAgain.modifiers, MissionService.OfferMultiplier(stacksAfterInterception))
+		expect(results, "MissionService (H1): reopening the board doesn't re-roll the cached destination", rolls == 1)
+		expect(
+			results,
+			"MissionService (H1): a board reopened after an interception shows the HALVED price, not the stale full price",
+			halvedPrice == math.floor(fullPrice * 0.5) and halvedPrice < fullPrice
+		)
+
+		-- Starting a run from that (still-cached) destination must carry
+		-- the CURRENT multiplier, not the one that was in effect when it
+		-- was first rolled.
+		local runOfferMultiplier = MissionService.OfferMultiplier(stacksAfterInterception)
+		expect(results, "MissionService (H1): a run started from the reopened board gets offerMultiplier 0.5, not 1.0", runOfferMultiplier == 0.5)
+		local intercepted = MissionService.ApplyOfferMultiplier(MissionService.InterceptPay(destAgain.baseAmount, destAgain.modifiers, {}), runOfferMultiplier)
+		expect(results, "MissionService (H1): intercepting a run from the reopened board pays the reduced amount", intercepted == halvedPrice)
+		expect(results, "MissionService (H1): intercepting a run from the reopened board earns NO Black Rukh", not MissionService.InterceptorEarnsBlackRukh(runOfferMultiplier))
+
+		-- A clearing delivery resets stacks to 0 - reopening again (same
+		-- cache entry, still never re-rolled) must show full price again.
+		local stacksAfterClearing = 0
+		local destOnceMore = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local fullPriceAgain = MissionService.PreviewPay(destOnceMore.baseAmount, destOnceMore.modifiers, MissionService.OfferMultiplier(stacksAfterClearing))
+		expect(results, "MissionService (H1): still never re-rolled after all this", rolls == 1)
+		expect(results, "MissionService (H1): after a clearing delivery, the reopened board is back to full price", fullPriceAgain == fullPrice)
+	end
+
+	-- The interceptor of an ALREADY-marked victim: reduced Copper (the same
+	-- OfferMultiplier applied to their own InterceptPay) and no Black Rukh -
+	-- but a FIRST-ever interception (0 stacks beforehand) still pays full
+	-- price and a real Black Rukh.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("HeavyCargo", 1.3) }
+		local rawPayout = MissionService.InterceptPay(base, modifiers, {})
+
+		local firstInterception = MissionService.ApplyOfferMultiplier(rawPayout, MissionService.OfferMultiplier(0))
+		expect(results, "MissionService (intercepted mark): a courier's first-ever interception pays full price", firstInterception == rawPayout)
+		expect(results, "MissionService (intercepted mark): a first-ever interception still earns the interceptor a Black Rukh", MissionService.InterceptorEarnsBlackRukh(MissionService.OfferMultiplier(0)))
+
+		local secondInterception = MissionService.ApplyOfferMultiplier(rawPayout, MissionService.OfferMultiplier(1))
+		expect(
+			results,
+			"MissionService (intercepted mark): intercepting an already-marked courier pays reduced Copper",
+			secondInterception == math.floor(rawPayout * 0.5) and secondInterception < rawPayout
+		)
+		expect(
+			results,
+			"MissionService (intercepted mark): intercepting an already-marked courier earns NO Black Rukh",
+			not MissionService.InterceptorEarnsBlackRukh(MissionService.OfferMultiplier(1))
+		)
+	end
+
+	-- H2: the CourierLoop return leg sends "Started" with a phase change,
+	-- never the old "Cleared" - REVIEW-M5C-01 H2, the client tears the
+	-- whole run down on anything but "Started".
+	do
+		local nextPhase, state = MissionService.OnArrival("ToDestination", true)
+		expect(results, "MissionService (H2): arriving with CourierLoop rolled switches to Returning", nextPhase == "Returning")
+		expect(results, "MissionService (H2): the CourierLoop return leg sends \"Started\", never \"Cleared\"", state == "Started")
+
+		local finishPhase, finishState = MissionService.OnArrival("ToDestination", false)
+		expect(results, "MissionService: arriving with no CourierLoop means the run is done (finishRun)", finishPhase == nil and finishState == nil)
+
+		local returningPhase = MissionService.OnArrival("Returning", true)
+		expect(results, "MissionService: arriving back at the origin on the return leg means the run is done", returningPhase == nil)
+	end
+
+	-- M2 (lead decision, Bryan may change it): an interception only pays if
+	-- the courier is genuinely out on the route - far enough from the
+	-- origin OR far enough into the run - so two accounts can't farm the
+	-- reward with no travel at all.
+	do
+		expect(results, "MissionService (M2): far enough from the origin counts as interceptable", MissionService.CanIntercept(Config.Missions.InterceptMinStuds, 0))
+		expect(results, "MissionService (M2): far enough into the run counts even standing still", MissionService.CanIntercept(0, Config.Missions.InterceptMinSeconds))
+		expect(
+			results,
+			"MissionService (M2): neither far enough nor long enough refuses the interception",
+			not MissionService.CanIntercept(Config.Missions.InterceptMinStuds - 1, Config.Missions.InterceptMinSeconds - 1)
+		)
+	end
+
+	-- M3: reopening the board reuses the same roll for a destination - the
+	-- old MissionHandler's CityMods, ported - instead of re-rolling every
+	-- time (which used to let a player fish for VIP/HighlyValuable).
+	do
+		local cache: { [string]: number } = {}
+		local rolls = 0
+		local function roll(): number
+			rolls += 1
+			return rolls
+		end
+		local first = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local second = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		expect(results, "MissionService (M3): GetOrRoll only rolls once per key", rolls == 1)
+		expect(results, "MissionService (M3): a cache hit returns the exact same value as the first roll", first == second)
+
+		cache["Qarzin"] = nil -- simulates clearCachedRoll once a run to it starts
+		local third = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		expect(results, "MissionService (M3): clearing the cache lets the next open roll fresh", rolls == 2 and third == 2)
+	end
+
+	-- AUDIT H8: a run settles (pays out/fails/is intercepted) exactly once.
+	do
+		local run = ({ settled = false } :: any) :: MissionService.SettleState
+		expect(results, "MissionService: TrySettle succeeds the first time", MissionService.TrySettle(run))
+		expect(results, "MissionService: TrySettle refuses a second time (paid exactly once)", not MissionService.TrySettle(run))
+	end
+
+	-- AUDIT M21: a real, persisted streak - success advances it and records
+	-- route history; any failure (including an interception) resets it.
+	do
+		local data = fakeMissionData(nil, 2)
+		MissionService.ApplySuccess(data, "Qarzin")
+		expect(results, "MissionService: ApplySuccess advances the streak", data.Progress.DeliveryStreak == 3)
+		expect(results, "MissionService: ApplySuccess records the destination in Routes", data.Progress.Routes["Qarzin"] == 1)
+		MissionService.ApplySuccess(data, "Qarzin")
+		expect(results, "MissionService: ApplySuccess accumulates Routes across repeat deliveries", data.Progress.Routes["Qarzin"] == 2)
+
+		MissionService.ApplyFailure(data)
+		expect(results, "MissionService: ApplyFailure resets the streak to 0", data.Progress.DeliveryStreak == 0)
+		expect(results, "MissionService: ApplyFailure never touches Routes", data.Progress.Routes["Qarzin"] == 2)
+	end
+
+	-- AUDIT H8: interception pays the attacker's Bounty and never touches
+	-- the courier's own save at all (nothing to farm back and forth).
+	do
+		local attackerData = fakeMissionData()
+		local courierData = fakeMissionData(nil, 5)
+		MissionService.ApplyInterception(attackerData, 42)
+		MissionService.ApplyFailure(courierData)
+		expect(results, "MissionService: ApplyInterception adds the reward to the attacker's Bounty", attackerData.Bounty == 42)
+		expect(results, "MissionService: the courier's own Bounty is untouched by an interception", courierData.Bounty == 0)
+		expect(results, "MissionService: the courier's streak still breaks on the interception (ApplyFailure)", courierData.Progress.DeliveryStreak == 0)
+	end
+
+	-- AUDIT M12: modifier roll weights respect route history and city
+	-- safety - not a global counter nothing ever updated.
+	do
+		local inactive = fakeMissionData({ Qarzin = 3 })
+		local active = fakeMissionData({ Qarzin = 20 })
+		local factorsInactive = MissionService.FactorsFor(inactive, "Qarzin")
+		local factorsActive = MissionService.FactorsFor(active, "Qarzin")
+		expect(results, "MissionService: FactorsFor.PlayerActive is false below the threshold", not factorsInactive.PlayerActive)
+		expect(results, "MissionService: FactorsFor.PlayerActive is true once the player has run the route enough", factorsActive.PlayerActive)
+		expect(results, "MissionService: FactorsFor.SafeRoute follows Qarzin's own (Busy) safety rating", factorsActive.SafeRoute)
+
+		local warTorn = MissionService.FactorsFor(fakeMissionData(), "Rathole")
+		expect(results, "MissionService: FactorsFor.SafeRoute is false for a War-Torn city (Rathole)", not warTorn.SafeRoute)
+	end
+
+	-- Cities.RollModifiers: VIP/CleartheRoute only ever appear on an unsafe
+	-- route (AUDIT M12 - reqs are checked for real now); HighlyValuable only
+	-- on a safe one. A canned roll sequence makes every draw deterministic.
+	do
+		local safe = { PlayerActive = false, SafeRoute = true }
+		local unsafe = { PlayerActive = false, SafeRoute = false }
+
+		local eligibleSafe = Cities.EligiblePool(safe)
+		local eligibleUnsafe = Cities.EligiblePool(unsafe)
+
+		local function poolHas(pool: { Cities.ModifierDef }, key: string): boolean
+			for _, def in pool do
+				if def.key == key then
+					return true
+				end
+			end
+			return false
+		end
+
+		expect(results, "Cities: HighlyValuable is only eligible on a safe route", poolHas(eligibleSafe, "HighlyValuable") and not poolHas(eligibleUnsafe, "HighlyValuable"))
+		expect(results, "Cities: VIP is only eligible on an unsafe route", poolHas(eligibleUnsafe, "VIP") and not poolHas(eligibleSafe, "VIP"))
+		expect(results, "Cities: CleartheRoute is only eligible on an unsafe route", poolHas(eligibleUnsafe, "CleartheRoute") and not poolHas(eligibleSafe, "CleartheRoute"))
+		expect(results, "Cities: TimeCrunch/HeavyCargo/FragilePackage have no reqs - eligible either way", poolHas(eligibleSafe, "TimeCrunch") and poolHas(eligibleUnsafe, "TimeCrunch"))
+
+		-- Roll 1 in the (ordered) eligible pool always lands on its first
+		-- entry (TimeCrunch, chance 20, cumulative 1-20); a gate roll of 6
+		-- fails the "<= 5" 50% check for a second draw, so exactly one
+		-- modifier comes back - fully deterministic, no math.random.
+		local rolled = Cities.RollModifiers(unsafe, cannedRolls({ 1, 6 }))
+		expect(results, "Cities: RollModifiers's first draw picks the lowest-cumulative eligible modifier for roll 1", #rolled == 1 and rolled[1].key == "TimeCrunch")
+
+		-- A gate roll of 5 (<= 5) DOES pass, so a second draw happens; the
+		-- next roll (11, past CourierLoop's cumulative 10 but within its
+		-- own+CourierLoop's 13) lands on HeavyCargo. A second gate of 4
+		-- (> 3) then stops it at exactly two modifiers.
+		local rolledTwo = Cities.RollModifiers(unsafe, cannedRolls({ 1, 5, 11, 4 }))
+		expect(
+			results,
+			"Cities: RollModifiers draws a second modifier when the 50% gate passes",
+			#rolledTwo == 2 and rolledTwo[1].key == "TimeCrunch" and rolledTwo[2].key == "HeavyCargo"
+		)
+	end
+
+	-- Cities.CombinedMultiplier: a bare mission (no modifiers) pays exactly
+	-- the base amount; each modifier adds its own (payMultiplier - 1).
+	expect(results, "Cities: CombinedMultiplier is 1 with no modifiers rolled", Cities.CombinedMultiplier({}) == 1)
+	expect(
+		results,
+		"Cities: CombinedMultiplier stacks TimeCrunch (1.2) and HeavyCargo (1.3) additively (old citymodifier + 1)",
+		math.abs(Cities.CombinedMultiplier({ fakeMod("TimeCrunch", 1.2), fakeMod("HeavyCargo", 1.3) }) - 1.5) < 1e-9
+	)
+end
+
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -2780,6 +3352,7 @@ function SelfTestService:Start()
 		testNpcService(collected)
 		testTrainers(collected)
 		testLifeService(collected)
+		testMissionService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

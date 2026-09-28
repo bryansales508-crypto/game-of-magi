@@ -1,14 +1,16 @@
 -- Compatibility shim (M3-02, TRIAGE #9 approved removal). The real
 -- SpeedHandler/InteractionsDesign speed system is gone; MovementService
 -- (ServerScriptService/Server/Services/MovementService.luau) owns WalkSpeed
--- now. Two real callers are left until later milestones delete them too:
--- MissionHandler's heavy-cargo slow (kept until M6, TRIAGE #8) and
--- EffectsService.server.luau's TrueStun freeze (kept until M3-06). Both
--- just want "name a modifier, remove a modifier by name" - decoded from how
--- they actually call this module (the `duration` argument, when it's a
--- string rather than a number of seconds, was always the removable tag the
--- old code later matched in SpeedHandleRemove, whatever its literal
--- Instance.Name/Value bookkeeping did under the hood).
+-- now. One real caller is left until a later milestone deletes it too:
+-- EffectsService.server.luau's TrueStun freeze (kept until M3-06). It just
+-- wants "name a modifier, remove a modifier by name" - decoded from how it
+-- actually calls this module (the `duration` argument, when it's a string
+-- rather than a number of seconds, was always the removable tag the old
+-- code later matched in SpeedHandleRemove, whatever its literal
+-- Instance.Name/Value bookkeeping did under the hood). MissionHandler's own
+-- heavy-cargo slow used to be the other caller; M5C-01 replaced it with
+-- MissionService calling MovementService.SetModifier directly, and deleted
+-- MissionHandler.
 --
 -- This module is required from both the server (real work, forwarded to
 -- MovementService) and the client (PhysicalHandler.client.luau requires it

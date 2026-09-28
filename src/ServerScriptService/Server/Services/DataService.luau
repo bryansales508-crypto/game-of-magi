@@ -179,11 +179,49 @@ local function onPlayerAdded(player: Player)
 	loadedBindable:Fire(player)
 end
 
-local function onPlayerRemoving(player: Player)
-	local profile = profiles[player]
-	if profile and profile:IsActive() then
-		profile:EndSession()
+-- REVIEW-M5C-01B F1: plain synchronous callbacks, not a Players.
+-- PlayerRemoving connection or a BindableEvent (whose Deferred signal
+-- behavior wouldn't guarantee running before EndSession either, and either
+-- way would depend on Init/Start connection order - "by luck", per the
+-- review). profile:EndSession() fires ProfileStore's own OnSessionEnd
+-- SYNCHRONOUSLY, before EndSession even returns (ProfileStore.luau), which
+-- is what nils `profiles[player]` above - so another service's own
+-- Players.PlayerRemoving handler (necessarily connected later, since
+-- DataService.Init already ran before any other service's Start) can
+-- already see DataService.Get return nil for a player that hasn't
+-- technically left yet. A handler registered here is guaranteed to run
+-- BEFORE that release, on every leave, regardless of when it registers.
+-- Typed as a variadic return (not `()`) so pcall(handler, player) below
+-- type-checks as (boolean, ...any) instead of just (boolean) - same trick
+-- Main.server.luau's own ServiceModule type uses for Init/Start.
+local releasingHandlers: { (Player) -> ...any } = {}
+
+function DataService.OnReleasing(handler: (Player) -> ...any)
+	table.insert(releasingHandlers, handler)
+end
+
+-- Runs every registered OnReleasing handler, then `endSession` - exposed
+-- (same reasoning as ResetToTemplate above) so a self-test can prove the
+-- ORDER itself (every handler before the release) with a fake player-like
+-- stand-in and a plain callback, with no real Player/ProfileStore session
+-- involved.
+function DataService.RunReleasing(player: Player, endSession: () -> ())
+	for _, handler in releasingHandlers do
+		local ok, err = pcall(handler, player)
+		if not ok then
+			log:Warn(string.format("OnReleasing handler errored for %s: %s", player.Name, tostring(err)))
+		end
 	end
+	endSession()
+end
+
+local function onPlayerRemoving(player: Player)
+	DataService.RunReleasing(player, function()
+		local profile = profiles[player]
+		if profile and profile:IsActive() then
+			profile:EndSession()
+		end
+	end)
 end
 
 function DataService.Get(player: Player): Data?

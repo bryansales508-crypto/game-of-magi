@@ -160,6 +160,13 @@ local combatLogEnabled = false
 
 local CombatService = {}
 
+-- M5C-01 (REVIEW-M5C-01 M5): fires on EVERY landed hit (target, attacker,
+-- kind), Light or Heavy alike - unlike the bridged `Hit` status (Combat.
+-- Stagger's flinch/slow), which is Heavy-only (M3-FIX4-S). Missions'
+-- FragilePackage needs "any landed hit", not just a Heavy's stagger.
+local hitLandedBindable = Instance.new("BindableEvent")
+CombatService.HitLanded = hitLandedBindable.Event :: RBXScriptSignal
+
 -- ==================== pure helpers (self-tested directly) ====================
 
 -- The target is only protected while Blocking AND facing the attacker
@@ -416,6 +423,14 @@ local function attackerLabel(attacker: Model): string
 	return if player then player.Name else attacker.Name
 end
 
+-- REVIEW-M5C-01 L3: the interceptor should be resolved by UserId, never by
+-- name (an NPC model could share a name with a real player's username).
+-- nil for an NPC attacker - there's no UserId to carry.
+local function attackerUserId(attacker: Model): number?
+	local player = Players:GetPlayerFromCharacter(attacker)
+	return if player then player.UserId else nil
+end
+
 -- M3-FIX4-S: the count-based knockback (Combat.Knockback) - +1 per landed
 -- hit taken, from any source; every `everyHits`th hit fires one impulse
 -- (away from whoever landed THIS hit) and resets to 0. Also reschedules
@@ -611,6 +626,12 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 	end
 
 	local by = attackerLabel(attacker)
+	local byUserId = attackerUserId(attacker)
+
+	-- REVIEW-M5C-01 M5: fired for every landed hit, Light or Heavy, before
+	-- the knockout early-return below - a hit that knocks someone out is
+	-- still a landed hit.
+	hitLandedBindable:Fire(target, attacker, hit.kind)
 
 	-- AUDIT C2's "knock them out instead of dying" path must never let
 	-- Humanoid.Health actually reach 0: Roblox fires Humanoid.Died itself
@@ -622,7 +643,7 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 		targetHumanoid.Health = 1
 		-- Resets HitCount too, via onStatusChanged's own Knocked handler
 		-- (REVIEW-M3-FIX4-S L1) - one place, regardless of what caused it.
-		StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, { by = by })
+		StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, { by = by, byUserId = byUserId })
 		Remotes.Server.FireAll("CombatEvent", "Knocked", { target = target, by = by })
 		if combatLogEnabled then
 			log:Info(string.format("%s knocked out %s", attacker.Name, target.Name))
@@ -1487,7 +1508,7 @@ local function registerDevCommands()
 		if character == nil then
 			return string.format("%s has no character", target.Name)
 		end
-		StatusService.Apply(character, "Knocked", Combat.Knockout.getUpSeconds, { by = caller.Name })
+		StatusService.Apply(character, "Knocked", Combat.Knockout.getUpSeconds, { by = caller.Name, byUserId = caller.UserId })
 		Remotes.Server.FireAll("CombatEvent", "Knocked", { target = character, by = caller.Name })
 		return string.format("%s knocked out", target.Name)
 	end)

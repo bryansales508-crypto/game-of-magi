@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 
 local Validate = require(script.Parent.Validate)
 local Log = require(script.Parent.Log)
+local Cities = require(script.Parent.Data.Cities)
 
 local log = Log.new("Remotes")
 
@@ -190,6 +191,58 @@ Remotes.Definitions = {
 	CoinMessage = {
 		kind = "Event",
 		args = { Validate.string({ maxLen = 100 }) },
+		rate = { count = 3, per = 5 },
+	},
+	-- M5C-01: delivery missions. MissionOpenBoard/MissionStart only ever
+	-- name one of the seven known city keys (Shared/Data/Cities.Keys) -
+	-- MissionService still checks the caller is actually near that city's
+	-- delivery part, and that the destination is on the board it opened
+	-- (AUDIT H7: the old server trusted any string the client sent).
+	-- MissionBoard/MissionUpdate are server -> client only (MissionService
+	-- never registers a handler for either, so a client calling one back is
+	-- just dropped, same pattern as CombatEvent/RankUp); their one table
+	-- argument isn't shape-checked for the same reason those aren't. A
+	-- modifier entry (in a MissionBoard destination's `modifiers` and in
+	-- MissionUpdate's own `modifiers`) is `{key, name, chance, text}` -
+	-- `key` is the internal name (Shared/Data/Cities), `name` is the
+	-- display name (REVIEW-M5C-01 H1). MissionUpdate also carries `failed`,
+	-- an array of every modifier `key` already failed on this run
+	-- (REVIEW-M5C-01B F3) - sent on EVERY update, most importantly the
+	-- CourierLoop return leg's own `state = "Started"`, which rebuilds
+	-- every pop-out from `modifiers` alone and would otherwise un-grey one
+	-- that already failed on the first leg; the one-shot
+	-- `state = "ModifierFailed", key = ...` update is still what greys a
+	-- pop-out the moment it fails, `failed` is only for a rebuild to catch
+	-- up, never a second trigger for the same key. The intercepted mark
+	-- (Bryan): MissionBoard also carries `intercepted` (the player's current
+	-- Progress.Intercepted stack count) and `offerMultiplier` (what that's
+	-- worth right now, `MissionService.OfferMultiplier`) - purely
+	-- informational headline numbers, since every destination's own `pay`
+	-- is already multiplied by whatever the multiplier was when THAT
+	-- destination was rolled/cached.
+	MissionBoard = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 5 },
+	},
+	MissionOpenBoard = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 32, oneOf = Cities.Keys }) },
+		rate = { count = 2, per = 1 },
+	},
+	MissionStart = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 32, oneOf = Cities.Keys }) },
+		rate = { count = 2, per = 1 },
+	},
+	MissionExit = {
+		kind = "Event",
+		args = {},
+		rate = { count = 2, per = 1 },
+	},
+	MissionUpdate = {
+		kind = "Event",
+		args = {},
 		rate = { count = 3, per = 5 },
 	},
 } :: { [string]: RemoteDef }

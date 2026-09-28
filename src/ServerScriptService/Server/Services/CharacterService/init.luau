@@ -545,19 +545,6 @@ local function setAttributes(player: Player, data: Data)
 	player:SetAttribute("Age", data.Age.Years)
 end
 
--- F4: used by MissionHandler and RewardHandler (both index it directly and
--- would error if it were missing). Created once per player, not once per
--- spawn like the old "misc stuff" block did (which leaked a new Folder
--- under the player on every respawn).
-local function ensureSuccessRateFolder(player: Player)
-	if player:FindFirstChild("SuccessRate") then
-		return
-	end
-	local folder = Instance.new("Folder")
-	folder.Name = "SuccessRate"
-	folder.Parent = player
-end
-
 -- Waits until CreateCharacter has been handled (data.Character.Gender ~= 0),
 -- the player leaves, or (F8) this character is replaced by a respawn while
 -- still waiting. The client shows the Gender screen itself whenever it sees
@@ -616,7 +603,6 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 	equipGear(character, data)
 	wireToolGrip(character)
 	applyAnimations(character)
-	ensureSuccessRateFolder(player)
 
 	LegacyBridge.Refresh(player, data)
 	setAttributes(player, data)
