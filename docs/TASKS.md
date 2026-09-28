@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build. M3B (stance, unlock, dummies, lives) merged 2026-09-28, awaiting Bryan's playtest; M5 plan awaiting his decisions** (see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build. M3B (stance, unlock, dummies, lives) merged 2026-09-28, awaiting Bryan's playtest; M5 plan draft 2 (phased) awaiting the Gold ratio and the market model** (see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
