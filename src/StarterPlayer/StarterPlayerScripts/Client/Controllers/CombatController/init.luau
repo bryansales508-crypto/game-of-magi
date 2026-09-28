@@ -104,7 +104,7 @@ type Tracks = {
 
 -- ==================== per-hit style data (M3-FIX4, read defensively) ====================
 
--- Combat.Styles[styleName].hits[hitIndex] (kind/windupAt/cancelUntil/
+-- Combat.Styles[styleName].chain[hitIndex] (kind/windupAt/cancelUntil/
 -- windupSpeed/...), or nil if Combat.Styles isn't built yet (M3-FIX4-S, in
 -- progress in parallel) or the style/index just isn't in it. Never errors
 -- either way -- every caller below falls back to the old, style-agnostic
@@ -143,6 +143,11 @@ local blockHeld = false
 local wantRun = false
 local runAnimPlaying = false
 local runningTween: Tween? = nil
+-- The "you don't know how to fight yet" message (Stance section, below);
+-- declared here so teardownCharacter can clean it up on respawn without
+-- forward-referencing a local declared later in the file.
+local activeLockedMessageGui: ScreenGui? = nil
+local lockedMessageGeneration = 0
 
 -- Forward-declared: referenced by the Humanoid.StateChanged connection
 -- below (jump cancels a held block), defined in the Block section further
@@ -154,6 +159,8 @@ local tryCancelAttack: () -> ()
 -- the local character's dagger visual, but the function itself lives
 -- further down, next to its "other players" counterpart.
 local wireDaggerVisual: (character: Instance) -> ()
+local wireStanceAnimation: (character: Instance) -> ()
+local stopStanceAnimation: (character: Instance) -> ()
 
 -- ==================== swing state (M3-FIX3: animation-driven punches) ====================
 
@@ -294,6 +301,13 @@ end
 
 local function teardownCharacter()
 	stopSwing(nil)
+	if currentCharacter then
+		stopStanceAnimation(currentCharacter)
+	end
+	if activeLockedMessageGui then
+		activeLockedMessageGui:Destroy()
+		activeLockedMessageGui = nil
+	end
 
 	for _, conn in characterConns do
 		conn:Disconnect()
@@ -319,6 +333,7 @@ local function onCharacterAdded(character: Model)
 	-- Independent of the swing tracks below (only needs "Right Arm", not
 	-- the Animator), and equally relevant for the local character.
 	wireDaggerVisual(character)
+	wireStanceAnimation(character)
 
 	task.spawn(function()
 		local tracks = buildTracks(character)
@@ -375,8 +390,105 @@ local function isIncapacitated(character: Model): boolean
 end
 
 -- LightStunned still allows Attack/Dash (point 4); only Block is narrower.
+-- M3B-03: Block also requires InCombat (point 1), same as attacking/
+-- cancelling -- see the Stance section below.
 local function canBlock(character: Model): boolean
-	return not isIncapacitated(character) and character:GetAttribute("LightStunned") ~= true
+	return not isIncapacitated(character)
+		and character:GetAttribute("LightStunned") ~= true
+		and character:GetAttribute("InCombat") == true
+end
+
+-- ==================== Stance (M3B: combat is entered with a key) ====================
+-- The style is entirely server-derived from the equipped Tool (WeaponSet)
+-- -- this client never sends or claims a style, only SetStance(bool).
+
+local LOCKED_MESSAGE_TEXT = "You don't know how to fight yet."
+local LOCKED_MESSAGE_COLOR = Color3.fromRGB(255, 224, 152)
+
+-- Same look as RukhController's "Your heart gave out." (menu-style font),
+-- centred low on the screen per point 2. Generation-guarded so a second
+-- press while one is already showing restarts the clock cleanly instead
+-- of an earlier delayed cleanup destroying the newer GUI out from under it.
+local function showLockedMessage()
+	lockedMessageGeneration += 1
+	local myGeneration = lockedMessageGeneration
+
+	if activeLockedMessageGui then
+		activeLockedMessageGui:Destroy()
+		activeLockedMessageGui = nil
+	end
+
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if not playerGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "StanceLockedGui"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 900
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Message"
+	label.AnchorPoint = Vector2.new(0.5, 1)
+	label.Position = UDim2.fromScale(0.5, 0.82)
+	label.Size = UDim2.fromScale(0.6, 0.07)
+	label.BackgroundTransparency = 1
+	label.FontFace = Font.new(Font.fromEnum(Enum.Font.Merriweather).Family, Enum.FontWeight.Regular, Enum.FontStyle.Italic)
+	label.TextColor3 = LOCKED_MESSAGE_COLOR
+	label.TextScaled = true
+	label.Text = LOCKED_MESSAGE_TEXT
+	label.Parent = gui
+
+	gui.Parent = playerGui
+	activeLockedMessageGui = gui
+
+	task.delay(Config.Combat.LockedMessageSeconds, function()
+		if lockedMessageGeneration == myGeneration then
+			gui:Destroy()
+			activeLockedMessageGui = nil
+		end
+	end)
+end
+
+-- The C key (Config.Combat.StanceKey): toggles InCombat. Leaving is
+-- always sent instantly; entering while locked shows the message instead
+-- of sending anything (point 2 -- "no remote sent").
+local function tryToggleStance()
+	local character = currentCharacter
+	if not character then
+		return
+	end
+	local wantOn = character:GetAttribute("InCombat") ~= true
+	if wantOn then
+		-- "Entering requires: combat unlocked, alive, not knocked or in a
+		-- scene" (M3B-PLAN.md section 1); the server is the real gate,
+		-- this just avoids a doomed round-trip. "Leaving is instant" --
+		-- no equivalent check when wantOn is false.
+		if player:GetAttribute("CombatUnlocked") ~= true then
+			showLockedMessage()
+			return
+		end
+		if isIncapacitated(character) then
+			return
+		end
+	end
+	Remotes.Client.Fire("SetStance", wantOn)
+end
+
+-- A Tool the character has equipped with a non-empty string `Weapon`
+-- attribute (the same attribute the server reads to derive WeaponSet).
+local function findEquippedWeaponTool(character: Model): Tool?
+	for _, child in character:GetChildren() do
+		if child:IsA("Tool") then
+			local weapon = child:GetAttribute("Weapon")
+			if typeof(weapon) == "string" and weapon ~= "" then
+				return child
+			end
+		end
+	end
+	return nil
 end
 
 -- ==================== Attack ====================
@@ -384,6 +496,13 @@ end
 -- M1: fires AttackStart() only -- it never plays anything itself. The
 -- swing (and its per-hit markers) only starts once the server's own
 -- Swing event arrives, below.
+--
+-- Point 1's exception: outside the stance, a click normally does
+-- nothing -- EXCEPT with a weapon Tool equipped, where the click both
+-- enters the stance (SetStance(true)) AND becomes the first hit
+-- (AttackStart), sent in that order. This never checks CombatUnlocked
+-- itself (unlike the C key): the server drops both silently if locked,
+-- same as any other rejected SetStance.
 local function tryAttackStart()
 	local character = currentCharacter
 	if not character then
@@ -395,6 +514,13 @@ local function tryAttackStart()
 		or character:GetAttribute("Attacking") == true
 	then
 		return
+	end
+
+	if character:GetAttribute("InCombat") ~= true then
+		if not findEquippedWeaponTool(character) then
+			return
+		end
+		Remotes.Client.Fire("SetStance", true)
 	end
 
 	-- Always read fresh (no cached cooldown of our own): a cancelled
@@ -449,6 +575,10 @@ end
 -- AttackCancelled arrives, so client and server never disagree about
 -- whether the swing is still live.
 tryCancelAttack = function()
+	local character = currentCharacter
+	if not character or character:GetAttribute("InCombat") ~= true then
+		return
+	end
 	local swing = currentSwing
 	if not swing then
 		return
@@ -771,6 +901,69 @@ wireDaggerVisual = function(character: Instance)
 	updateDaggerVisual(character)
 end
 
+-- ==================== stance animation (M3B point 3) ====================
+-- One looping idle per style (Config.Combat.StanceAnimations), played on
+-- ANY character (own and others) while its InCombat attribute is true;
+-- stopped on InCombat clearing, a style change, or CharacterRemoving.
+-- Movement priority: high enough to override the default standing idle,
+-- but below the Action2/3-priority swing/block/dash tracks (theirs and
+-- EffectsController's stagger/stunned-pose logic both key off Action-and-
+-- above, so this never gets mistaken for "a combat animation is playing").
+
+local stanceTrackByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: AnimationTrack }
+
+stopStanceAnimation = function(character: Instance)
+	local track = stanceTrackByCharacter[character]
+	if track then
+		stanceTrackByCharacter[character] = nil
+		track:Stop()
+	end
+end
+
+local function updateStanceAnimation(character: Instance)
+	if character:GetAttribute("InCombat") ~= true then
+		stopStanceAnimation(character)
+		return
+	end
+
+	local weaponSet = character:GetAttribute("WeaponSet")
+	local styleName = if typeof(weaponSet) == "string" then weaponSet else "Fist"
+	local animationId = Config.Combat.StanceAnimations[styleName]
+	if typeof(animationId) ~= "string" or animationId == "" then
+		stopStanceAnimation(character)
+		return
+	end
+
+	local existing = stanceTrackByCharacter[character]
+	if existing and existing.IsPlaying and existing.Animation and existing.Animation.AnimationId == animationId then
+		return -- already the right style's idle; never stack a second copy
+	end
+	stopStanceAnimation(character)
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		return
+	end
+	local animation = Instance.new("Animation")
+	animation.AnimationId = animationId
+	local track = animator:LoadAnimation(animation)
+	track.Priority = Enum.AnimationPriority.Movement
+	track.Looped = true
+	track:Play()
+	stanceTrackByCharacter[character] = track
+end
+
+wireStanceAnimation = function(character: Instance)
+	character:GetAttributeChangedSignal("InCombat"):Connect(function()
+		updateStanceAnimation(character)
+	end)
+	character:GetAttributeChangedSignal("WeaponSet"):Connect(function()
+		updateStanceAnimation(character)
+	end)
+	updateStanceAnimation(character)
+end
+
 -- ==================== input wiring (bound once; nothing here depends on the character) ====================
 
 local function handleInputAction(_actionName: string, inputState: Enum.UserInputState, inputObject: InputObject): Enum.ContextActionResult
@@ -794,6 +987,10 @@ local function handleInputAction(_actionName: string, inputState: Enum.UserInput
 			end
 		elseif inputState == Enum.UserInputState.End then
 			setBlockHeld(false)
+		end
+	elseif inputObject.KeyCode == Config.Combat.StanceKey then
+		if inputState == Enum.UserInputState.Begin then
+			tryToggleStance()
 		end
 	elseif inputObject.KeyCode == Enum.KeyCode.Q then
 		if inputState == Enum.UserInputState.Begin then
@@ -824,6 +1021,7 @@ function CombatController:Start()
 		Enum.UserInputType.MouseButton1,
 		Enum.UserInputType.MouseButton2,
 		Enum.KeyCode.F,
+		Config.Combat.StanceKey,
 		Enum.KeyCode.Q,
 		Enum.KeyCode.W
 	)
@@ -836,15 +1034,20 @@ function CombatController:Start()
 		onCharacterAdded(player.Character)
 	end
 
-	-- The dagger visual is the only thing in this controller that cares
-	-- about characters other than the local one (point 6).
+	-- The dagger visual and the stance animation are the only things in
+	-- this controller that care about characters other than the local
+	-- one (points 3 and 6).
 	local function wireOtherPlayer(otherPlayer: Player)
 		if otherPlayer == player then
 			return
 		end
-		otherPlayer.CharacterAdded:Connect(wireDaggerVisual)
+		otherPlayer.CharacterAdded:Connect(function(character: Model)
+			wireDaggerVisual(character)
+			wireStanceAnimation(character)
+		end)
 		if otherPlayer.Character then
 			wireDaggerVisual(otherPlayer.Character)
+			wireStanceAnimation(otherPlayer.Character)
 		end
 	end
 	for _, otherPlayer in Players:GetPlayers() do

@@ -135,6 +135,26 @@ Config.Combat = {
 	-- the server never reads this, it only ever validates hitWindow/
 	-- cancelUntil, so retuning this doesn't need to match any server timing.
 	WindupSpeed = 0.5,
+	-- M3B-01/M3B-03: the combat stance (docs/M3B-PLAN.md section 1). The
+	-- key toggles SetStance(not InCombat); clicks/Block/cancel only work
+	-- while InCombat (a click with a weapon Tool equipped is the one
+	-- exception -- it enters the stance first). Bryan can rebind the key
+	-- freely.
+	StanceKey = Enum.KeyCode.C,
+	-- One looping idle animation id per style, played on any character
+	-- while InCombat (own and others) so everyone can see who's ready to
+	-- fight; empty = no animation for that style yet. Bryan fills these in.
+	StanceAnimations = {
+		Fist = "",
+		Dagger = "",
+	},
+	-- Matches the server's default (docs/M3B-PLAN.md section 2) only in
+	-- spirit -- the server's CombatUnlocked attribute is the real source
+	-- of truth; this client never decides unlock state itself, it only
+	-- reads that attribute.
+	UnlockedByDefault = true,
+	-- How long the "you don't know how to fight yet" line stays up.
+	LockedMessageSeconds = 2,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -224,6 +244,7 @@ table.freeze(Config.Combat.Markers.Dagger.Windup)
 table.freeze(Config.Combat.Markers.Dagger.Hit)
 table.freeze(Config.Combat.Markers.Dagger)
 table.freeze(Config.Combat.Markers)
+table.freeze(Config.Combat.StanceAnimations)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
