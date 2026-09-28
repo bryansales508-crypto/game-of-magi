@@ -505,3 +505,21 @@ Setup: Play, `.state`. Marker names per style must already match your animations
 
 ### M3B-K Lives
 - `.state` shows `livesLeft: 4`. `.kill`: you respawn as the same character, `livesLeft: 3`, no scene. `.lives 1` then `.kill`: the afterlife scene plays WITHOUT the heartbeat, then a brand-new character with `livesLeft: 4`, `lives` (incarnation) up by one, and combat still unlocked (press C works without redoing anything). `.lives 4`, `.age 70`, `.mortal on`, `.heart fatal`: wipe regardless of lives. Knock yourself out on a dummy (`.hp 5`): `livesLeft` unchanged. **Pass:** every line; no errors.
+
+---
+
+## M5A Currency (Bryan runs)
+
+Dev commands: `.coins <copper> [silver] [gold]`, `.coins+ ...`, `.price <copper>`, `.pay <coin> <amount>`, `.state`.
+
+### M5A-A Rounding table
+- `.price 40` -> "40 Copper"; `.price 60` -> "1 Silver"; `.price 103` -> "1 Silver"; `.price 149` -> "1 Silver"; `.price 150` -> "2 Silver"; `.price 5000` -> "50 Silver"; `.price 6000` -> "1 Gold"; `.price 15000` -> "2 Gold". **Pass:** every line, never a decimal.
+
+### M5A-B Exact coin, no change
+- `.coins 120 0 0`, `.pay Silver 1` -> refused, your character says the "not enough Silver / exchange at the bank" line, purse unchanged. `.coins 120 1 0`, `.pay Silver 1` -> paid, purse shows 120 Copper 0 Silver. `.pay Copper 40` -> 80 Copper. **Pass:** all three; the purse HUD updates live and looks as before.
+
+### M5A-C Rewards stay Copper
+- `.coins 0 0 0`, then any Copper reward path available (or `.coins+ 130`): Copper rises by the amount, Silver stays 0. **Pass:** no reward ever converts.
+
+### M5A-D Rejoin
+- Set coins, Stop, Play: same purse; `.state` matches the HUD. **Pass.**
