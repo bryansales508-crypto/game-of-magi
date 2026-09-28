@@ -407,6 +407,34 @@ local function testDataService(results: { Check })
 		end
 		standIn:Destroy()
 	end
+
+	-- REVIEW-M5C-01B F1: DataService.RunReleasing must run every registered
+	-- OnReleasing handler BEFORE `endSession` - profile:EndSession() fires
+	-- ProfileStore's own OnSessionEnd synchronously, which nils
+	-- `profiles[player]` before onPlayerRemoving even returns, so a plain
+	-- Players.PlayerRemoving connection made by another service (however
+	-- early) can never see the save before it's released. This is the
+	-- mechanism M5C-01's "leaving mid-run" fix relies on - see
+	-- MissionService's own DataService.OnReleasing registration, and
+	-- TrySettle/ApplyFailure below for the actual "zeroes the streak" math
+	-- this now runs in time for.
+	do
+		local order: { string } = {}
+		DataService.OnReleasing(function()
+			table.insert(order, "handler")
+		end)
+		local standIn = Instance.new("Folder")
+		local fakePlayer = (standIn :: any) :: Player
+		DataService.RunReleasing(fakePlayer, function()
+			table.insert(order, "released")
+		end)
+		expect(
+			results,
+			"DataService: RunReleasing runs every OnReleasing handler before the release itself (REVIEW-M5C-01B F1)",
+			#order == 2 and order[1] == "handler" and order[2] == "released"
+		)
+		standIn:Destroy()
+	end
 end
 
 -- M1-04S: the join state machine is pure (no Player needed), so every
@@ -2920,6 +2948,62 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: MarkFailed succeeds the first time", MissionService.MarkFailed(failedKeys, "FragilePackage"))
 		expect(results, "MissionService: MarkFailed refuses a second time for the same key", not MissionService.MarkFailed(failedKeys, "FragilePackage"))
 		expect(results, "MissionService: a different key still marks independently", MissionService.MarkFailed(failedKeys, "VIP"))
+	end
+
+	-- REVIEW-M5C-01B F3: every MissionUpdate carries the failed-keys SET as
+	-- an array, so the client can re-grey them on any rebuild.
+	do
+		local failedKeys: { [string]: boolean } = { TimeCrunch = true, VIP = true }
+		local list = MissionService.FailedKeysList(failedKeys)
+		table.sort(list)
+		expect(results, "MissionService (F3): FailedKeysList returns every failed key", #list == 2 and list[1] == "TimeCrunch" and list[2] == "VIP")
+		expect(results, "MissionService (F3): FailedKeysList is empty when nothing has failed", #MissionService.FailedKeysList({}) == 0)
+	end
+
+	-- REVIEW-M5C-01B F4 (Bryan's call): the interceptor is paid the amount
+	-- as it stood BEFORE the knocking blow's own Fragile/VIP reaction, and
+	-- Clear the Route never counts for an interceptor at all.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("VIP", 2), fakeMod("FragilePackage", 1.3) }
+
+		-- The killing blow's own onHitLanded marks VIP/Fragile failed in
+		-- `failedKeys`, but `preHitFailedKeys` (snapshotted just before that)
+		-- is still empty - InterceptPay must use the snapshot, not the
+		-- post-hit state, so the SAME hit that ends the run doesn't also
+		-- cost the interceptor what it just failed for the courier.
+		local postHitFailedKeys: { [string]: boolean } = { VIP = true, FragilePackage = true }
+		local preHitFailedKeys: { [string]: boolean } = {}
+		local intercepted = MissionService.InterceptPay(base, modifiers, preHitFailedKeys)
+		expect(
+			results,
+			"MissionService (F4): the interceptor gets the pre-hit pay, not the post-hit (post-fail) pay",
+			intercepted == MissionService.CurrentPay(base, modifiers, preHitFailedKeys)
+				and intercepted > MissionService.CurrentPay(base, modifiers, postHitFailedKeys)
+		)
+
+		-- Clear the Route is force-excluded for an interceptor regardless of
+		-- whether it happened to already be credited (the courier's own
+		-- ApplySuccess/finishRun path is the only place it should ever pay).
+		local withClearTheRoute = { fakeMod("CleartheRoute", 1.5) }
+		local interceptedWithCtr = MissionService.InterceptPay(base, withClearTheRoute, {})
+		expect(results, "MissionService (F4): Clear the Route never counts toward an interceptor's payout", interceptedWithCtr == base)
+	end
+
+	-- REVIEW-M5C-01B F5: the wire builder itself is pinned, not just the
+	-- underlying data (H1's own fix) - `{key, name, chance, text}`, `name`
+	-- is the DISPLAY name, `payMultiplier` never leaks onto the wire.
+	do
+		local wire = MissionService.WireModifiers({
+			{ key = "TimeCrunch", displayName = "Time Crunch", chance = 20, text = "Complete in 3:00.", payMultiplier = 1.2 },
+		})
+		expect(results, "MissionService (F5): WireModifiers sends exactly one entry per modifier", #wire == 1)
+		local entry = wire[1]
+		expect(
+			results,
+			"MissionService (F5): WireModifiers pins {key, name, chance, text} - name is the display name, not the internal key",
+			entry.key == "TimeCrunch" and entry.name == "Time Crunch" and entry.chance == 20 and entry.text == "Complete in 3:00." and entry.payMultiplier == nil
+		)
 	end
 
 	-- H2: the CourierLoop return leg sends "Started" with a phase change,

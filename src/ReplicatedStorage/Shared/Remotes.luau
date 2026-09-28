@@ -201,7 +201,19 @@ Remotes.Definitions = {
 	-- MissionBoard/MissionUpdate are server -> client only (MissionService
 	-- never registers a handler for either, so a client calling one back is
 	-- just dropped, same pattern as CombatEvent/RankUp); their one table
-	-- argument isn't shape-checked for the same reason those aren't.
+	-- argument isn't shape-checked for the same reason those aren't. A
+	-- modifier entry (in a MissionBoard destination's `modifiers` and in
+	-- MissionUpdate's own `modifiers`) is `{key, name, chance, text}` -
+	-- `key` is the internal name (Shared/Data/Cities), `name` is the
+	-- display name (REVIEW-M5C-01 H1). MissionUpdate also carries `failed`,
+	-- an array of every modifier `key` already failed on this run
+	-- (REVIEW-M5C-01B F3) - sent on EVERY update, most importantly the
+	-- CourierLoop return leg's own `state = "Started"`, which rebuilds
+	-- every pop-out from `modifiers` alone and would otherwise un-grey one
+	-- that already failed on the first leg; the one-shot
+	-- `state = "ModifierFailed", key = ...` update is still what greys a
+	-- pop-out the moment it fails, `failed` is only for a rebuild to catch
+	-- up, never a second trigger for the same key.
 	MissionBoard = {
 		kind = "Event",
 		args = {},

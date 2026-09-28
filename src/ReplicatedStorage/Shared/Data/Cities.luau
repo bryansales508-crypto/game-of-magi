@@ -318,9 +318,12 @@ function Cities.RollModifiers(factors: Factors, nextRoll: (max: number) -> numbe
 	return selected
 end
 
--- Pure: the combined pay multiplier for a set of rolled modifiers - the old
--- RewardHandler.citymodifier + 1 (each modifier's payMultiplier contributes
--- payMultiplier - 1; a bare mission with none rolled is exactly 1x).
+-- Pure: the combined pay multiplier for a set of rolled modifiers - ADDITIVE
+-- (REVIEW-M5C-01B F2, confirmed with Bryan: the old game's own math, not a
+-- product of the individual multipliers), the old RewardHandler.
+-- citymodifier + 1: `1 + sum(payMultiplier - 1)`. TimeCrunch (1.2) and
+-- HeavyCargo (1.3) together give 1.5x total, not 1.2 * 1.3 = 1.56x. A bare
+-- mission with none rolled is exactly 1x.
 function Cities.CombinedMultiplier(rolled: { ModifierRoll }): number
 	local total = 1
 	for _, mod in rolled do

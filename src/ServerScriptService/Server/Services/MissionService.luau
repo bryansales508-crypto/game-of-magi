@@ -114,6 +114,8 @@ end
 -- given a fixed set of modifiers - used for the board's PREVIEW pay (every
 -- rolled modifier assumed intact, the best case) and by the self-test.
 -- CurrentPay below is the live equivalent once some may have failed.
+-- Cities.CombinedMultiplier is additive (REVIEW-M5C-01B F2, confirmed with
+-- Bryan), not a product of the modifiers' own multipliers.
 function MissionService.ComputePay(rankIndex: number, population: number, streak: number, modifiers: { ModifierRoll }): number
 	return math.floor(MissionService.BaseAmount(rankIndex, population, streak) * Cities.CombinedMultiplier(modifiers))
 end
@@ -133,6 +135,22 @@ function MissionService.CurrentPay(baseAmount: number, modifiers: { ModifierRoll
 	return math.floor(baseAmount * Cities.CombinedMultiplier(intact))
 end
 
+-- Pure (REVIEW-M5C-01B F4, Bryan's call): what an INTERCEPTOR is actually
+-- paid - `failedKeysBeforeHit` is `failedKeys` as they stood BEFORE the
+-- very hit that knocked the courier out (see onHitLanded's own snapshot),
+-- so the same landed hit that ends the run never also costs the
+-- interceptor whatever it just failed for the courier (a VIP courier's 2x
+-- or Fragile's 1.3x otherwise always vanished into the killing blow
+-- itself). Clear the Route's bonus is force-excluded outright, always -
+-- the interceptor didn't clear anything (if anything, they're the threat
+-- it was about), whether or not the courier happened to earn it against
+-- someone else earlier in the run.
+function MissionService.InterceptPay(baseAmount: number, modifiers: { ModifierRoll }, failedKeysBeforeHit: { [string]: boolean }): number
+	local excluding: { [string]: boolean } = table.clone(failedKeysBeforeHit)
+	excluding["CleartheRoute"] = true
+	return MissionService.CurrentPay(baseAmount, modifiers, excluding)
+end
+
 -- Pure (Bryan's post-review refinement): marks one modifier failed in
 -- `failedKeys`, idempotently - returns true only the first time (so a
 -- caller fires the ModifierFailed update/log exactly once per modifier per
@@ -144,6 +162,21 @@ function MissionService.MarkFailed(failedKeys: { [string]: boolean }, key: strin
 	end
 	failedKeys[key] = true
 	return true
+end
+
+-- Pure (REVIEW-M5C-01B F3): the failed-keys SET as an array, for the wire.
+-- Every MissionUpdate carries this so the client can re-grey already-failed
+-- pop-outs on ANY rebuild - most importantly the CourierLoop return leg's
+-- own "Started" (which tears down and rebuilds every pop-out from
+-- `modifiers` alone otherwise, un-greying a TimeCrunch/Fragile/VIP that
+-- already failed on the first leg) - without ever re-firing the one-shot
+-- `"ModifierFailed"` update for a key that's already been sent.
+function MissionService.FailedKeysList(failedKeys: { [string]: boolean }): { string }
+	local list: { string } = {}
+	for key in failedKeys do
+		table.insert(list, key)
+	end
+	return list
 end
 
 -- Pure (H2): decides the phase transition on arrival. `"Returning"` with a
@@ -255,6 +288,13 @@ type Run = {
 	hasHighlyValuable: boolean,
 	clearedRoute: boolean, -- M4: earned a knockout during the run
 	failedKeys: { [string]: boolean }, -- Bryan's refinement: dropped from the payout, run continues
+	-- F4: a snapshot of failedKeys taken right before the courier's own
+	-- Fragile/VIP react to a landed hit (onHitLanded) - nil until the first
+	-- hit lands. interceptRun uses this (falling back to failedKeys itself
+	-- if a knockout never went through a real landed hit, e.g. a dev
+	-- `.knock`) so the SAME hit that ends the run in an interception never
+	-- also costs the interceptor whatever it just failed.
+	preHitFailedKeys: { [string]: boolean }?,
 	timerEndsAt: number?, -- Workspace:GetServerTimeNow(), also the wire value
 	startedAt: number, -- for M2's elapsed-seconds gate
 	pack: Instance?,
@@ -336,13 +376,13 @@ local function closeBoard(player: Player)
 	Remotes.Server.Fire("MissionBoard", player, nil)
 end
 
--- REVIEW-M5C-01 H1 (and Bryan's own follow-up naming the exact shape): every
--- modifier sent to the client is `{ key, name, chance, text }` - `key` is
--- the internal name (what a ModifierFailed update's own `key` matches), and
--- `name` is the display name. Never the internal key under `name` - the
--- client's Time Crunch/Courier Loop special-cases and every pop-out title
--- match on it.
-local function wireModifiers(modifiers: { ModifierRoll }): { any }
+-- Pure (REVIEW-M5C-01 H1, exported and self-tested per REVIEW-M5C-01B F5):
+-- every modifier sent to the client is `{ key, name, chance, text }` -
+-- `key` is the internal name (what a ModifierFailed update's own `key`
+-- matches), and `name` is the display name. Never the internal key under
+-- `name` - the client's Time Crunch/Courier Loop special-cases and every
+-- pop-out title match on it.
+function MissionService.WireModifiers(modifiers: { ModifierRoll }): { any }
 	local list = {}
 	for _, mod in modifiers do
 		table.insert(list, { key = mod.key, name = mod.displayName, chance = mod.chance, text = mod.text })
@@ -363,7 +403,7 @@ local function sendBoard(player: Player, board: Board)
 				lore = if city then city.lore else "",
 				image = if city then city.image else "",
 				pay = dest.pay,
-				modifiers = wireModifiers(dest.modifiers),
+				modifiers = MissionService.WireModifiers(dest.modifiers),
 			})
 		end
 	end
@@ -606,7 +646,13 @@ local function sendUpdate(player: Player, run: Run, state: string)
 		state = state,
 		destination = run.destination,
 		destinationPosition = vecToTable(run.destinationPosition),
-		modifiers = wireModifiers(run.modifiers),
+		modifiers = MissionService.WireModifiers(run.modifiers),
+		-- REVIEW-M5C-01B F3: every already-failed key, so the client can
+		-- re-grey them on ANY rebuild (most importantly the CourierLoop
+		-- return leg's own "Started", which otherwise un-greys a
+		-- TimeCrunch/Fragile/VIP that failed on the first leg) without this
+		-- ever re-firing the one-shot "ModifierFailed" update itself.
+		failed = MissionService.FailedKeysList(run.failedKeys),
 		pay = currentPay(run),
 	}
 	if run.returnPosition then
@@ -663,6 +709,7 @@ local function startRun(
 		hasHighlyValuable = hasHighlyValuable,
 		clearedRoute = false,
 		failedKeys = {},
+		preHitFailedKeys = nil,
 		timerEndsAt = if hasTimeCrunch then now + Config.Missions.TimeCrunchSeconds else nil,
 		startedAt = now,
 		pack = attachPackage(character),
@@ -787,7 +834,11 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 		return
 	end
 
-	local payout = currentPay(run)
+	-- F4: the pay as it stood BEFORE the knocking blow's own Fragile/VIP
+	-- reaction (falling back to the current failedKeys if this interception
+	-- didn't come from a real landed hit at all, e.g. a dev `.knock`), and
+	-- Clear the Route never counts for an interceptor either way.
+	local payout = MissionService.InterceptPay(run.baseAmount, run.modifiers, run.preHitFailedKeys or run.failedKeys)
 	EconomyService.GiveCopperValue(attacker, payout, string.format("Delivery interception: %s", run.destination))
 	RankService.AddDeed(attacker, "Black", 1)
 
@@ -947,6 +998,14 @@ local function onHitLanded(target: Model, _attacker: Model, _kind: string)
 	if run == nil then
 		return
 	end
+
+	-- F4: snapshot BEFORE this hit's own Fragile/VIP react - if this same
+	-- hit also knocks the courier out (CombatService fires HitLanded before
+	-- the Knocked status, always), interceptRun reads this instead of the
+	-- post-hit failedKeys, so the killing blow itself never also costs the
+	-- interceptor whatever it just failed for the courier.
+	run.preHitFailedKeys = table.clone(run.failedKeys)
+
 	if run.hasFragilePackage then
 		failModifier(run.player, run, "FragilePackage")
 	end
@@ -1239,22 +1298,34 @@ function MissionService:Start()
 		hookPlayer(player)
 	end
 
-	-- L1: DataService's own PlayerRemoving handler (connected during Init,
-	-- which always finishes for every service before any Start runs) calls
-	-- profile:EndSession() before this one fires - but that starts an
-	-- async release/save, it doesn't invalidate DataService.Get's table
-	-- synchronously, so failing the run here (before that async save ever
-	-- actually reads the data) still lands. Without this, leaving mid-run
-	-- kept the streak intact (CharacterRemoving usually already caught it,
-	-- but not for a charless player, e.g. mid-load).
-	Players.PlayerRemoving:Connect(function(player: Player)
+	-- REVIEW-M5C-01B F1: the ORIGINAL L1 fix here was wrong - DataService's
+	-- own PlayerRemoving handler (connected during Init, before this
+	-- service's Start ever runs) calls profile:EndSession(), which fires
+	-- ProfileStore's own OnSessionEnd SYNCHRONOUSLY and nils
+	-- `profiles[player]` before that handler even returns - so a plain
+	-- Players.PlayerRemoving connection here, however early it's made,
+	-- would already see DataService.Get return nil on every leave, "by
+	-- luck" of connection order or not. DataService.OnReleasing (a plain
+	-- synchronous callback list, not an event) runs BEFORE EndSession is
+	-- ever called, guaranteed regardless of Init/Start ordering - this is
+	-- the one place the run is actually failed (and the streak reset) on a
+	-- genuine leave; CharacterRemoving already covers the common case
+	-- (player had a character), this also catches a charless leave (e.g.
+	-- mid-load) that CharacterRemoving would never fire for.
+	DataService.OnReleasing(function(player: Player)
 		local run = runs[player]
 		if run then
 			failRun(player, run, "left")
 		end
+	end)
+
+	-- Local-table cleanup only, unconditional on how the run ended (or
+	-- whether there ever was one) - the streak/data side is already fully
+	-- handled by OnReleasing above by the time this fires.
+	Players.PlayerRemoving:Connect(function(player: Player)
 		boards[player] = nil
 		boardRolls[player] = nil
-		-- Safety net in case failRun somehow no-op'd (already settled).
+		-- Safety net in case OnReleasing's failRun somehow no-op'd.
 		local leftover = runs[player]
 		if leftover then
 			runs[player] = nil
