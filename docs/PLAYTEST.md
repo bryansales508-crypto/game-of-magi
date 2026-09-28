@@ -521,5 +521,8 @@ Dev commands: `.coins <copper> [silver] [gold]`, `.coins+ ...`, `.price <copper>
 ### M5A-C Rewards stay Copper
 - `.coins 0 0 0`, then any Copper reward path available (or `.coins+ 130`): Copper rises by the amount, Silver stays 0. **Pass:** no reward ever converts.
 
+### M5A-E Coin sound
+- `.coins+ 10`: the `CoinReward` sound plays; `.pay Copper 5`: it plays again; joining or respawning does not play it. **Pass:** sound on every change only.
+
 ### M5A-D Rejoin
 - Set coins, Stop, Play: same purse; `.state` matches the HUD. **Pass.**
