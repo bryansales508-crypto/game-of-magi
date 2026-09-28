@@ -6,9 +6,13 @@
 -- PlayerService.Ready below; NPCs are registered by M3-04's NpcService.
 --
 -- Statuses: Hit, Stun, Knocked, Ragdoll, Block, BlockBroken, TrueStun.
--- Anything else can still be Applied/Removed (the API is generic), it just
--- won't get an attribute or a bridge marker unless added to the tables
--- below.
+-- M3-FIX4-S added three more, with no legacy bridge marker (BRIDGE below)
+-- since nothing old ever knew about them: LightStun (a landed Light's own
+-- softer stun - can't block/parry, but CAN still attack or dash),
+-- Recovery (a punished feint - can't attack, block or dash), and Bleed
+-- (stacked; data = {stacks, config}, ticked by HealthService). Anything
+-- else can still be Applied/Removed (the API is generic), it just won't
+-- get an attribute or a bridge marker unless added to the tables below.
 --
 -- Bridge: every Apply/Remove also creates/destroys the matching Value
 -- under character.Effects, with the same Name/ClassName/Value semantics
@@ -73,6 +77,12 @@ local ATTRIBUTE_FOR: { [string]: string } = {
 	Knocked = "Knocked",
 	Block = "Blocking",
 	TrueStun = "TrueStunned",
+	-- M3-FIX4-S:
+	LightStun = "LightStunned",
+	Recovery = "Recovering",
+	-- Bleed's attribute isn't a boolean like the others - see
+	-- mirrorAttribute's own special case below.
+	Bleed = "Bleed",
 }
 
 -- ==================== bridge marker shapes ====================
@@ -243,13 +253,22 @@ local function removeBridgeMarker(character: Model, status: string)
 	end
 end
 
-local function mirrorAttribute(character: Model, status: string, active: boolean)
+-- Every mirrored attribute is a plain boolean EXCEPT Bleed, whose attribute
+-- is its current stack count (0 once inactive) - `info` carries that count
+-- through on Apply (and every refreshing re-Apply, so a new stack updates
+-- the attribute even though Changed doesn't re-fire); Remove has no info
+-- to give (any is fine, since inactive always means 0 stacks anyway).
+local function mirrorAttribute(character: Model, status: string, active: boolean, info: StatusInfo?)
 	local attrName = ATTRIBUTE_FOR[status]
 	if attrName == nil then
 		return
 	end
+	local value: any = active
+	if status == "Bleed" then
+		value = if active and info and type(info.data) == "table" then (info.data :: any).stacks or 0 else 0
+	end
 	pcall(function()
-		character:SetAttribute(attrName, active)
+		character:SetAttribute(attrName, value)
 	end)
 end
 
@@ -474,7 +493,7 @@ function StatusService.Apply(character: Model, status: string, duration: number?
 	entry.statuses[status] = info
 
 	writeBridgeMarker(character, status, info)
-	mirrorAttribute(character, status, true)
+	mirrorAttribute(character, status, true, info)
 
 	if not wasActive then
 		changedBindable:Fire(character, status, true)

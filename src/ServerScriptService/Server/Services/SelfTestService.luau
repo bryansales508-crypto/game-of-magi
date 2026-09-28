@@ -663,16 +663,17 @@ local function testHealthService(results: { Check })
 		CombatService.Register(attacker, nil, "Fist")
 		CombatService.Register(npc, nil, "Fist")
 
-		local punch = (Combat.swingFor("Fist") :: Combat.Swing).punches[1] -- 5 damage
-		CombatService.ApplyHit(attacker, npc, punch, 1)
+		local fistStyle = Combat.styleFor("Fist") :: Combat.Style
+		local hit = fistStyle.chain[1] -- 4 damage
+		CombatService.ApplyHit(attacker, npc, fistStyle, hit, 1)
 		expect(
 			results,
 			"HealthService: an NPC's non-lethal hit goes through TakeDamage",
-			npcHumanoid.Health == 15 and npc:GetAttribute("Health") == 15
+			npcHumanoid.Health == 16 and npc:GetAttribute("Health") == 16
 		)
 
 		npcHumanoid.Health = 3 -- less than the next hit's damage
-		CombatService.ApplyHit(attacker, npc, punch, 1)
+		CombatService.ApplyHit(attacker, npc, fistStyle, hit, 1)
 		expect(
 			results,
 			"HealthService: a lethal hit still knocks an NPC out instead of killing it",
@@ -1094,14 +1095,15 @@ local function testMovementService(results: { Check })
 	end
 end
 
--- M3-03/M3-FIX3-S: CombatService's pure facing/block-decision helpers, the
--- hit-check geometry against fake models parented in Workspace (spatial
--- queries only find parts actually in the DataModel), knockout at 0 HP,
--- the AttackStart/AttackHit/AttackCancel punch sequence (window/order
--- checks, interrupts, cancel), and the NPC server-timed sequence. Block's
--- meter-drain (HealthService.SpendBlock) needs a real Player and is
--- exercised by the playtester instead - ResolveBlock's own pure test below
--- covers the decision logic that path feeds into.
+-- M3-03/M3-FIX3-S/M3-FIX4-S: CombatService's pure facing/block-decision
+-- helpers, the hit-check geometry against fake models parented in
+-- Workspace (spatial queries only find parts actually in the DataModel),
+-- knockout at 0 HP, the AttackStart/AttackHit/AttackCancel chain-hit
+-- sequence (window/order checks, per-hit cancel, Light/Heavy interrupts),
+-- feints, bleed and the count-based knockback, and the NPC server-timed
+-- sequence. Block's meter-drain (HealthService.SpendBlock) needs a real
+-- Player and is exercised by the playtester instead - ResolveBlock's own
+-- pure test below covers the decision logic that path feeds into.
 local function testCombatService(results: { Check })
 	do
 		expect(
@@ -1156,11 +1158,12 @@ local function testCombatService(results: { Check })
 		return model
 	end
 
-	local fist = Combat.swingFor("Fist") :: Combat.Swing
+	local fist = Combat.styleFor("Fist") :: Combat.Style
+	local dagger = Combat.styleFor("Dagger") :: Combat.Style
 
 	do
 		local attacker = buildFakeCombatant("SelfTestAttacker", Vector3.new(500, 5, 0), Vector3.new(500, 5, 1))
-		local punch = fist.punches[1]
+		local hit = fist.chain[1]
 
 		local inRange = buildFakeCombatant("SelfTestInRange", Vector3.new(500, 5, 3), Vector3.new(500, 5, 4))
 		local outOfRange = buildFakeCombatant("SelfTestOutOfRange", Vector3.new(500, 5, 50), Vector3.new(500, 5, 51))
@@ -1171,13 +1174,13 @@ local function testCombatService(results: { Check })
 		CombatService.Register(outOfRange, nil, "Fist")
 		CombatService.Register(behind, nil, "Fist")
 
-		expect(results, "CombatService: FindTarget finds a combatant in range", CombatService.FindTarget(attacker, punch) == inRange)
+		expect(results, "CombatService: FindTarget finds a combatant in range", CombatService.FindTarget(attacker, hit) == inRange)
 
 		inRange:Destroy()
 		expect(
 			results,
 			"CombatService: FindTarget finds neither an out-of-range nor a behind-the-attacker combatant",
-			CombatService.FindTarget(attacker, punch) == nil
+			CombatService.FindTarget(attacker, hit) == nil
 		)
 
 		CombatService.Unregister(inRange)
@@ -1190,14 +1193,10 @@ local function testCombatService(results: { Check })
 
 	do
 		local attacker = buildFakeCombatant("SelfTestUnregisteredAttacker", Vector3.new(700, 5, 0), Vector3.new(700, 5, 1))
-		local punch = fist.punches[1]
+		local hit = fist.chain[1]
 		local unregisteredTarget = buildFakeCombatant("SelfTestUnregisteredTarget", Vector3.new(700, 5, 3), Vector3.new(700, 5, 4))
 
-		expect(
-			results,
-			"CombatService: FindTarget (M5) never hits an unregistered combatant",
-			CombatService.FindTarget(attacker, punch) == nil
-		)
+		expect(results, "CombatService: FindTarget (M5) never hits an unregistered combatant", CombatService.FindTarget(attacker, hit) == nil)
 
 		unregisteredTarget:Destroy()
 		attacker:Destroy()
@@ -1209,10 +1208,10 @@ local function testCombatService(results: { Check })
 		StatusService.Register(target)
 
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
-		targetHumanoid.Health = 3 -- less than the Right punch's 5 damage
+		targetHumanoid.Health = 3 -- less than the Jab's 4 damage
 
-		local punch = fist.punches[1]
-		CombatService.ApplyHit(attacker, target, punch, 1)
+		local hit = fist.chain[1]
+		CombatService.ApplyHit(attacker, target, fist, hit, 1)
 
 		expect(results, "CombatService: a lethal hit knocks out instead of killing", targetHumanoid.Health == 1)
 		expect(results, "CombatService: knockout applies the Knocked status", StatusService.Has(target, "Knocked"))
@@ -1249,10 +1248,13 @@ local function testCombatService(results: { Check })
 	end
 
 	-- REVIEW-M3-03 L8 / REVIEW-M3-04 L1: the full parry-window -> cooldown
-	-- -> held -> broken sequence, against a fake (no-Player) blocker -
-	-- which only works at all because a target with no real Player gets
-	-- its own HealthService-backed block meter now (via HealthService.
-	-- Register, the same as NpcService gives a real NPC).
+	-- -> held -> broken sequence, against a fake (no-Player) blocker - which
+	-- only works at all because a target with no real Player gets its own
+	-- HealthService-backed block meter now (via HealthService.Register, the
+	-- same as NpcService gives a real NPC). Uses the Heavy (blockDrain 45,
+	-- M3-FIX4-S: per-hit now, not the old flat Combat.Block.drainPerHit):
+	-- 100 -(parry, no drain)-> 100 -(cooldown-forced hold, -45)-> 55
+	-- -(still holds, -45)-> 10 -(45 needed, only 10 left: breaks).
 	do
 		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
@@ -1263,11 +1265,11 @@ local function testCombatService(results: { Check })
 		CombatService.Register(blocker, nil, "Fist")
 
 		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
-		local punch = fist.punches[1]
+		local heavy = fist.chain[2]
 
 		StatusService.Apply(blocker, "Block", nil, { value = 1 })
 
-		CombatService.ApplyHit(attacker, blocker, punch, 1)
+		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2)
 		expect(
 			results,
 			"CombatService: a parry stuns the attacker and costs no block HP (M1)",
@@ -1275,7 +1277,7 @@ local function testCombatService(results: { Check })
 		)
 
 		StatusService.Remove(attacker, "Stun")
-		CombatService.ApplyHit(attacker, blocker, punch, 1)
+		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 100 -> 55
 		expect(
 			results,
 			"CombatService: a second hit right after a parry can't parry again (AUDIT H5 cooldown) and drains the meter instead",
@@ -1290,19 +1292,10 @@ local function testCombatService(results: { Check })
 			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
 		)
 
-		-- BUG-23 (M3-FIX-S): this is a test-bookkeeping fix, not a
-		-- HealthService/CombatService bug. The meter was already 65 here
-		-- (the cooldown-forced "held" hit above already drained 100 -> 65 -
-		-- the comments below previously forgot that and restarted counting
-		-- from 100, so the block had actually already broken one ApplyHit
-		-- call before the "still holds" check ran). Confirmed HealthService.
-		-- SpendBlock's own boundary (`current < amount` fails) isn't an
-		-- off-by-one here either: 100/35 doesn't land on an exact multiple,
-		-- so this scenario never exercises the current==amount edge at all.
-		CombatService.ApplyHit(attacker, blocker, punch, 1) -- 65 -> 30
+		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 55 -> 10
 		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
 
-		CombatService.ApplyHit(attacker, blocker, punch, 1) -- 30 < 35: breaks
+		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 10 < 45: breaks
 		expect(results, "CombatService: the block breaks once a no-Player target's meter runs out (L8)", not StatusService.Has(blocker, "Block"))
 		expect(results, "CombatService: a broken block applies TrueStun", StatusService.Has(blocker, "TrueStun"))
 
@@ -1315,20 +1308,17 @@ local function testCombatService(results: { Check })
 		blocker:Destroy()
 	end
 
-	-- M3-FIX3-S: the animation-marker punch sequence - order/window checks.
-	-- Nothing here asserts an UPPER bound on how much time has passed right
-	-- after a task.wait (BUG-23/BUG-26: task.wait is a lower bound only, and
-	-- Studio can overshoot it) - only that "clearly too early" and "clearly
-	-- too late" reports get dropped, with wide margins either side, and that
-	-- index-mismatch rejections (duplicate/out-of-order) are timing-
-	-- independent altogether.
+	-- M3-FIX3-S/M3-FIX4-S: the animation-marker chain-hit sequence -
+	-- order/window checks. Nothing here asserts an UPPER bound on how much
+	-- time has passed right after a task.wait (BUG-23/BUG-26: task.wait is
+	-- a lower bound only, and Studio can overshoot it) - only that "clearly
+	-- too early" and "clearly too late" reports get dropped, with wide
+	-- margins either side, and that index-mismatch rejections (duplicate/
+	-- out-of-order) are timing-independent altogether.
 	do
-		local attacker = buildFakeCombatant("SelfTestPunchAttacker", Vector3.new(900, 5, 0), Vector3.new(900, 5, 1))
+		local attacker = buildFakeCombatant("SelfTestHitAttacker", Vector3.new(900, 5, 0), Vector3.new(900, 5, 1))
 		StatusService.Register(attacker)
 		CombatService.Register(attacker, nil, "Fist")
-
-		local swing = Combat.swingFor("Fist") :: Combat.Swing
-		local tolerance = Config.Combat.HitTolerance
 
 		local startedAt = Workspace:GetServerTimeNow()
 		local started = CombatService.AttackStart(attacker)
@@ -1346,37 +1336,66 @@ local function testCombatService(results: { Check })
 			end
 		end
 
-		CombatService.AttackHit(attacker, 1) -- reported immediately: well before punch 1's window opens
+		CombatService.AttackHit(attacker, 1) -- reported immediately: well before hit 1's window opens
 		expect(
 			results,
-			"CombatService: an AttackHit reported too early is dropped (punch 1 not consumed)",
+			"CombatService: an AttackHit reported too early is dropped (hit 1 not consumed)",
 			attacker:GetAttribute("Attacking") == true
 		)
 
-		waitUntilElapsed((swing.punches[1].hitWindow.min + swing.punches[1].hitWindow.max) / 2) -- safely inside punch 1's window
+		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2) -- safely inside hit 1's window
 		CombatService.AttackHit(attacker, 1) -- the real, accepted report
-		CombatService.AttackHit(attacker, 1) -- a duplicate report for the same, now-landed punch
+		CombatService.AttackHit(attacker, 1) -- a duplicate report for the same, now-landed hit
 		expect(
 			results,
-			"CombatService: a duplicate AttackHit for a landed punch is dropped, not double-counted",
+			"CombatService: a duplicate AttackHit for a landed hit is dropped, not double-counted",
 			attacker:GetAttribute("Attacking") == true
 		)
 
 		CombatService.AttackHit(attacker, 5) -- wildly out of order
 		expect(results, "CombatService: an out-of-order AttackHit index is dropped", attacker:GetAttribute("Attacking") == true)
 
+		-- M3-FIX4-S: cancel is per-hit now - hit 1 (Jab) already landed, but
+		-- hit 2 (Heavy) is the new "next unlanded hit", and elapsed so far
+		-- (~hit 1's own window midpoint) is still well inside HEAVY's own
+		-- cancelUntil (1.05s) - so this is accepted, unlike the old flat
+		-- "only before hit 1 lands" rule.
 		CombatService.AttackCancel(attacker)
 		expect(
 			results,
-			"CombatService: AttackCancel once punch 1 has landed is rejected - the attack carries through",
-			attacker:GetAttribute("Attacking") == true
+			"CombatService: AttackCancel is honoured for hit 2 while inside ITS OWN cancelUntil, even though hit 1 already landed",
+			attacker:GetAttribute("Attacking") == false
 		)
 
-		-- Just past punch 2's window (elapsed target: max + tolerance + 0.1),
-		-- but well short of the watchdog (max + tolerance + swing.timeout =
+		StatusService.Unregister(attacker)
+		CombatService.Unregister(attacker)
+		attacker:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestHitTooLateAttacker", Vector3.new(920, 5, 0), Vector3.new(920, 5, 1))
+		StatusService.Register(attacker)
+		CombatService.Register(attacker, nil, "Fist")
+
+		local tolerance = Config.Combat.HitTolerance
+		local startedAt = Workspace:GetServerTimeNow()
+		CombatService.AttackStart(attacker)
+
+		local function waitUntilElapsed(targetElapsed: number)
+			local remaining = targetElapsed - (Workspace:GetServerTimeNow() - startedAt)
+			if remaining > 0 then
+				task.wait(remaining)
+			end
+		end
+
+		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
+		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2
+
+		-- Just past hit 2's window (elapsed target: max + tolerance + 0.1),
+		-- but well short of the watchdog (max + tolerance + style.timeout =
 		-- 1.5s later still) - late enough to be rejected, not so late the
 		-- watchdog has already ended the attack out from under this check.
-		waitUntilElapsed(swing.punches[2].hitWindow.max + tolerance + 0.1)
+		waitUntilElapsed(fist.chain[2].hitWindow.max + tolerance + 0.1)
 		CombatService.AttackHit(attacker, 2)
 		expect(
 			results,
@@ -1396,18 +1415,14 @@ local function testCombatService(results: { Check })
 
 		CombatService.AttackStart(attacker)
 		CombatService.AttackCancel(attacker)
-		expect(
-			results,
-			"CombatService: AttackCancel inside the cancel window ends the attack",
-			attacker:GetAttribute("Attacking") == false
-		)
+		expect(results, "CombatService: AttackCancel inside the cancel window ends the attack", attacker:GetAttribute("Attacking") == false)
 
-		-- Bryan 2026-09-28: a cancel costs no recovery at all (cancelRecovery
-		-- = 0) - the attacker can immediately swing again to bait-and-punish.
+		-- Fist's cancelInto is "Any": free to act again immediately, no
+		-- extra cooldown - clearAttack always uses a 0 delay on a cancel.
 		local restarted = CombatService.AttackStart(attacker)
 		expect(
 			results,
-			"CombatService: a cancelled attack can restart immediately (cancelRecovery = 0)",
+			"CombatService: cancelInto \"Any\" lets the attacker restart immediately, no recovery",
 			restarted == true and attacker:GetAttribute("Attacking") == true
 		)
 
@@ -1421,15 +1436,14 @@ local function testCombatService(results: { Check })
 		StatusService.Register(attacker)
 		CombatService.Register(attacker, nil, "Fist")
 
-		local swing = Combat.swingFor("Fist") :: Combat.Swing
 		local tolerance = Config.Combat.HitTolerance
 
 		CombatService.AttackStart(attacker)
-		task.wait(swing.cancelWindow + tolerance + 0.3) -- run well past the cancel window closing
+		task.wait(fist.chain[1].cancelUntil + tolerance + 0.3) -- run well past hit 1's own cancelUntil
 		CombatService.AttackCancel(attacker)
 		expect(
 			results,
-			"CombatService: AttackCancel after the cancel window closes is rejected",
+			"CombatService: AttackCancel after the next unlanded hit's own cancelUntil is rejected",
 			attacker:GetAttribute("Attacking") == true
 		)
 
@@ -1438,23 +1452,139 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
+	-- REVIEW-M3-FIX4-S H3: cancelling is free only before any hit in the
+	-- chain has landed (the block right above this one). Cancelling AFTER a
+	-- hit already landed costs the same cooldown a full chain would
+	-- (NextAttackAt = startedAt + style.recovery + chain[1].hitWindow.min),
+	-- so "land hit 1, cancel, restart" can't out-DPS a full chain.
 	do
-		local attacker = buildFakeCombatant("SelfTestInterruptAttacker", Vector3.new(1000, 5, 0), Vector3.new(1000, 5, 3))
-		local target = buildFakeCombatant("SelfTestInterruptTarget", Vector3.new(1000, 5, 3), Vector3.new(1000, 5, 0))
+		local attacker = buildFakeCombatant("SelfTestCancelAfterHitAttacker", Vector3.new(980, 5, 0), Vector3.new(980, 5, 1))
+		StatusService.Register(attacker)
+		CombatService.Register(attacker, nil, "Fist")
+
+		local startedAt = Workspace:GetServerTimeNow()
+		CombatService.AttackStart(attacker)
+
+		local function waitUntilElapsed(targetElapsed: number)
+			local remaining = targetElapsed - (Workspace:GetServerTimeNow() - startedAt)
+			if remaining > 0 then
+				task.wait(remaining)
+			end
+		end
+
+		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
+		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2
+
+		CombatService.AttackCancel(attacker) -- still well inside hit 2's own cancelUntil
+		expect(results, "CombatService: AttackCancel after hit 1 landed still ends the attack", attacker:GetAttribute("Attacking") == false)
+
+		local restartedTooSoon = CombatService.AttackStart(attacker)
+		expect(
+			results,
+			"CombatService: cancelling after a landed hit is NOT free - an immediate restart is rejected (on cooldown)",
+			restartedTooSoon == false
+		)
+
+		waitUntilElapsed(fist.recovery + fist.chain[1].hitWindow.min + Config.Combat.HitTolerance + 0.1)
+		local restartedAfterCooldown = CombatService.AttackStart(attacker)
+		expect(results, "CombatService: once that cooldown passes, the attacker can restart normally", restartedAfterCooldown == true)
+
+		StatusService.Unregister(attacker)
+		CombatService.Unregister(attacker)
+		attacker:Destroy()
+	end
+
+	-- M3-FIX4-S rule 1/2: a Light "cannot be interrupted [by another
+	-- Light]"; a Heavy always can - via the kind-conditional check in
+	-- ApplyHit while the TARGET's own next unlanded hit is a Heavy, OR
+	-- (REVIEW-M3-FIX4-S M2, confirmed intended) via the ordinary Stun path
+	-- whenever a HEAVY lands on them, whatever they were doing - heavy stun
+	-- overrides even a Light in progress.
+	do
+		local attacker = buildFakeCombatant("SelfTestInterruptLightAttacker", Vector3.new(1000, 5, 0), Vector3.new(1000, 5, 3))
+		local target = buildFakeCombatant("SelfTestInterruptLightTarget", Vector3.new(1000, 5, 3), Vector3.new(1000, 5, 0))
 		StatusService.Register(attacker)
 		StatusService.Register(target)
 		CombatService.Register(attacker, nil, "Fist")
 		CombatService.Register(target, nil, "Fist")
 
 		CombatService.AttackStart(target)
-		expect(results, "CombatService: interrupt setup - the target has an attack in progress", target:GetAttribute("Attacking") == true)
+		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is a Light", target:GetAttribute("Attacking") == true)
 
-		local punch = (Combat.swingFor("Fist") :: Combat.Swing).punches[1]
-		CombatService.ApplyHit(attacker, target, punch, 1)
-
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
 		expect(
 			results,
-			"CombatService: getting hit mid-swing interrupts the target's own attack",
+			"CombatService: a Light can't be interrupted - getting hit while the next unlanded hit is Light leaves the attack running",
+			target:GetAttribute("Attacking") == true
+		)
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	-- REVIEW-M3-FIX4-S M2: unlike the Light-on-Light case right above, a
+	-- landed HEAVY interrupts a target's Light in progress too - not
+	-- through the kind-conditional check (which only fires for the
+	-- target's own pending Heavy), but through the ordinary Stun-turns-on
+	-- path (every Heavy applies a real Stun). That path is a deferred
+	-- BindableEvent (StatusService.Changed), so this polls for it instead
+	-- of asserting immediately (BUG-26's own fix pattern) - unlike the
+	-- kind-conditional check, which runs synchronously inside ApplyHit
+	-- itself and needs no poll.
+	do
+		local attacker = buildFakeCombatant("SelfTestInterruptHeavyOnLightAttacker", Vector3.new(1010, 5, 0), Vector3.new(1010, 5, 3))
+		local target = buildFakeCombatant("SelfTestInterruptHeavyOnLightTarget", Vector3.new(1010, 5, 3), Vector3.new(1010, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		CombatService.AttackStart(target)
+		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is a Light", target:GetAttribute("Attacking") == true)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- a Heavy landing
+		local interrupted = pollUntil(1, function()
+			return target:GetAttribute("Attacking") == false
+		end)
+		expect(
+			results,
+			"CombatService: a landed Heavy interrupts a target's Light in progress too (heavy stun overrides)",
+			interrupted
+		)
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	do
+		local attacker = buildFakeCombatant("SelfTestInterruptHeavyAttacker", Vector3.new(1020, 5, 0), Vector3.new(1020, 5, 3))
+		local target = buildFakeCombatant("SelfTestInterruptHeavyTarget", Vector3.new(1020, 5, 3), Vector3.new(1020, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		local startedAt = Workspace:GetServerTimeNow()
+		CombatService.AttackStart(target)
+		local remaining = (fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2 - (Workspace:GetServerTimeNow() - startedAt)
+		if remaining > 0 then
+			task.wait(remaining)
+		end
+		CombatService.AttackHit(target, 1) -- lands (or whiffs - either way advances to hit 2, the Heavy)
+		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is now the Heavy", target:GetAttribute("Attacking") == true)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1) -- any landed hit, light or heavy
+		expect(
+			results,
+			"CombatService: getting hit while the next unlanded hit is a Heavy interrupts the attack",
 			target:GetAttribute("Attacking") == false
 		)
 
@@ -1466,29 +1596,207 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- M3-FIX3-S point 5: CombatService.Attack (the NPC entry point) starts a
-	-- swing and schedules both AttackHit reports itself, at each punch's
-	-- window midpoint - polled with a deadline (BUG-26's own fix pattern),
-	-- not a fixed wait, since the scheduling itself uses task.delay.
+	-- M3-FIX4-S rule 3/4: Dagger's cancelInto is "Jab" - a successful cancel
+	-- immediately throws chain[1] as a new, feint-flagged attack; if THAT
+	-- gets blocked (not parried), the attacker eats Recovery.
 	do
-		local attacker = buildFakeCombatant("SelfTestNpcAttacker", Vector3.new(1050, 5, 0), Vector3.new(1050, 5, 1))
-		local target = buildFakeCombatant("SelfTestNpcTarget", Vector3.new(1050, 5, 3), Vector3.new(1050, 5, 0))
+		local attacker = buildFakeCombatant("SelfTestFeintAttacker", Vector3.new(1040, 5, 0), Vector3.new(1040, 5, 1))
+		StatusService.Register(attacker)
+		CombatService.Register(attacker, nil, "Dagger")
+
+		CombatService.AttackStart(attacker)
+		CombatService.AttackCancel(attacker)
+		expect(
+			results,
+			"CombatService: cancelInto \"Jab\" immediately starts a new (feint) attack - Attacking stays true, not false",
+			attacker:GetAttribute("Attacking") == true
+		)
+
+		StatusService.Unregister(attacker)
+		CombatService.Unregister(attacker)
+		attacker:Destroy()
+	end
+
+	-- REVIEW-M3-FIX4-S H2: a blocked feint doesn't just punish with Recovery -
+	-- it ends the feinter's WHOLE chain outright, so a later chain hit can
+	-- never sneak through once Recovery's own (short) duration runs out.
+	-- Drives a REAL in-progress attack (AttackStart, not just a bare
+	-- ApplyHit call) so entry.attack is genuinely live when the blocked hit
+	-- resolves, exercising the actual clearAttack path.
+	do
+		local attacker = buildFakeCombatant("SelfTestFeintBlockedAttacker", Vector3.new(1060, 5, 0), Vector3.new(1060, 5, 1))
+		local blocker = buildFakeCombatant("SelfTestFeintBlockedBlocker", Vector3.new(1060, 5, 2), Vector3.new(1060, 5, 0))
+		HealthService.Register(blocker, { maxHealth = 100 })
+		StatusService.Register(attacker)
+		StatusService.Register(blocker)
+		CombatService.Register(attacker, nil, "Dagger")
+		CombatService.Register(blocker, nil, "Fist")
+
+		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
+
+		CombatService.AttackStart(attacker)
+		expect(results, "CombatService: feint-block setup - the attacker has a real attack in progress", attacker:GetAttribute("Attacking") == true)
+
+		-- Not parrying (past the parry window, still holding): resolves to
+		-- a plain Blocked outcome, not a Parried one.
+		StatusService.Apply(blocker, "Block", nil, { value = 0 })
+
+		CombatService.ApplyHit(attacker, blocker, dagger, dagger.chain[1], 1, true) -- feint = true
+		expect(
+			results,
+			"CombatService: a blocked (not parried) feint hit punishes the attacker with Recovery",
+			StatusService.Has(attacker, "Recovery")
+		)
+		expect(
+			results,
+			"CombatService: a blocked feint ends the feinter's whole chain - Attacking clears immediately",
+			attacker:GetAttribute("Attacking") == false
+		)
+
+		CombatService.AttackHit(attacker, 2) -- the chain's own hit 2, reported anyway
+		expect(
+			results,
+			"CombatService: a hit-2 report after a blocked feint is dropped - there's no attack left to advance",
+			blockerHumanoid.Health == 100 and attacker:GetAttribute("Attacking") == false
+		)
+
+		HealthService.Unregister(blocker)
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(blocker)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(blocker)
+		attacker:Destroy()
+		blocker:Destroy()
+	end
+
+	-- M3-FIX4-S rule 6: HitCount +1 per landed hit from any source; the
+	-- `everyHits`th (6th) hit knocks back and resets the count to 0.
+	do
+		local attacker = buildFakeCombatant("SelfTestHitCountAttacker", Vector3.new(1080, 5, 0), Vector3.new(1080, 5, 1))
+		local target = buildFakeCombatant("SelfTestHitCountTarget", Vector3.new(1080, 5, 3), Vector3.new(1080, 5, 0))
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		local jab = fist.chain[1]
+		for i = 1, Combat.Knockback.everyHits - 1 do
+			CombatService.ApplyHit(attacker, target, fist, jab, 1)
+			expect(results, string.format("CombatService: HitCount is %d after %d landed hit(s)", i, i), target:GetAttribute("HitCount") == i)
+		end
+
+		CombatService.ApplyHit(attacker, target, fist, jab, 1) -- the 6th
+		expect(
+			results,
+			"CombatService: HitCount resets to 0 once it reaches Combat.Knockback.everyHits (a knockback fired)",
+			target:GetAttribute("HitCount") == 0
+		)
+
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	-- M3-FIX4-S rule 7: Bleed stacks (refreshing, not extending, its own
+	-- duration on a new stack) and HealthService ticks it once a second,
+	-- floored at 1 HP so it never knocks out by itself.
+	do
+		local attacker = buildFakeCombatant("SelfTestBleedAttacker", Vector3.new(1100, 5, 0), Vector3.new(1100, 5, 1))
+		local target = buildFakeCombatant("SelfTestBleedTarget", Vector3.new(1100, 5, 3), Vector3.new(1100, 5, 0))
+		HealthService.Register(target, { maxHealth = 100 })
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Dagger")
+		CombatService.Register(target, nil, "Dagger")
+		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
+
+		local stab = dagger.chain[1] -- Light, bleedStacks = 1
+		for i = 1, (dagger.bleed :: Combat.BleedTrait).maxStacks do
+			CombatService.ApplyHit(attacker, target, dagger, stab, 1)
+			expect(results, string.format("CombatService: Bleed stacks to %d", i), target:GetAttribute("Bleed") == i)
+		end
+
+		-- HealthService's own shared regen/bleed loop (Config.Health.Tick)
+		-- does the actual ticking, not CombatService - 3 stacks x 1 dmg/s
+		-- outpaces Idle's 2/s regen, net -1 HP/tick, so this reaches (and
+		-- then holds at) the floor within a couple of real ticks.
+		targetHumanoid.Health = 2
+		local flooredAlive = pollUntil(4, function()
+			return targetHumanoid.Health == 1
+		end)
+		expect(
+			results,
+			"HealthService: Bleed ticks damage and floors at 1 HP without knocking out",
+			flooredAlive and targetHumanoid.Health > 0 and not StatusService.Has(target, "Knocked")
+		)
+
+		HealthService.Unregister(target)
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	-- M3-FIX4-S rule 1: LightStun blocks Block (and parry) but the target
+	-- CAN still attack (and dash).
+	do
+		local attacker = buildFakeCombatant("SelfTestLightStunAttacker", Vector3.new(1120, 5, 0), Vector3.new(1120, 5, 1))
+		local target = buildFakeCombatant("SelfTestLightStunTarget", Vector3.new(1120, 5, 3), Vector3.new(1120, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
+		expect(
+			results,
+			"CombatService: a landed Light applies LightStun",
+			StatusService.Has(target, "LightStun") and target:GetAttribute("LightStunned") == true
+		)
+
+		CombatService.SetBlocking(target, true)
+		expect(results, "CombatService: LightStun blocks starting a Block", not StatusService.Has(target, "Block"))
+
+		local canStillAttack = CombatService.AttackStart(target)
+		expect(
+			results,
+			"CombatService: LightStun does NOT block starting an attack (rule 1: light-stunned can still attack)",
+			canStillAttack == true and target:GetAttribute("Attacking") == true
+		)
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
+	-- CombatService.Attack (the NPC entry point) starts a swing and
+	-- schedules every AttackHit report itself, at each hit's window
+	-- midpoint - polled with a deadline (BUG-26's own fix pattern), not a
+	-- fixed wait, since the scheduling itself uses task.delay.
+	do
+		local attacker = buildFakeCombatant("SelfTestNpcAttacker", Vector3.new(1150, 5, 0), Vector3.new(1150, 5, 1))
+		local target = buildFakeCombatant("SelfTestNpcTarget", Vector3.new(1150, 5, 3), Vector3.new(1150, 5, 0))
 		StatusService.Register(attacker)
 		StatusService.Register(target)
 		CombatService.Register(attacker, nil, "Fist")
 		CombatService.Register(target, nil, "Fist")
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
 
-		CombatService.Attack(attacker) -- the NPC entry point: schedules both punches itself
+		CombatService.Attack(attacker) -- the NPC entry point: schedules every hit itself
 
-		local swing = Combat.swingFor("Fist") :: Combat.Swing
-		local expectedDamage = swing.punches[1].damage + swing.punches[2].damage
-		local lastWindow = swing.punches[#swing.punches].hitWindow
+		local expectedDamage = fist.chain[1].damage + fist.chain[2].damage
+		local lastWindow = fist.chain[#fist.chain].hitWindow
 		local landedBoth = pollUntil(lastWindow.max + Config.Combat.HitTolerance + 0.5, function()
 			return targetHumanoid.Health <= (100 - expectedDamage) and attacker:GetAttribute("Attacking") == false
 		end)
 
-		expect(results, "CombatService: the NPC sequence lands both punches on a fake target", landedBoth)
+		expect(results, "CombatService: the NPC sequence lands both chain hits on a fake target", landedBoth)
 
 		StatusService.Unregister(attacker)
 		StatusService.Unregister(target)

@@ -41,15 +41,27 @@ local WALK_SPEED = 16
 local RUN_SPEED = WALK_SPEED * Combat.Run.speedMult
 
 -- Statuses that cancel/forbid Run and Dash (StatusService names, not the
--- client-facing attribute names).
+-- client-facing attribute names). M3-FIX4-S: Recovery (a punished feint)
+-- also forbids a dash, same as the three that already did; LightStun does
+-- NOT (rule 1: "they CAN attack and dash" while light-stunned).
 local BLOCKS_RUN: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true }
-local BLOCKS_DASH: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
+local BLOCKS_DASH: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Recovery = true }
 
 type Entry = {
 	owner: Player?,
 	modifiers: { [string]: number },
 	running: boolean,
 	lastDashAt: number?,
+	-- M3-FIX4-S: the equipped style's own traits (Combat.Style.speedMult/
+	-- dashCooldownMult), set by SetStyle. Kept OUTSIDE the `modifiers` min-
+	-- pool (below) since a style can be a genuine speed BOOST (Dagger's
+	-- 1.10) - EffectiveMultiplier's "smallest active modifier wins" is a
+	-- debuff-stacking rule, not something a boost should ever have to beat;
+	-- these multiply the walk/run baseline directly instead, same as
+	-- `running` already picking walk vs. run baseline before the stack
+	-- applies. 1.0/1.0 (Fist's own numbers) until SetStyle says otherwise.
+	styleSpeedMult: number,
+	styleDashCooldownMult: number,
 	intFold: Folder?,
 	movementSpeed: Folder?,
 	runningValue: BoolValue?,
@@ -224,7 +236,7 @@ local function applyWalkSpeed(character: Model, entry: Entry)
 	if humanoid == nil then
 		return
 	end
-	local baseline = if entry.running then RUN_SPEED else WALK_SPEED
+	local baseline = (if entry.running then RUN_SPEED else WALK_SPEED) * entry.styleSpeedMult
 	local mult = MovementService.EffectiveMultiplier(entry.modifiers)
 	local speed = math.max(0, baseline * mult)
 	humanoid.WalkSpeed = speed
@@ -236,6 +248,29 @@ local function applyWalkSpeed(character: Model, entry: Entry)
 end
 
 -- ==================== public API ====================
+
+-- M3-FIX4-S: applies a fighting style's own speedMult/dashCooldownMult
+-- traits (Shared/Data/Combat.luau). Unknown style name: a no-op, logged,
+-- so a bad `.weapon` argument or a data typo can't silently strand a
+-- combatant on stale multipliers. Safe to call before MovementService.
+-- Register has run for `character` (a no-op then too, matching every other
+-- setter here) - CombatService.Register calls this right after its own
+-- registration, whichever order the two services' PlayerService.Ready
+-- listeners happen to fire in.
+function MovementService.SetStyle(character: Model, styleName: string)
+	local entry = registered[character]
+	if entry == nil then
+		return
+	end
+	local style = Combat.styleFor(styleName)
+	if style == nil then
+		log:Warn(string.format("SetStyle(%s, %s): unknown style", character.Name, styleName))
+		return
+	end
+	entry.styleSpeedMult = style.speedMult
+	entry.styleDashCooldownMult = style.dashCooldownMult
+	applyWalkSpeed(character, entry)
+end
 
 function MovementService.SetModifier(character: Model, name: string, mult: number)
 	local entry = registered[character]
@@ -301,8 +336,12 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		end
 	end
 
+	-- M3-FIX4-S: the equipped style's own dashCooldownMult scales the
+	-- cooldown (Dagger's 0.75 = a quarter shorter); Fist's 1.0 leaves it
+	-- unchanged.
+	local cooldown = Combat.Dash.cooldown * entry.styleDashCooldownMult
 	local now = Workspace:GetServerTimeNow()
-	if not MovementService.CanDash(now, entry.lastDashAt, Combat.Dash.cooldown) then
+	if not MovementService.CanDash(now, entry.lastDashAt, cooldown) then
 		return false
 	end
 
@@ -319,7 +358,7 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 
 	entry.lastDashAt = now
 	pcall(function()
-		character:SetAttribute("NextDashAt", now + Combat.Dash.cooldown)
+		character:SetAttribute("NextDashAt", now + cooldown)
 	end)
 
 	local ok, err = pcall(function()
@@ -389,6 +428,10 @@ function MovementService.Register(character: Model, owner: Player?)
 		owner = owner,
 		modifiers = {},
 		running = false,
+		-- Fist's own numbers (1.0/1.0, i.e. "no change") until SetStyle says
+		-- otherwise - the common case, since every combatant starts on Fist.
+		styleSpeedMult = 1.0,
+		styleDashCooldownMult = 1.0,
 		bridgeChildren = {},
 		humanoidConns = {},
 	}
