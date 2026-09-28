@@ -41,7 +41,7 @@ Bryan's direction: break it into phases, get each right before the next. Keep ev
 5. Dev: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mission streak <n>`.
 6. Playtest (Bryan): a full run, an intercepted run (two players or a Target dummy knockout), each modifier once, the board closing at 20 studs, the streak surviving a rejoin.
 
-**Needs from Bryan before 5C starts:** the seven city Frames live inside `MissionHandler.rbxm` (binary); the lead will have their text and layout dumped once (about 30k tokens) or Bryan pastes the route and lore text into `docs/reference/`; and confirm the intended trade routes for Jaddaty's Hut and the sixth destination the old table called `CITYF`.
+**Bryan (2026-09-29):** approved. Routes are placeholders (only Qarzin is built; the other cities are markers), so the data keeps the old route table with the two broken names pointed at real placeholder cities and a comment. The client mission GUI is rebuilt in full, including the modifier view buttons (semi-broken before: stacked listeners, M14) and the pay preview (L14). The city panels and lore text are dumped by the lead into `docs/reference/m5c-studio-dump.md`.
 
 ### Phase 5D: Supply and demand: DEFERRED (Bryan, 2026-09-29) until more shops exist
 

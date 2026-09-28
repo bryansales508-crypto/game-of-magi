@@ -152,3 +152,12 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | ready: Bryan plays when home | Bryan OK |
 | M8 Missions | Bounty Hunting, Carriage Escort and other mission types, the bounty board (Bryan, 2026-09-29: pushed out of M5) | todo |
 | M9 Weapons and gear | The Rathole blacksmith, several weapon types as fighting styles, gear with stats (Bryan, 2026-09-29: after multiple weapon types exist) | todo |
+
+### Phase 5C Delivery missions (approved 2026-09-29; 5D deferred; 5E/5F -> M9/M8)
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M5C-00 | Read-only Studio dump of the delivery board, city panels, delivery parts | lead (agent) | running | `docs/reference/m5c-studio-dump.md` |
+| M5C-01 | `Shared/Data/Cities.luau` + `MissionService` (board per player, route check, modifiers from history/personality, package, timers, instant payout to an interceptor, courier beacon, streak/history, Magoi/Rukh) + schema v4; old mission scripts removed | server-builder | todo | Full run, intercepted run, each modifier; no money printed; no loops left |
+| M5C-02 | `MissionController`: the same board and panels, start button, tracker, modifier pop-outs and buttons fixed, timers, pay preview with modifiers, beacon visuals | client-builder | todo | Same look; buttons work; panel only with a quest |
+| M5C-03 | PLAYTEST.md 5C scenarios; Bryan plays | Bryan + lead | todo | Bryan OK |
