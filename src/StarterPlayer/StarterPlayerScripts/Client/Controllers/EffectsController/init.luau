@@ -20,13 +20,26 @@
 -- since those are the local player's own screen and controls.
 --
 -- M3-FIX3 (Bryan, 2026-09-28): AttackCancelled{reason} splits two ways --
--- "cancelled" (a right-click before the first wind-up marker) flashes the
--- character's old "Cancel" Highlight; "interrupted" (hit mid wind-up)
--- plays the same stagger reaction as a landed Hit and stops that
+-- "cancelled" (a right-click before the next hit's own cancel point)
+-- flashes the character's old "Cancel" Highlight; "interrupted" (hit mid
+-- wind-up) plays the same stagger reaction as a landed Hit and stops that
 -- character's fist track if the local CombatController (their own, on
 -- their own machine) left one playing. This file has no access to
 -- CombatController's private swing state -- for the interrupted case it
 -- finds the actual playing track itself, generically, by animation id.
+--
+-- M3-FIX4 (Bryan, 2026-09-28): fighting styles. Hit{kind} ("Light" or
+-- "Heavy") replaces the old Hit{finisher} for picking the reaction: a
+-- Heavy plays the existing stagger, a Light doesn't (point 8 -- there's
+-- no separate light-flinch animation asset, so "a brief flinch only if a
+-- suitable track exists" is "nothing" in practice today). Two new
+-- CombatEvent kinds: Bleed{target, stacks} attaches/removes the old bleed
+-- particles and cut decal by stack count (also mirrored by the `Bleed`
+-- attribute directly, so a character that already has stacks when this
+-- controller starts still shows them); KnockedBack{target} is just the
+-- existing hit particle -- the old game never had a working camera shake
+-- (docs/AUDIT.md D3: `CameraShaker`/`CameraShake` were unused dead code),
+-- so per point 7 ("if the old code had one, else nothing") this adds none.
 --
 -- Assets reused:
 --   Cloned onto every character's Torso/Head already, by CharacterService
@@ -84,6 +97,7 @@ local player = Players.LocalPlayer
 local VFX = ReplicatedFirst:WaitForChild("VFX")
 local HitEffects = VFX:WaitForChild("HitEffects")
 local MiscEffects = VFX:WaitForChild("MiscEffects")
+local StatusEffects = VFX:WaitForChild("StatusEffects")
 local CancelTemplate = MiscEffects:WaitForChild("Cancel")
 local BlindTemplate = ReplicatedFirst:WaitForChild("GUI"):WaitForChild("MiscGUI"):WaitForChild("Blind")
 
@@ -122,6 +136,10 @@ local SWING_ANIMATION_IDS = {
 	["rbxassetid://115894342135428"] = true,
 }
 
+-- ReplicatedFirst.VFX.StatusEffects (docs/reference/m2-studio-dump.md #3):
+-- BleedDroplet1-2 are ParticleEmitters, BleedCut a Part with a Decal.
+local BLEED_DROPLET_NAMES = { "BleedDroplet1", "BleedDroplet2" }
+
 -- ==================== per-character caches (weak keys: no manual cleanup needed) ====================
 
 type BlockReactionTracks = { blockStagger: AnimationTrack, blockBreak: AnimationTrack }
@@ -132,11 +150,18 @@ type BlockReactionTracks = { blockStagger: AnimationTrack, blockBreak: Animation
 -- fact), `hit` marks which punch indices already landed for THIS swing.
 type SwingMissState = { generation: number, hit: { [number]: boolean } }
 
+-- One bleed particle, remembered alongside the Rate Bryan actually
+-- authored on it (`baseRate`), so intensity-by-stacks can scale it
+-- without compounding on repeated updates.
+type BleedEmitter = { emitter: ParticleEmitter, baseRate: number }
+type BleedVisuals = { emitters: { BleedEmitter }, cutPart: BasePart? }
+
 local lastRandomIndex = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { [string]: number } }
 local staggerTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { AnimationTrack } }
 local blockReactionTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BlockReactionTracks }
 local swingMissState = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: SwingMissState }
 local stunnedWatcherRunning = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: boolean }
+local bleedVisualsByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BleedVisuals }
 
 local function pickIndex(character: Instance, key: string, count: number): number
 	local perCharacter = lastRandomIndex[character]
@@ -303,6 +328,92 @@ local function stopSwingTrackIfPlaying(character: Instance, fadeTime: number?)
 	end
 end
 
+-- ==================== bleed (M3-FIX4: Bleed attribute / CombatEvent) ====================
+
+local function clearBleedVisual(character: Instance)
+	local visuals = bleedVisualsByCharacter[character]
+	if not visuals then
+		return
+	end
+	bleedVisualsByCharacter[character] = nil
+	for _, info in visuals.emitters do
+		info.emitter:Destroy()
+	end
+	if visuals.cutPart then
+		visuals.cutPart:Destroy()
+	end
+end
+
+local function buildBleedVisual(torso: BasePart): BleedVisuals
+	local emitters: { BleedEmitter } = {}
+	for _, name in BLEED_DROPLET_NAMES do
+		local template = StatusEffects:FindFirstChild(name)
+		if template and template:IsA("ParticleEmitter") then
+			local clone = template:Clone()
+			clone.Parent = torso
+			table.insert(emitters, { emitter = clone, baseRate = template.Rate })
+		end
+	end
+
+	local cutPart: BasePart? = nil
+	local cutTemplate = StatusEffects:FindFirstChild("BleedCut")
+	if cutTemplate and cutTemplate:IsA("BasePart") then
+		local clone = cutTemplate:Clone()
+		clone.Anchored = false
+		clone.CanCollide = false
+		clone.Massless = true
+		clone.CFrame = torso.CFrame
+		clone.Parent = torso
+		local weld = Instance.new("Weld")
+		weld.Part0 = torso
+		weld.Part1 = clone
+		weld.Parent = clone
+		cutPart = clone
+	end
+
+	return { emitters = emitters, cutPart = cutPart }
+end
+
+-- Intensity by stacks (point 7): each emitter's Rate scales off the Rate
+-- Bryan actually authored on the template, not off whatever it was left
+-- at from a previous update.
+local function updateBleedVisual(character: Instance, stacks: number)
+	if stacks <= 0 then
+		clearBleedVisual(character)
+		return
+	end
+
+	local torso = character:FindFirstChild("Torso")
+	if not (torso and torso:IsA("BasePart")) then
+		return
+	end
+
+	local visuals = bleedVisualsByCharacter[character]
+	if not visuals then
+		visuals = buildBleedVisual(torso)
+		bleedVisualsByCharacter[character] = visuals
+		-- M3B-03 point 4: trainer dummies are ordinary characters, not
+		-- Players, so there's no CharacterRemoving to piggyback on for
+		-- them -- Instance.Destroying is the one signal every character
+		-- (player or NPC) fires exactly once when actually removed
+		-- (`.dummy clear`, a knockout reset that rebuilds the model,
+		-- ...), so this is the one place cleanup is guaranteed to run
+		-- regardless of what kind of character this is. The cloned
+		-- emitters/decal are parented inside the character and would be
+		-- destroyed right along with it either way; this just makes sure
+		-- the bookkeeping table (bleedVisualsByCharacter) drops them at
+		-- the same moment instead of waiting on the weak table's GC.
+		character.Destroying:Connect(function()
+			clearBleedVisual(character)
+		end)
+	end
+
+	for _, info in visuals.emitters do
+		info.emitter.Enabled = true
+		info.emitter.Rate = info.baseRate * stacks
+	end
+end
+
 -- ==================== stunned pose (spec item 5) ====================
 -- While `Stunned` is true and nothing else (a swing, block or dash) is
 -- currently animating the character, hold one of the same stagger poses
@@ -311,6 +422,10 @@ end
 -- so the watcher is fully bounded to the stunned window: nothing is left
 -- listening once Stunned goes false, unlike hooking every future
 -- AnimationTrack's Stopped signal for the rest of the character's life.
+--
+-- M3-FIX4 point 8: this pose is keyed off `Stunned` only, deliberately --
+-- `LightStunned` gets no pose change at all (Bryan's own wording), so
+-- there's no equivalent watcher for it here.
 
 local function isCombatAnimationPlaying(animator: Animator, ignoreTrack: AnimationTrack?): boolean
 	for _, track in animator:GetPlayingAnimationTracks() do
@@ -359,7 +474,13 @@ local function watchStunnedPose(character: Instance)
 	end)
 end
 
-local function wireStunnedWatcher(character: Instance)
+-- Every per-character, attribute-driven reaction that isn't tied to a
+-- specific CombatEvent: the Stunned pose (spec item 5) and the Bleed
+-- visual (point 7 -- also driven by the Bleed CombatEvent below, but
+-- watching the attribute directly means a character that already has
+-- stacks by the time this controller sees it still shows them, not just
+-- ones that bleed again after).
+local function wireCombatAttributeWatchers(character: Instance)
 	character:GetAttributeChangedSignal("Stunned"):Connect(function()
 		if character:GetAttribute("Stunned") == true then
 			watchStunnedPose(character)
@@ -367,6 +488,15 @@ local function wireStunnedWatcher(character: Instance)
 	end)
 	if character:GetAttribute("Stunned") == true then
 		watchStunnedPose(character)
+	end
+
+	character:GetAttributeChangedSignal("Bleed"):Connect(function()
+		local bleed = character:GetAttribute("Bleed")
+		updateBleedVisual(character, if typeof(bleed) == "number" then bleed else 0)
+	end)
+	local initialBleed = character:GetAttribute("Bleed")
+	if typeof(initialBleed) == "number" and initialBleed > 0 then
+		updateBleedVisual(character, initialBleed)
 	end
 end
 
@@ -475,34 +605,34 @@ end
 local function onCharacterAdded(character: Model)
 	teardownCharacter()
 	currentCharacter = character
-	wireStunnedWatcher(character)
+	wireCombatAttributeWatchers(character)
 end
 
--- Other players' Stunned pose: same watcher, but these characters never
--- go through teardownCharacter/currentCharacter (that's local-player-only
--- knockout state), so this is the only wiring they need.
+-- Other players' Stunned pose / Bleed visual: same watchers, but these
+-- characters never go through teardownCharacter/currentCharacter (that's
+-- local-player-only knockout state), so this is the only wiring they need.
 local function onOtherCharacterAdded(character: Model)
-	wireStunnedWatcher(character)
+	wireCombatAttributeWatchers(character)
 end
 
 -- ==================== CombatEvent reactions ====================
 
--- M3-FIX3: a swing can carry several punches (`punchCount`), each with
--- its own Hit report (`punchIndex`); a punch that gets no Hit within its
--- own window plays its own miss sound, independent of the others. Staggers
--- each punch's check by MISS_GRACE_SECONDS * punchIndex, since the real
--- per-punch hitWindow (Shared/Data/Combat.luau, server-only) isn't
+-- M3-FIX3/M3-FIX4: a swing can carry several hits (`hitCount`), each with
+-- its own Hit report (`hitIndex`); a hit that gets no Hit within its own
+-- window plays its own miss sound, independent of the others. Staggers
+-- each hit's check by MISS_GRACE_SECONDS * hitIndex, since the real
+-- per-hit hitWindow (Shared/Data/Combat.luau, server-only) isn't
 -- available here -- same flagged fallback as before, just applied per
--- punch instead of once per swing.
-local function onSwing(character: Instance, punchCount: number)
+-- hit instead of once per swing.
+local function onSwing(character: Instance, hitCount: number)
 	local previous = swingMissState[character]
 	local generation = (previous and previous.generation or 0) + 1
 	local state: SwingMissState = { generation = generation, hit = {} }
 	swingMissState[character] = state
 
-	for punchIndex = 1, punchCount do
-		task.delay(MISS_GRACE_SECONDS * punchIndex, function()
-			if swingMissState[character] == state and not state.hit[punchIndex] then
+	for hitIndex = 1, hitCount do
+		task.delay(MISS_GRACE_SECONDS * hitIndex, function()
+			if swingMissState[character] == state and not state.hit[hitIndex] then
 				playSound(character, "MissSound" .. pickIndex(character, "miss", MISS_SOUND_COUNT))
 			end
 		end)
@@ -512,11 +642,11 @@ end
 local function onHit(data: any)
 	local attacker = data.attacker
 	if typeof(attacker) == "Instance" then
-		-- The punch landed; mark it so its own miss check is a no-op.
+		-- The hit landed; mark it so its own miss check is a no-op.
 		local state = swingMissState[attacker]
 		if state then
-			local punchIndex = if typeof(data.punchIndex) == "number" then data.punchIndex else 1
-			state.hit[punchIndex] = true
+			local hitIndex = if typeof(data.hitIndex) == "number" then data.hitIndex else 1
+			state.hit[hitIndex] = true
 		end
 	end
 
@@ -525,15 +655,26 @@ local function onHit(data: any)
 		return
 	end
 
-	if data.finisher == true then
+	-- M3-FIX4: `kind` ("Light" | "Heavy") replaces the old `finisher`
+	-- flag. A Heavy reuses the old finisher sound and the existing
+	-- stagger; a Light gets the ordinary hit sound and no animation --
+	-- "no knockback reaction, a brief flinch only if a suitable track
+	-- exists" (point 8), and there isn't one today.
+	local isHeavy = data.kind == "Heavy"
+	if isHeavy then
 		playSound(target, "LightHitSoundFin")
 	else
 		playSound(target, "LightHitSound" .. pickIndex(target, "hit", HIT_SOUND_COUNT))
 	end
 	emitParticle(target, "HitParticle", 1)
-	playStagger(target)
+	if isHeavy then
+		playStagger(target)
+	end
 end
 
+-- M3-FIX4 point 9: a blocked feint is just a normal Blocked event -- the
+-- server already resolved feint-vs-real before broadcasting, so there's
+-- nothing feint-specific to react to here.
 local function onBlocked(data: any)
 	local target = data.target
 	if typeof(target) ~= "Instance" then
@@ -614,6 +755,32 @@ local function onAttackCancelled(data: any)
 	end
 end
 
+-- The `Bleed` attribute watcher (wireCombatAttributeWatchers) is the
+-- primary path; this just applies the same update immediately off the
+-- broadcast itself rather than waiting on the attribute's own replication.
+local function onBleed(data: any)
+	local target = data.target
+	if typeof(target) ~= "Instance" then
+		return
+	end
+	local stacks: number
+	if typeof(data.stacks) == "number" then
+		stacks = data.stacks
+	else
+		local bleed = target:GetAttribute("Bleed")
+		stacks = if typeof(bleed) == "number" then bleed else 0
+	end
+	updateBleedVisual(target, stacks)
+end
+
+local function onKnockedBack(data: any)
+	local target = data.target
+	if typeof(target) ~= "Instance" then
+		return
+	end
+	emitParticle(target, "HitParticle", 1)
+end
+
 local function onDash(data: any)
 	local character = data.character
 	if typeof(character) ~= "Instance" then
@@ -656,8 +823,8 @@ local function onCombatEvent(kind: any, data: any)
 	if kind == "Swing" then
 		local character = data.character
 		if typeof(character) == "Instance" then
-			local punchCount = if typeof(data.punchCount) == "number" then data.punchCount else 1
-			onSwing(character, punchCount)
+			local hitCount = if typeof(data.hitCount) == "number" then data.hitCount else 1
+			onSwing(character, hitCount)
 		end
 	elseif kind == "Hit" then
 		onHit(data)
@@ -673,6 +840,10 @@ local function onCombatEvent(kind: any, data: any)
 		onRecovered(data)
 	elseif kind == "AttackCancelled" then
 		onAttackCancelled(data)
+	elseif kind == "Bleed" then
+		onBleed(data)
+	elseif kind == "KnockedBack" then
+		onKnockedBack(data)
 	elseif kind == "Dash" then
 		onDash(data)
 	end

@@ -35,6 +35,10 @@ local STATE_KEYS = {
 	"walkSpeed",
 	"health",
 	"maxHealth",
+	-- M3B-06: shown once DevService's snapshot has it (M3B-05, built in
+	-- parallel); formatSnapshotValue already renders "n/a" for a missing
+	-- key, so this is harmless before that lands.
+	"livesLeft",
 	"position",
 	"saveScope",
 	"freshSave",

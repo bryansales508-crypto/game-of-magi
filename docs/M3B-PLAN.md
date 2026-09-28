@@ -12,7 +12,7 @@ Follows the fighting-style framework (M3-FIX4). Bryan's direction, 2026-09-28: p
 
 ## 2. Unlock
 
-- Save field `Progress.Unlocks = { Combat = false }` (schema v3, migration fills `Combat = true` for existing saves so nobody loses what they have). The tutorial sets it later; for now `.unlock combat [player]` and `.lock combat [player]`.
+- Save field `Meta.Unlocks = { Combat = false }` (schema v3; in `Meta` so it survives death: once a player completes the tutorial, every future life starts with fist combat; a wipe makes a new player again; migration fills `Combat = true` for existing saves). Bryan 2026-09-28: per player for ever, repeatable later, no menu indicator needed. The tutorial sets it later; for now `.unlock combat [player]` and `.lock combat [player]`.
 - `Config.Combat.UnlockedByDefault = true` until the tutorial exists (new lives start unlocked in Studio and live); Bryan flips it to false when the teacher NPC ships. Locked players can't enter the stance; the client shows a short "You don't know how to fight yet" line in the menu font.
 
 ## 3. Training dummies (each is an NPC style of its own, behavior tree + config, Fist style)
@@ -47,3 +47,7 @@ Bryan runs one scenario per dummy (spawn, do the taught answer, confirm the log 
 **Later (new milestone after M6):** talking NPCs and the tutorial: the alley teacher, dialogue, the dummies introduced one by one, the unlock at the end.
 
 **Reminder of your open follow-ups:** combat feel, rank and Rukh tweaks, heartbeat sound, afterlife cutscene, viewport framing, NPC animations, NPC type attribute, Studio-only script deletions, and now: stance animations and marker names per style.
+
+## 6. Lives (Bryan, 2026-09-28)
+
+A character has 4 lives (`Config.Life.LivesPerCharacter`). Every death from any cause except a heart attack costs one life and the character simply respawns, no scene. The death that takes the last life plays the return-to-the-Rukh scene and wipes to a completely new character with 4 lives. A fatal heart attack ignores lives and always wipes. Knockouts are not deaths. The combat unlock is account-wide (`Meta.Unlocks.Combat`), so the new character keeps it. `Meta.Lives` stays the incarnation count; the new field is `Character.LivesLeft`. Dev: `.lives <n>`, `.kill`.

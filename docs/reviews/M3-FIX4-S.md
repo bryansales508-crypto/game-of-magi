@@ -52,3 +52,6 @@ Fix: when cancelling after ≥1 landed hit, set `NextAttackAt = startedAt + chai
 1. The new rock-paper-scissors combat is mostly right. Bleed, hit-count knockback, dagger speed and the dev commands all work as you designed them.
 2. There are three real problems. The client looks for the hit list under the wrong name (a one-word fix). A blocked dagger feint doesn't actually stop the rest of the combo. And "jab, cancel, jab" lets players attack much faster than a full combo is meant to.
 3. After those are fixed, you should decide one thing: can a fast jabber keep someone from ever blocking, or do you want a short immunity?
+
+## Fix round (lead review, 2026-09-28, commit 8b0c8bb): PASS
+H2 blocked feint ends the chain; H3 cancel after a landed hit charges the chain cadence (feint path respects it); M2 heavy overrides a light (documented, self-tested); L1, L2 done; H1 fixed on client-m3. Merged into main with client-m3.
