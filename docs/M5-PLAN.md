@@ -8,6 +8,7 @@ Bryan's direction: break it into phases, get each right before the next. Keep ev
 - **No mixed coins, whole numbers only.** A price is shown in the largest coin where the rounded amount is at least 1: 40 Copper stays 40 Copper; 60 Copper rounds to 1 Silver; 103 to 1 Silver; 150 to 2 Silver (round half up); Silver amounts round up into Gold the same way. No decimals anywhere.
 - **Paying:** NO automatic change. A price is in one coin and you pay with that coin; if you hold the wrong coins the purchase fails with the old flavour line, and the Bank (later milestone) is the only place to exchange. Rewards stay Copper for now (Bryan, 2026-09-29); Silver and Gold come only from the dev `.coins` command until the Bank milestone.
 - **Money changer:** out; Bank milestone later.
+- **Coin sound:** the `CoinReward` sound plays on ANY coin change (Bryan, 2026-09-29), owned by the client purse controller from 5A on.
 - **Clothes shop:** its own phase. Keep the stock, racks, mannequins, hat table and cloak stands as they are; integrate with the new save and combat code; fix the hover highlight (only the hovering player sees it) and the colour bug (owning a black shirt must not block buying the white one). "Each rack sells the same pants" is expected today: only one pants design exists. The shop data gets a pants pool so Bryan can add designs later and racks pick from it.
 
 ## Phases
