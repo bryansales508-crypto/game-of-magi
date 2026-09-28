@@ -1330,8 +1330,21 @@ local function testCombatService(results: { Check })
 		local swing = Combat.swingFor("Fist") :: Combat.Swing
 		local tolerance = Config.Combat.HitTolerance
 
+		local startedAt = Workspace:GetServerTimeNow()
 		local started = CombatService.AttackStart(attacker)
 		expect(results, "CombatService: AttackStart begins an attack and sets Attacking", started == true and attacker:GetAttribute("Attacking") == true)
+
+		-- REVIEW-M3-FIX3-S M1: waits are measured against CombatService's OWN
+		-- clock (Workspace:GetServerTimeNow(), matching attack.startedAt) and
+		-- top up to a target ELAPSED time rather than chaining fixed waits, so
+		-- an earlier task.wait's overshoot (BUG-23/BUG-26: it's a lower bound
+		-- only) can't push a later check past the watchdog by surprise.
+		local function waitUntilElapsed(targetElapsed: number)
+			local remaining = targetElapsed - (Workspace:GetServerTimeNow() - startedAt)
+			if remaining > 0 then
+				task.wait(remaining)
+			end
+		end
 
 		CombatService.AttackHit(attacker, 1) -- reported immediately: well before punch 1's window opens
 		expect(
@@ -1340,7 +1353,7 @@ local function testCombatService(results: { Check })
 			attacker:GetAttribute("Attacking") == true
 		)
 
-		task.wait((swing.punches[1].hitWindow.min + swing.punches[1].hitWindow.max) / 2) -- safely inside punch 1's window
+		waitUntilElapsed((swing.punches[1].hitWindow.min + swing.punches[1].hitWindow.max) / 2) -- safely inside punch 1's window
 		CombatService.AttackHit(attacker, 1) -- the real, accepted report
 		CombatService.AttackHit(attacker, 1) -- a duplicate report for the same, now-landed punch
 		expect(
@@ -1359,7 +1372,11 @@ local function testCombatService(results: { Check })
 			attacker:GetAttribute("Attacking") == true
 		)
 
-		task.wait(swing.punches[2].hitWindow.max + tolerance + 0.3) -- run well past punch 2's window closing
+		-- Just past punch 2's window (elapsed target: max + tolerance + 0.1),
+		-- but well short of the watchdog (max + tolerance + swing.timeout =
+		-- 1.5s later still) - late enough to be rejected, not so late the
+		-- watchdog has already ended the attack out from under this check.
+		waitUntilElapsed(swing.punches[2].hitWindow.max + tolerance + 0.1)
 		CombatService.AttackHit(attacker, 2)
 		expect(
 			results,

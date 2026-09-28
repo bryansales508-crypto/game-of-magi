@@ -438,7 +438,7 @@ function CombatService.ApplyHit(attacker: Model, target: Model, punch: Combat.Pu
 
 	Remotes.Server.FireAll("CombatEvent", "Hit", { attacker = attacker, target = target, punchIndex = punchIndex, knockback = punch.knockback })
 	if combatLogEnabled then
-		log:Info(string.format("%s hit %s with %s's %s for %d", attacker.Name, target.Name, punch.name, punch.name, punch.damage))
+		log:Info(string.format("%s hit %s with %s for %d", attacker.Name, target.Name, punch.name, punch.damage))
 	end
 end
 
@@ -783,10 +783,22 @@ function CombatService.Attack(character: Model)
 	if not started or swing == nil then
 		return
 	end
+	local entry = registered[character]
+	if entry == nil then
+		return
+	end
+	-- REVIEW-M3-FIX3-S L2: captured so a stale timer from an attack that got
+	-- interrupted/cancelled/re-started can't consume a LATER attack's punch
+	-- (today's numbers happen to make that unreachable, but nothing should
+	-- depend on that staying true).
+	local generation = entry.attackGeneration
 
 	for index, punch in swing.punches do
 		local midpoint = (punch.hitWindow.min + punch.hitWindow.max) / 2
 		task.delay(midpoint, function()
+			if entry.attackGeneration ~= generation then
+				return
+			end
 			CombatService.AttackHit(character, index)
 		end)
 	end
@@ -889,7 +901,12 @@ function CombatService.Unregister(character: Model)
 	-- nothing left to tell (the character is gone or leaving); this just
 	-- stops a stale watchdog from touching a re-registered entry later
 	-- (attackGeneration on THIS entry no longer matters once it's orphaned).
+	-- REVIEW-M3-FIX3-S L1: clear the attribute too, for tidiness, while the
+	-- character instance still exists (a corpse, or a leaving player).
 	entry.attack = nil
+	pcall(function()
+		character:SetAttribute("Attacking", false)
+	end)
 	if entry.ancestryConn then
 		entry.ancestryConn:Disconnect()
 	end

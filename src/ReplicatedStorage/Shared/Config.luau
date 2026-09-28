@@ -93,20 +93,37 @@ Config.Health = {
 	CombatTierSeconds = 6,
 }
 
--- M3-FIX3-S: the animation-driven punch flow (Shared/Data/Combat.luau's
--- Swing/Punch shape). Not weapon numbers - those stay in Combat.luau.
+-- M3-FIX3-S/M3-FIX3-C: the animation-driven punch flow (Shared/Data/
+-- Combat.luau's Swing/Punch shape). Not weapon numbers - those stay in
+-- Combat.luau. One click plays one fist animation containing several
+-- punches; the client reports each punch off the animation's own events.
 Config.Combat = {
 	-- Seconds of slack added to BOTH ends of a punch's hitWindow when the
 	-- server checks an AttackHit report (and to AttackCancel's cancelWindow),
 	-- absorbing network round-trip and animation-marker jitter between the
 	-- client's animation clock and the server's own.
 	HitTolerance = 0.15,
+	-- The real marker names can't be read from the .rbxm file, so this is a
+	-- starting guess - Bryan edits it to match his animation's actual event
+	-- names. With LogMarkers on (the default), CombatController logs every
+	-- KeyframeReached AND every configured marker that's actually reached
+	-- on the fist track (`Log:Info("marker: <name> at <t>s")`), so the real
+	-- names and their timing show up in Output even before the guess is
+	-- right.
+	Markers = {
+		Windup = { "Windup1", "Windup2" },
+		Hit = { "Hit1", "Hit2" },
+	},
+	LogMarkers = true,
+	-- How long EffectsController flashes the "Cancel" Highlight for a
+	-- cancelled (not interrupted) attack.
+	CancelFlashSeconds = 0.25,
 	-- M3-FIX3-C (client): how much CombatController slows the fist
 	-- animation during each wind-up (1 = normal speed, less = slower). A
 	-- pure client feel knob - the server never reads this, it only ever
 	-- validates hitWindow, so retuning this doesn't need to match any
 	-- server timing.
-	WindupSpeed = 0.6,
+	WindupSpeed = 0.5,
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -161,31 +178,6 @@ Config.Npc = {
 	Animations = { Walk = "", Run = "", Flinch = "" },
 }
 
--- M3-FIX3 (Bryan, 2026-09-28): one click plays one fist animation
--- containing two punches; the client reports each punch off the
--- animation's own events. The real marker names can't be read from the
--- .rbxm file, so Markers below is a starting guess -- Bryan edits it to
--- match his animation's actual event names. With LogMarkers on (the
--- default), CombatController logs every KeyframeReached AND every
--- configured marker that's actually reached on the fist track
--- (`Log:Info("marker: <name> at <t>s")`), so the real names and their
--- timing show up in Output even before the guess is right.
-Config.Combat = {
-	Markers = {
-		Windup = { "Windup1", "Windup2" },
-		Hit = { "Hit1", "Hit2" },
-	},
-	LogMarkers = true,
-	-- How long EffectsController flashes the "Cancel" Highlight for a
-	-- cancelled (not interrupted) attack.
-	CancelFlashSeconds = 0.25,
-	-- Bryan tunes: the fist track's playback speed while a wind-up plays,
-	-- so the punch is readable and interruptible/cancellable instead of
-	-- flashing by; back to 1 (full speed) the instant that punch's hit
-	-- marker is reached. 1 = no slowdown.
-	WindupSpeed = 0.5,
-}
-
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
 -- Emitters are exactly the ParticleEmitter names under
 -- ReplicatedFirst.VFX.RukhEffects; Bryan can rename, add or remap any of
@@ -214,16 +206,15 @@ table.freeze(Config.Aging)
 table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
+table.freeze(Config.Combat.Markers.Windup)
+table.freeze(Config.Combat.Markers.Hit)
+table.freeze(Config.Combat.Markers)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
 table.freeze(Config.Npc)
-table.freeze(Config.Combat.Markers.Windup)
-table.freeze(Config.Combat.Markers.Hit)
-table.freeze(Config.Combat.Markers)
-table.freeze(Config.Combat)
 table.freeze(Config.Rukh.Emitters.White)
 table.freeze(Config.Rukh.Emitters.Gold)
 table.freeze(Config.Rukh.Emitters.Black)
