@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 5 (Economy and missions): plan awaiting Bryan's decisions** (M4 gate passed 2026-09-28; tweaks are Bryan's follow-up; see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build. M3B (stance, unlock, dummies, lives) merged 2026-09-28, awaiting Bryan's playtest; M5 plan awaiting his decisions** (see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -127,9 +127,9 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | reviewed and fixed (lead checked the fix round; merges with the rest of M3B) | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
-| M3B-02 | Seven trainer dummies (trees, `Config.Npc.Trainers`, `.dummy spawn|clear|list`, name billboards, reset after knockout) | server-builder | reviewed and fixed (lead checked; merges with the rest of M3B) | Each dummy does only its habit; spawn/clear work |
-| M3B-03 | Client: `C` stance toggle, clicks only in stance, weapon-click enters combat, stance idle placeholders, locked message | client-builder | reviewed PASS (client branch; merges with M3B-01/02) | Same on every client; no style sent by the client |
+| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | done (merged) | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
+| M3B-02 | Seven trainer dummies (trees, `Config.Npc.Trainers`, `.dummy spawn|clear|list`, name billboards, reset after knockout) | server-builder | done (merged) | Each dummy does only its habit; spawn/clear work |
+| M3B-03 | Client: `C` stance toggle, clicks only in stance, weapon-click enters combat, stance idle placeholders, locked message | client-builder | done (merged) | Same on every client; no style sent by the client |
 | M3B-04 | PLAYTEST.md M3B scenarios (one per dummy); Bryan plays; agent only if a check needs tooling | Bryan + lead | scenarios drafted; Bryan plays when home | Bryan approves the feel |
-| M3B-05 | Lives per character: `Character.LivesLeft` (4), ordinary death costs one and respawns, the last one runs the afterlife wipe, a fatal heart attack wipes regardless; `.lives`, `.kill` | server-builder | fixing Opus review (respawn delay, two self-tests) | Rules hold in the self-test; Meta.Unlocks survives a new character |
-| M3B-06 | Client: `Died {cause="lastLife"}` plays the Rukh scene without the heartbeat; overlay shows livesLeft | client-builder | done (lead-checked; client branch, merges with the server tasks) | Same scene, no pulses; no stacking |
+| M3B-05 | Lives per character: `Character.LivesLeft` (4), ordinary death costs one and respawns, the last one runs the afterlife wipe, a fatal heart attack wipes regardless; `.lives`, `.kill` | server-builder | done (merged) | Rules hold in the self-test; Meta.Unlocks survives a new character |
+| M3B-06 | Client: `Died {cause="lastLife"}` plays the Rukh scene without the heartbeat; overlay shows livesLeft | client-builder | done (merged) | Same scene, no pulses; no stacking |
