@@ -502,3 +502,6 @@ Setup: Play, `.state`. Marker names per style must already match your animations
 
 ### M3B-J Cleanup
 - `.dummy clear` removes them all; `.dummy list` shows none; a spawned dummy that gets knocked out gets up with full health. **Pass:** all three; no errors.
+
+### M3B-K Lives
+- `.state` shows `livesLeft: 4`. `.kill`: you respawn as the same character, `livesLeft: 3`, no scene. `.lives 1` then `.kill`: the afterlife scene plays WITHOUT the heartbeat, then a brand-new character with `livesLeft: 4`, `lives` (incarnation) up by one, and combat still unlocked (press C works without redoing anything). `.lives 4`, `.age 70`, `.mortal on`, `.heart fatal`: wipe regardless of lives. Knock yourself out on a dummy (`.hp 5`): `livesLeft` unchanged. **Pass:** every line; no errors.
