@@ -93,6 +93,22 @@ Config.Health = {
 	CombatTierSeconds = 6,
 }
 
+-- M3-FIX3-S: the animation-driven punch flow (Shared/Data/Combat.luau's
+-- Swing/Punch shape). Not weapon numbers - those stay in Combat.luau.
+Config.Combat = {
+	-- Seconds of slack added to BOTH ends of a punch's hitWindow when the
+	-- server checks an AttackHit report (and to AttackCancel's cancelWindow),
+	-- absorbing network round-trip and animation-marker jitter between the
+	-- client's animation clock and the server's own.
+	HitTolerance = 0.15,
+	-- M3-FIX3-C (client): how much CombatController slows the fist
+	-- animation during each wind-up (1 = normal speed, less = slower). A
+	-- pure client feel knob - the server never reads this, it only ever
+	-- validates hitWindow, so retuning this doesn't need to match any
+	-- server timing.
+	WindupSpeed = 0.6,
+}
+
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
 Config.Sfx = {
 	Heartbeat = "rbxassetid://102383912898742",
@@ -173,6 +189,7 @@ table.freeze(Config.Aging)
 table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)
+table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
