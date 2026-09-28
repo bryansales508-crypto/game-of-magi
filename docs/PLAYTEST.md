@@ -568,3 +568,8 @@ Dev commands: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mis
 
 ### M5C-F Nothing left behind
 - Open and close the board ten times, start and fail three runs, then `.state`: no lingering loops or duplicated trackers; Output has no per-frame spam. **Pass.**
+
+### M5C-G The intercepted mark (needs two players or `.mission intercept`)
+- Get intercepted once: the board now shows the "merchants doubt you" line and every offer is half the usual number; `.mission mark` (or `.state`) shows 1 stack. Get intercepted again: a quarter. Keep going: it never drops below a tenth.
+- The interceptor of a marked courier gets the same reduced Copper and Bounty and NO Black Rukh while the courier is marked.
+- Complete one delivery while marked: it pays the reduced amount, then the mark is gone and the next board is back to full offers. `.mission mark 0` clears it by hand.
