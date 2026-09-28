@@ -160,4 +160,4 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M5C-00 | Read-only Studio dump of the delivery board, city panels, delivery parts | lead (agent) | running | `docs/reference/m5c-studio-dump.md` |
 | M5C-01 | `Shared/Data/Cities.luau` + `MissionService` (board per player, route check, modifiers from history/personality, package, timers, instant payout to an interceptor, courier beacon, streak/history, Magoi/Rukh) + schema v4; old mission scripts removed | server-builder | todo | Full run, intercepted run, each modifier; no money printed; no loops left |
 | M5C-02 | `MissionController`: the same board and panels, start button, tracker, modifier pop-outs and buttons fixed, timers, pay preview with modifiers, beacon visuals | client-builder | todo | Same look; buttons work; panel only with a quest |
-| M5C-03 | PLAYTEST.md 5C scenarios; Bryan plays | Bryan + lead | todo | Bryan OK |
+| M5C-03 | PLAYTEST.md 5C scenarios; Bryan plays | Bryan + lead | scenarios drafted | Bryan OK |

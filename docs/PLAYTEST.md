@@ -544,3 +544,27 @@ Setup: `.coins 500 5 0` so you can afford things. Walk to the Qarzin clothes sta
 
 ### M5B-D Hover
 - Hover a mannequin: it highlights for you. A second player (or the F8 overlay on a second client) does not see your highlight. If you can't run two clients, skip and say so. **Pass.**
+
+---
+
+## M5C Delivery missions (Bryan runs)
+
+Dev commands: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mission streak <n>`, `.state` (shows the streak, Magoi, Rukh, bounty), `.coins`, `.dummy spawn StraightSam` (for an interception test), `.combat log on`.
+
+### M5C-A The board
+- Walk to the Qarzin delivery part, press E: the same board opens with the route's cities, each with its modifiers; click a city: its lore panel and the pay preview (with modifiers) show; the modifier view buttons open the pop-outs; click another city then Start: the tracker points at the LAST city clicked (the old stacked-listener bug is gone). Walk 20 studs away: the board closes. **Pass:** all of it, no errors.
+
+### M5C-B A full run
+- Start a run: the package straps on your back, the quest tracker and modifier line show, the beacon highlights you every so often (ask a second client, or note the timing in Output with `.combat log on` off and the mission log on). Reach the destination marker: paid in Copper (the coin sound), about 10 Magoi, 1 Gold Rukh, the streak +1, the package gone. **Pass:** `.state` confirms; a rejoin keeps the streak.
+
+### M5C-C Interception pays the ambusher
+- Two clients (or spawn StraightSam near you with a run active and let him knock you out): the courier's run fails and pays nothing; the attacker is paid the run's reward on the spot, gets 1 Black Rukh and a bounty number in `.state`. Total coins across both never exceed one reward. **Pass.**
+
+### M5C-D Each modifier once
+- Use `.mission start <city>` repeatedly (or the board) until you have seen: Time Crunch (timer; expiry fails the run), Courier Loop (a return point after arrival), Highly Valuable (higher pay), Heavy Cargo (slower; speed restored on ANY end: finish, fail, interception), VIP, Fragile Package (a hit taken fails it), Clear the Route (no error). **Pass:** each behaves and cleans up; no red lines.
+
+### M5C-E Bad city
+- With `execute_luau` or the board disabled, `.mission start NotACity` -> refused. From the board, only route cities are offered. **Pass.**
+
+### M5C-F Nothing left behind
+- Open and close the board ten times, start and fail three runs, then `.state`: no lingering loops or duplicated trackers; Output has no per-frame spam. **Pass.**
