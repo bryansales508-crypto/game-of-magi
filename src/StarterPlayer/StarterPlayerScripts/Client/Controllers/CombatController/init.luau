@@ -700,7 +700,7 @@ end
 -- (own and others -- point 6) whose WeaponSet attribute is "Dagger";
 -- removed the moment it changes to anything else. Grip CFrame and the
 -- Motor6D-to-"Right Arm" approach are the old RS/Modules/Combat/
--- WeaponHandler.luau's `rig`, kept verbatim (git show 862c195:
+-- WeaponHandler.luau's `rig`, kept verbatim (git show a70f9ae:
 -- src/ReplicatedStorage/Modules/Combat/WeaponHandler.luau, the commit
 -- before that file was deleted). The real, functional tool comes with
 -- the M5 shop; this is only ever a look.
