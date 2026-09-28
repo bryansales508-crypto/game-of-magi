@@ -42,3 +42,6 @@ Fix: wait only until just past the window, measured from the swing start: `task.
 1. The server now checks every punch report the client sends: right time, right order, once each, and never while stunned, blocking or after a cancel. The hit itself is still decided by the server.
 2. Getting hit mid-swing cancels your swing. Right-click cancels only before the first wind-up, and costs nothing, so you can swing again at once.
 3. Two fixes before merging: both branches added a `Config.Combat` table, and combined, the server's timing slack vanishes (every swing would get stuck). Also one self-test checks at the wrong moment and would falsely fail.
+
+## Fix round (lead review, 2026-09-28, commit e2c50a1): PASS
+H1: the client branch was merged in and there is now one `Config.Combat` table (Markers, LogMarkers, CancelFlashSeconds, WindupSpeed, HitTolerance). M1 self-test timing fixed; L1, L2, N1, N2 done. Merged into main together with the client side.
