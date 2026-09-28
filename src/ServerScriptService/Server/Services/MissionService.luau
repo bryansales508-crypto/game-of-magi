@@ -172,6 +172,19 @@ function MissionService.ApplyOfferMultiplier(pay: number, offerMultiplier: numbe
 	return math.floor(pay * offerMultiplier)
 end
 
+-- Pure (REVIEW-M5C-01C H1): the board-preview pay for a cached
+-- `BoardDestination`, applying `offerMultiplier` FRESH every call rather
+-- than one baked in at roll time - `baseAmount`/`modifiers` are genuinely
+-- fixed the moment a destination is rolled (M3), but the intercepted mark
+-- can change while that same cache entry is still sitting in `boardRolls`
+-- (a DIFFERENT destination's run gets intercepted, a clearing delivery,
+-- `.mission mark`), so this is the one place that reads it. No modifier is
+-- ever pre-failed for a preview (empty failedKeys - the best case, same as
+-- ComputePay).
+function MissionService.PreviewPay(baseAmount: number, modifiers: { ModifierRoll }, offerMultiplier: number): number
+	return MissionService.ApplyOfferMultiplier(MissionService.CurrentPay(baseAmount, modifiers, {}), offerMultiplier)
+end
+
 -- Pure: the courier's OWN mark advances by one on every interception -
 -- never cleared by a failure, only by ClearIntercepted below (a completed
 -- delivery).
@@ -299,12 +312,19 @@ end
 
 -- ==================== runtime types ====================
 
+-- REVIEW-M5C-01C H1: deliberately carries NO offerMultiplier/pay of its
+-- own - `rank`/`population`/`streak` (baked into `baseAmount`) and the
+-- modifier roll are genuinely fixed the moment a destination is rolled
+-- (M3's whole point), but the intercepted mark is NOT: it can change while
+-- this exact cache entry is still sitting in `boardRolls` (an interception
+-- on a DIFFERENT destination's run, a clearing delivery, `.mission mark`),
+-- so baking a multiplier in here would go stale exactly like it just did.
+-- PreviewPay (below) applies the CURRENT multiplier fresh every time this
+-- is read, so the cache can never disagree with `Progress.Intercepted`.
 type BoardDestination = {
 	key: string,
 	modifiers: { ModifierRoll },
 	baseAmount: number,
-	offerMultiplier: number, -- the intercepted mark, fixed at roll time like baseAmount
-	pay: number, -- preview: baseAmount x every rolled modifier's multiplier x offerMultiplier (the best case)
 }
 
 type Board = {
@@ -437,6 +457,12 @@ function MissionService.WireModifiers(modifiers: { ModifierRoll }): { any }
 end
 
 local function sendBoard(player: Player, board: Board, data: Data)
+	-- REVIEW-M5C-01C H1: computed fresh from the CURRENT save, not cached -
+	-- a board destination's own `baseAmount`/`modifiers` are fixed at roll
+	-- time (M3), but the intercepted mark isn't, so it's applied here every
+	-- single send instead of being baked into the cache.
+	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
+
 	local destinationsPayload = {}
 	for _, destKey in Cities.Routes[board.city] do
 		local dest = board.destinations[destKey]
@@ -448,22 +474,21 @@ local function sendBoard(player: Player, board: Board, data: Data)
 				color = if city then city.color else { r = 1, g = 1, b = 1 },
 				lore = if city then city.lore else "",
 				image = if city then city.image else "",
-				pay = dest.pay,
+				pay = MissionService.PreviewPay(dest.baseAmount, dest.modifiers, offerMultiplier),
 				modifiers = MissionService.WireModifiers(dest.modifiers),
 			})
 		end
 	end
 	-- The intercepted mark (Bryan): a headline figure for the board itself -
 	-- `intercepted` the player's CURRENT stack count, `offerMultiplier` what
-	-- it's worth right now. Every destination's own `pay` above is already
-	-- multiplied (fixed at whichever moment IT was rolled/cached - REVIEW-
-	-- M5C-01 M3), so these two fields are informational display only, not a
-	-- second multiplication the client needs to apply itself.
+	-- it's worth right now - the same multiplier every destination's `pay`
+	-- above was just computed with, so the header and the offers can never
+	-- disagree.
 	Remotes.Server.Fire("MissionBoard", player, {
 		city = board.city,
 		destinations = destinationsPayload,
 		intercepted = data.Progress.Intercepted,
-		offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted),
+		offerMultiplier = offerMultiplier,
 	})
 end
 
@@ -476,9 +501,7 @@ local function rollDestination(player: Player, data: Data, destKey: string): Boa
 	local factors = MissionService.FactorsFor(data, destKey)
 	local modifiers = Cities.RollModifiers(factors, rollDie)
 	local baseAmount = MissionService.BaseAmount(rankIndex, population, streak)
-	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
-	local pay = MissionService.ApplyOfferMultiplier(MissionService.ComputePay(rankIndex, population, streak, modifiers), offerMultiplier)
-	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount, offerMultiplier = offerMultiplier, pay = pay }
+	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount }
 end
 
 -- M3: reuses a player's existing roll for `destKey` if one is still cached
@@ -905,11 +928,14 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 	local rawPayout = MissionService.InterceptPay(run.baseAmount, run.modifiers, run.preHitFailedKeys or run.failedKeys)
 	-- The intercepted mark: run.offerMultiplier reflects the courier's OWN
 	-- stacks as they stood at roll/start time - i.e. before this very
-	-- interception's own mark - since nothing else can touch Progress.
-	-- Intercepted while a run is active. offerMultiplier < 1 means the
-	-- courier was ALREADY marked from an earlier interception: the
-	-- attacker's payout is reduced the same way a board offer would be, and
-	-- (Bryan) no Black Rukh at all while the victim is marked.
+	-- interception's own mark. `.mission mark [n]` CAN still edit
+	-- Progress.Intercepted while a run is active (that's the point of the dev
+	-- command), but it only ever changes what the NEXT roll/start reads; this
+	-- run's own offerMultiplier was captured once, at its start, and never
+	-- moves again for it. offerMultiplier < 1 means the courier was ALREADY
+	-- marked from an earlier interception (or a `.mission mark`) at that
+	-- start: the attacker's payout is reduced the same way a board offer
+	-- would be, and (Bryan) no Black Rukh at all while the victim is marked.
 	local payout = MissionService.ApplyOfferMultiplier(rawPayout, run.offerMultiplier)
 	EconomyService.GiveCopperValue(attacker, payout, string.format("Delivery interception: %s", run.destination))
 	if MissionService.InterceptorEarnsBlackRukh(run.offerMultiplier) then
@@ -1003,13 +1029,34 @@ local function onMissionStart(player: Player, destinationKey: string)
 		return
 	end
 
+	local data = DataService.Get(player)
+	if data == nil then
+		return
+	end
+
+	-- REVIEW-M5C-01C H1: the intercepted mark as it stands RIGHT NOW, not
+	-- whatever it was when this destination was rolled/cached - it can
+	-- change while a cache entry sits in boardRolls (a DIFFERENT
+	-- destination's run getting intercepted, a clearing delivery, `.mission
+	-- mark`), and only this moment (the run actually starting) is what
+	-- should fix `run.offerMultiplier` for its whole lifetime.
+	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
+
 	local originPosition = board.part.Position
 	closeBoard(player)
 	clearCachedRoll(player, destinationKey) -- M3: used up - the next board open re-rolls this destination
-	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount, dest.offerMultiplier)
+	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount, offerMultiplier)
 
 	if missionLogEnabled then
-		log:Info(string.format("%s started a delivery from %s to %s (%d Copper)", player.Name, board.city, destinationKey, dest.pay))
+		log:Info(
+			string.format(
+				"%s started a delivery from %s to %s (%d Copper)",
+				player.Name,
+				board.city,
+				destinationKey,
+				MissionService.PreviewPay(dest.baseAmount, dest.modifiers, offerMultiplier)
+			)
+		)
 	end
 end
 
@@ -1248,11 +1295,18 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	-- this bypasses the board/proximity check entirely already, same spirit
 	-- as every other dev shortcut in this codebase.
 	local dest = rollDestination(target, data, cityKey)
+	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
 
 	closeBoard(target)
-	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount, dest.offerMultiplier)
+	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount, offerMultiplier)
 
-	return string.format("%s's delivery to %s started: %d Copper, modifiers: %s", target.Name, cityKey, dest.pay, modNames(dest.modifiers))
+	return string.format(
+		"%s's delivery to %s started: %d Copper, modifiers: %s",
+		target.Name,
+		cityKey,
+		MissionService.PreviewPay(dest.baseAmount, dest.modifiers, offerMultiplier),
+		modNames(dest.modifiers)
+	)
 end
 
 local function missionFinishDevCommand(caller: Player, args: { string }): string

@@ -436,6 +436,37 @@ local function testDataService(results: { Check })
 		)
 		standIn:Destroy()
 	end
+
+	-- REVIEW-M5C-01C L1: a single misbehaving OnReleasing handler must not
+	-- block the release - RunReleasing pcalls each handler individually, so
+	-- one that errors still lets every later handler run AND still lets
+	-- endSession run.
+	do
+		local ranAfterError = false
+		local released = false
+		DataService.OnReleasing(function()
+			error("REVIEW-M5C-01C L1: deliberate self-test error")
+		end)
+		DataService.OnReleasing(function()
+			ranAfterError = true
+		end)
+		local standIn = Instance.new("Folder")
+		local fakePlayer = (standIn :: any) :: Player
+		DataService.RunReleasing(fakePlayer, function()
+			released = true
+		end)
+		expect(
+			results,
+			"DataService: RunReleasing still runs handlers registered after one that errors (REVIEW-M5C-01C L1)",
+			ranAfterError
+		)
+		expect(
+			results,
+			"DataService: RunReleasing still runs endSession even when an OnReleasing handler errors (REVIEW-M5C-01C L1)",
+			released
+		)
+		standIn:Destroy()
+	end
 end
 
 -- M1-04S: the join state machine is pure (no Player needed), so every
@@ -3052,6 +3083,62 @@ local function testMissionService(results: { Check })
 		local twoStackOffer = MissionService.ApplyOfferMultiplier(base, MissionService.OfferMultiplier(2))
 		expect(results, "MissionService (intercepted mark): a marked player's board offer is half the unmarked one", oneStackOffer == math.floor(base * 0.5))
 		expect(results, "MissionService (intercepted mark): two stacks quarters the offer, not just halves it again", twoStackOffer == math.floor(base * 0.25))
+	end
+
+	-- REVIEW-M5C-01C H1: the exact scenario the review found broken - open
+	-- a board (cached), get intercepted on a DIFFERENT run, reopen the SAME
+	-- board without it ever re-rolling: the cached destination must still
+	-- show the new, reduced price (and a run started from it must carry
+	-- the new offerMultiplier and withhold the interceptor's Black Rukh),
+	-- because the fix stores NO multiplier in the cache at all - PreviewPay
+	-- applies whatever `Progress.Intercepted` says right now, every call.
+	do
+		local cache: { [string]: any } = {}
+		local modifiers = { fakeMod("HeavyCargo", 1.3) }
+		local baseAmount = MissionService.BaseAmount(2, 0, 0)
+		local rolls = 0
+		local function roll()
+			rolls += 1
+			return { key = "Qarzin", modifiers = modifiers, baseAmount = baseAmount }
+		end
+
+		-- First open: 0 stacks, cached at "full price".
+		local dest = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local fullPrice = MissionService.PreviewPay(dest.baseAmount, dest.modifiers, MissionService.OfferMultiplier(0))
+		expect(results, "MissionService (H1): the destination is rolled exactly once", rolls == 1)
+
+		-- Simulate this player getting intercepted on a DIFFERENT run (their
+		-- own stacks go 0 -> 1) - the cached entry for THIS destination is
+		-- never touched, never re-rolled, never told about the mark.
+		local stacksAfterInterception = 1
+
+		-- Reopen the SAME board: GetOrRoll hits the cache (still 1 total
+		-- roll), but PreviewPay must reflect the NEW multiplier.
+		local destAgain = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local halvedPrice = MissionService.PreviewPay(destAgain.baseAmount, destAgain.modifiers, MissionService.OfferMultiplier(stacksAfterInterception))
+		expect(results, "MissionService (H1): reopening the board doesn't re-roll the cached destination", rolls == 1)
+		expect(
+			results,
+			"MissionService (H1): a board reopened after an interception shows the HALVED price, not the stale full price",
+			halvedPrice == math.floor(fullPrice * 0.5) and halvedPrice < fullPrice
+		)
+
+		-- Starting a run from that (still-cached) destination must carry
+		-- the CURRENT multiplier, not the one that was in effect when it
+		-- was first rolled.
+		local runOfferMultiplier = MissionService.OfferMultiplier(stacksAfterInterception)
+		expect(results, "MissionService (H1): a run started from the reopened board gets offerMultiplier 0.5, not 1.0", runOfferMultiplier == 0.5)
+		local intercepted = MissionService.ApplyOfferMultiplier(MissionService.InterceptPay(destAgain.baseAmount, destAgain.modifiers, {}), runOfferMultiplier)
+		expect(results, "MissionService (H1): intercepting a run from the reopened board pays the reduced amount", intercepted == halvedPrice)
+		expect(results, "MissionService (H1): intercepting a run from the reopened board earns NO Black Rukh", not MissionService.InterceptorEarnsBlackRukh(runOfferMultiplier))
+
+		-- A clearing delivery resets stacks to 0 - reopening again (same
+		-- cache entry, still never re-rolled) must show full price again.
+		local stacksAfterClearing = 0
+		local destOnceMore = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local fullPriceAgain = MissionService.PreviewPay(destOnceMore.baseAmount, destOnceMore.modifiers, MissionService.OfferMultiplier(stacksAfterClearing))
+		expect(results, "MissionService (H1): still never re-rolled after all this", rolls == 1)
+		expect(results, "MissionService (H1): after a clearing delivery, the reopened board is back to full price", fullPriceAgain == fullPrice)
 	end
 
 	-- The interceptor of an ALREADY-marked victim: reduced Copper (the same
