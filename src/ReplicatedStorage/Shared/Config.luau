@@ -397,6 +397,68 @@ table.freeze(Config.Rukh.Emitters)
 table.freeze(Config.Rukh)
 table.freeze(Config.Missions.Beacon)
 table.freeze(Config.Missions)
+
+-- M6 (docs/M6-PLAN.md, Bryan approved 2026-09-29): the world. Music, the
+-- shared day clock, the ocean and footsteps. The night look itself lives in
+-- Shared/Data/DayNight.luau, the region playlists in Shared/Data/Regions.luau.
+Config.World = {
+	Music = {
+		-- One volume for every playlist track (Bryan: the old code mixed 0.05
+		-- and 0.5 and felt finicky). Ambient loops keep their own volume in
+		-- Regions.luau.
+		Volume = 0.5,
+		CrossfadeSeconds = 1,
+		-- How often the client tests its position against the region boxes.
+		RegionPollSeconds = 0.25,
+	},
+	DayNight = {
+		-- The old game's Day/Night Cycle script: 10 real minutes of daylight
+		-- (06:00 to 18:00) and 6 of night. Day must stay longer than night
+		-- (Bryan). Total = one in-game day.
+		DaySeconds = 600,
+		NightSeconds = 360,
+		DawnHour = 6,
+		DuskHour = 18,
+		-- How long the palette blends at dawn and dusk, and how long a tagged
+		-- city light takes to fade on or off (seconds).
+		TransitionSeconds = 60,
+		LightFadeSeconds = 2,
+		-- The CollectionService tag Bryan puts on a lamp, torch or fire part
+		-- or model: its lights, fires and particles run at night only, and a
+		-- Neon part in it swaps to this material by day.
+		Tag = "CityLight",
+		DayMaterial = Enum.Material.SmoothPlastic,
+	},
+	Ocean = {
+		-- Off until Bryan deletes the 766 old wave scripts under
+		-- Workspace.MAP.OCEAN (docs/TINKER.md), which would otherwise fight
+		-- the client for the tile positions.
+		Enabled = false,
+		-- The old scripts' timing: tiles rise 2 studs over 15 s, hold 3 s,
+		-- fall 15 s; wave decals fade in over 10 s, out over 10 s, pause 10 s.
+		Amplitude = 2,
+		RiseSeconds = 15,
+		HoldSeconds = 3,
+		DecalFadeSeconds = 10,
+		DecalPauseSeconds = 10,
+		DecalVisibleTransparency = 0.95,
+		-- Tiles farther than this from the camera are left still (studs).
+		CullDistance = 6000,
+	},
+	Footsteps = {
+		WalkVolume = 0.3,
+		RunVolume = 0.5,
+		-- Sand and mud prints: how long one stays and how far below the
+		-- torso the raycast looks for the ground (studs).
+		PrintSeconds = 8,
+		PrintRayStuds = 6,
+	},
+}
+table.freeze(Config.World.Music)
+table.freeze(Config.World.DayNight)
+table.freeze(Config.World.Ocean)
+table.freeze(Config.World.Footsteps)
+table.freeze(Config.World)
 table.freeze(Config)
 
 return Config
