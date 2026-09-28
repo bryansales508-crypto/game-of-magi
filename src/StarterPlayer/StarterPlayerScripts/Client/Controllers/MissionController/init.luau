@@ -13,9 +13,16 @@
 --   MissionOpenBoard(cityKey), MissionStart(destinationKey), MissionExit()
 --     (client -> server intentions only).
 --   MissionUpdate (server -> client):
---     { state = "Started"|"Finished"|"Failed"|"Intercepted"|"Cleared",
---       destination, destinationPosition = {x,y,z}, modifiers,
---       returnPosition?, timerEnds?, pay }
+--     { state = "Started"|"Finished"|"Failed"|"Intercepted"|"Cleared"
+--              |"ModifierFailed", destination, destinationPosition = {x,y,z},
+--       modifiers, returnPosition?, timerEnds?, pay, key? }
+--     ModifierFailed (Bryan, follow-up): failing a modifier never ends the
+--     run by itself -- `key` names which modifier failed (matched against
+--     that modifier's own `key`, falling back to its `name`); that one
+--     modifier's BONUS button and pop-out grey out, everything else (run,
+--     tracker, quest box) stays exactly as it is. TimeCrunch's own 0:00 is
+--     just a countdown reaching zero -- the server is the one that decides
+--     the timer failed and sends this same state for it.
 --   Player attributes: OnMission, MissionDestination, MissionStreak, Bounty
 --     (consumed elsewhere; nothing here needs them directly). Character
 --     attribute: CourierBeacon (true while the beacon is on).
@@ -78,10 +85,13 @@ local BEACON_COLOR = Color3.fromRGB(239, 187, 65)
 local TIME_CRUNCH_NAME = "Time Crunch"
 local COURIER_LOOP_NAME = "Courier Loop"
 local COURIER_LOOP_RETURN_TEXT = "Return with the package to complete the Quest."
--- Old code's Time Crunch fail state (MissionDeliniation.luau's
--- conEnd/AncestryChanged branch): the Constraint text and the BONUS
--- button's own text both go this grey once the timer runs out.
-local TIME_CRUNCH_FAILED_COLOR = Color3.fromRGB(43, 43, 43)
+local MODIFIER_FAILED_TEXT = "Failed."
+-- Old code's modifier fail state (MissionDeliniation.luau's TimeCrunch/
+-- FragilePackage branches): the Constraint text says "Failed." and the
+-- BONUS button's own text goes this grey. Now server-driven for every
+-- modifier via MissionUpdate "ModifierFailed", not just TimeCrunch/
+-- FragilePackage.
+local MODIFIER_FAILED_COLOR = Color3.fromRGB(43, 43, 43)
 
 -- Cosmetic only (ProximityPrompt.ObjectText before the board replies with
 -- real destination data) -- exact text from m5c-studio-dump.md section 1,
@@ -117,7 +127,7 @@ local MERRIWEATHER_BOLD = Font.new(Font.fromEnum(Enum.Font.Merriweather).Family,
 
 -- ==================== types ====================
 
-type Modifier = { name: string, chance: number, text: string }
+type Modifier = { key: string?, name: string, chance: number, text: string }
 type Destination = {
 	key: string,
 	name: string,
@@ -126,6 +136,15 @@ type Destination = {
 	image: string,
 	pay: number,
 	modifiers: { Modifier },
+}
+
+-- One entry per modifier in an active run, keyed by that modifier's own
+-- `key` (falling back to `name`) -- how a MissionUpdate "ModifierFailed"
+-- finds the right BONUS button/pop-out to grey out.
+type ModifierUiEntry = {
+	constraint: TextLabel,
+	bonusButton: TextButton?,
+	failed: boolean,
 }
 
 type RunState = {
@@ -137,8 +156,8 @@ type RunState = {
 	boxDistanceLabel: TextLabel,
 	boxOnScreen: boolean,
 	modifierInstances: { Instance },
-	timeCrunchConstraint: TextLabel?,
-	timeCrunchBonusButton: TextButton?,
+	modifierUiByKey: { [string]: ModifierUiEntry },
+	timeCrunchKey: string?,
 	timerEnds: number?,
 	loopThread: thread?,
 }
@@ -307,15 +326,20 @@ end
 -- card) + ModChance (the percentage badge, parented into the popout so it
 -- shows/hides together with it) per modifier. One Activated connection per
 -- BONUS button, created fresh here every time -- FIX M14.
-local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHost: Instance, sink: { Instance })
+--
+-- `uiByKey`, when given (an active run only -- the board has no fail
+-- state), records each modifier's Constraint label and BONUS button under
+-- its own key so a later MissionUpdate "ModifierFailed" can find them.
+local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHost: Instance, sink: { Instance }, uiByKey: { [string]: ModifierUiEntry }?)
 	for _, modifier in modifiers do
 		local container = MOD_CONTAINER_TEMPLATE:Clone()
 		container.Parent = row
 		table.insert(sink, container)
 
 		local popOut = MOD_POP_OUT_TEMPLATE:Clone()
+		local constraint = (popOut :: any).Constraint :: TextLabel
 		;(popOut :: any).ModType.Text = modifier.name
-		;(popOut :: any).Constraint.Text = modifier.text
+		constraint.Text = modifier.text
 		table.insert(sink, popOut)
 
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
@@ -323,14 +347,19 @@ local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHo
 		chanceBadge.Parent = popOut
 
 		local bonusButton = (container :: any).BONUS
-		if bonusButton and bonusButton:IsA("TextButton") then
-			local idleTransparency = bonusButton.BackgroundTransparency
+		local typedBonusButton: TextButton? = if bonusButton and bonusButton:IsA("TextButton") then bonusButton else nil
+		if typedBonusButton then
+			local idleTransparency = typedBonusButton.BackgroundTransparency
 			local open = false
-			bonusButton.Activated:Connect(function()
+			typedBonusButton.Activated:Connect(function()
 				open = not open
-				bonusButton.BackgroundTransparency = if open then 0.75 else idleTransparency
+				typedBonusButton.BackgroundTransparency = if open then 0.75 else idleTransparency
 				popOut.Parent = if open then popOutHost else nil
 			end)
+		end
+
+		if uiByKey then
+			uiByKey[modifier.key or modifier.name] = { constraint = constraint, bonusButton = typedBonusButton, failed = false }
 		end
 	end
 end
@@ -585,19 +614,14 @@ local function updateRunDistances(run: RunState)
 	run.trackerDistanceLabel.Text = text
 	run.boxDistanceLabel.Text = text
 
-	if run.timeCrunchConstraint and run.timerEnds then
-		local remaining = run.timerEnds - Workspace:GetServerTimeNow()
-		if remaining <= 0 then
-			-- Old code's fail state (MissionDeliniation.luau's conEnd
-			-- branch): grey out the "!!!" button and say so, rather than
-			-- sitting on "Complete in 0:00" until the server's own Failed
-			-- update tears the tracker down.
-			run.timeCrunchConstraint.Text = "Failed."
-			if run.timeCrunchBonusButton then
-				run.timeCrunchBonusButton.TextColor3 = TIME_CRUNCH_FAILED_COLOR
-			end
-		else
-			run.timeCrunchConstraint.Text = formatCountdown(remaining)
+	if run.timeCrunchKey and run.timerEnds then
+		local entry = run.modifierUiByKey[run.timeCrunchKey]
+		-- Once MissionUpdate "ModifierFailed" marks this one, stop
+		-- overwriting its "Failed." text with the (now meaningless,
+		-- past-zero) countdown -- the server owns the fail moment, this
+		-- loop only ever counts down to it.
+		if entry and not entry.failed then
+			entry.constraint.Text = formatCountdown(run.timerEnds - Workspace:GetServerTimeNow())
 		end
 	end
 
@@ -654,8 +678,8 @@ local function startRun(update: any)
 		boxDistanceLabel = (questLineBox :: any).Distance,
 		boxOnScreen = false,
 		modifierInstances = {},
-		timeCrunchConstraint = nil,
-		timeCrunchBonusButton = nil,
+		modifierUiByKey = {},
+		timeCrunchKey = nil,
 		timerEnds = if typeof(update.timerEnds) == "number" then update.timerEnds else nil,
 		loopThread = nil,
 	}
@@ -668,13 +692,10 @@ local function startRun(update: any)
 			if modifier.name == COURIER_LOOP_NAME and returning then
 				text = COURIER_LOOP_RETURN_TEXT
 			end
-			buildModifierRow({ { name = modifier.name, chance = modifier.chance, text = text } }, modRow, modFrame or questLineGui, run.modifierInstances)
+			local key = modifier.key or modifier.name
+			buildModifierRow({ { key = key, name = modifier.name, chance = modifier.chance, text = text } }, modRow, modFrame or questLineGui, run.modifierInstances, run.modifierUiByKey)
 			if modifier.name == TIME_CRUNCH_NAME then
-				-- buildModifierRow just inserted (container, popOut), in that order.
-				local container = run.modifierInstances[#run.modifierInstances - 1]
-				local popOut = run.modifierInstances[#run.modifierInstances]
-				run.timeCrunchConstraint = (popOut :: any).Constraint
-				run.timeCrunchBonusButton = (container :: any).BONUS
+				run.timeCrunchKey = key
 			end
 		end
 	end
@@ -689,6 +710,31 @@ local function startRun(update: any)
 	log:Info(string.format("mission %s: %s", if returning then "returning" else "started", tostring(update.destination)))
 end
 
+-- Bryan (follow-up): failing a modifier never ends the run by itself. This
+-- only greys out that one modifier's BONUS button/pop-out; the run,
+-- tracker and quest box stay exactly as they are.
+local function handleModifierFailed(update: any)
+	local run = activeRun
+	if not run then
+		return
+	end
+	local key = update.key
+	if typeof(key) ~= "string" then
+		log:Warn("MissionUpdate ModifierFailed: missing key")
+		return
+	end
+	local entry = run.modifierUiByKey[key]
+	if not entry then
+		log:Warn("MissionUpdate ModifierFailed: unknown key " .. key)
+		return
+	end
+	entry.failed = true
+	entry.constraint.Text = MODIFIER_FAILED_TEXT
+	if entry.bonusButton then
+		entry.bonusButton.TextColor3 = MODIFIER_FAILED_COLOR
+	end
+end
+
 local function handleMissionUpdate(update: any)
 	if typeof(update) ~= "table" or typeof(update.state) ~= "string" then
 		log:Warn("MissionUpdate: unexpected payload")
@@ -697,6 +743,11 @@ local function handleMissionUpdate(update: any)
 
 	if update.state == "Started" then
 		startRun(update)
+		return
+	end
+
+	if update.state == "ModifierFailed" then
+		handleModifierFailed(update)
 		return
 	end
 
