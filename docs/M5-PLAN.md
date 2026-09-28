@@ -27,18 +27,35 @@ Bryan's direction: break it into phases, get each right before the next. Keep ev
 - The Studio-only `ClothingSpawn` script is deleted by Bryan after the phase passes.
 - Playtest: buy a hat, a shirt, a cloak; colours; full hat slots; the highlight only for you; nothing paid twice.
 
-### Phase 5C: Delivery missions
-- `Shared/Data/Cities.luau` (routes, personality; lore text stays in your GUI frames) + `MissionService`: same missions, modifiers, package, timers, interception and payout, rebuilt: the server checks the city against the route, one board per player, no per-frame loops, no money printing; interception hands the package to the interceptor who must finish the run to be paid, and adds Black Rukh and a bounty on them; a real success streak and per-city route history (saved, schema v4) drive the modifiers with city personality; about 10 Magoi and 1 Gold Rukh per run.
-- Client `MissionController`: the same DeliveryFrame, city panels, start button, quest tracker, modifier pop-outs and timers.
-- Playtest: a full run, an intercepted run, the board closes when you walk away, the streak.
+### Phase 5C: Delivery missions (draft for approval, 2026-09-29)
 
-### Phase 5D: Supply and demand (model chosen in 5D planning; three candidates below)
+**What exists today.** Clicking a `*Delivery` part in `Workspace.MAP.MISSION` opens the delivery board (`RF.GUI.MissionGUI.DeliveryFrame`) listing the cities on that city's trade route. Each destination rolls 0 to 3 modifiers (`TimeCrunch`, `CourierLoop`, `HighlyValuable`, `HeavyCargo`, `VIP`, `FragilePackage`, `CleartheRoute`), weighted by how much the route has been used and how safe it is. The board closes when you walk 20 studs away. Starting straps a package to your back; reaching the destination within 10 studs pays Copper based on your level, the server population, your past deliveries and the modifiers. Being knocked out mid-run hands your reward to the attacker. Seven cities: Qarzin, Sahraqin, Illegal Port, Ain Jamala, Saleh, Rathole, Jaddaty's Hut.
 
-### Phase 5E: Weapons and gear
+**Known bugs it fixes** (AUDIT): the server accepts any city the client names (H7); interception can create money and crash (H8); every board click leaves a per-frame loop running for the session and listeners pile up (H9, M14); route history and city personality never actually shape the modifiers, and Clear the Route errors (M12); heavy-cargo slow only clears on success (M13); the "consecutive success" bonus resets on rejoin and is not a streak (M21); the quest panel hides even with quests and the pay preview leaves out modifiers (L14); the reward math can divide by zero (L15); the route table names two cities that don't exist.
+
+**What 5C builds (same missions, same look):**
+1. `Shared/Data/Cities.luau`: the seven cities, their trade routes (the broken names fixed to real ones), each city's personality and safety, the modifier table (names, weights, effects, pay multipliers) moved out of the three copies in the old code. Lore text stays in your GUI frames and is read from them.
+2. `MissionService` (server): one board per player, opened from the `*Delivery` part prompt; the server only accepts a destination that is on that board's route; modifiers rolled server-side from route history, city personality and safety; the package strapped on; timers for `TimeCrunch`; `HeavyCargo` slow through MovementService and removed on any end; `CourierLoop` return point; `FragilePackage` fails on a hit taken; arrival within 10 studs of the destination pays Copper (the old formula ported, division-by-zero fixed, rank instead of the dead level), plus about 10 Magoi and 1 Gold Rukh through RankService. **Interception:** knocking out a courier moves the package to the attacker, who must finish the run to be paid (no money is created); the courier's run fails; the interceptor gets 1 Black Rukh and a bounty number on their save (the bounty board comes with the later missions milestone). A real success streak and per-city route history are saved (schema v4) and feed the modifier weights. No per-frame loops; everything cleaned on leave and respawn.
+3. `MissionController` (client): the same DeliveryFrame, city panels and lore, the start button, the quest tracker, the modifier pop-outs and timers; the pay preview includes modifiers; the quest panel shows only when there is a quest. Board closes at 20 studs as today.
+4. Removed: `MISC/MissionHandler/init.server.luau` (its city Frames move under `ReplicatedFirst/GUI/MissionGUI/Cities/` as art), `RS/Modules/MissionDeliniation.luau`, `RS/Modules/RewardHandler.luau`, the old `Delivery`, `QuestGUI`, `Quest2GUI` remotes.
+5. Dev: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mission streak <n>`.
+6. Playtest (Bryan): a full run, an intercepted run (two players or a Target dummy knockout), each modifier once, the board closing at 20 studs, the streak surviving a rejoin.
+
+**Needs from Bryan before 5C starts:** the seven city Frames live inside `MissionHandler.rbxm` (binary); the lead will have their text and layout dumped once (about 30k tokens) or Bryan pastes the route and lore text into `docs/reference/`; and confirm the intended trade routes for Jaddaty's Hut and the sixth destination the old table called `CITYF`.
+
+### Phase 5D: Supply and demand (draft for approval)
+
+With Bounty Hunting and weapons pushed to later milestones, the only shop today is the Qarzin clothes stand, so a world economy has little to move yet. Two options:
+- **Defer 5D** until the blacksmith and a second shop exist (lead's recommendation): 5C still saves the route history that any model will use.
+- **Or build model 3 now, minimal:** personal pricing from your own route history: every completed delivery to a city lowers that city's prices for you by a small step (capped), every interception you commit raises them; shown on the prompt. Cheap, no world save, no cross-player effects.
+Models 1 (per-server drifting stock) and 2 (persistent world market) stay described below for when more shops exist.
+
+
+### Later milestone: Weapons and gear (Bryan, 2026-09-29: after several weapon types exist)
 - `Blacksmith` part at Rathole; `Shared/Data/Weapons.luau`; real weapon Tools with the `Weapon` attribute so equipping sets the fighting style (M3B already handles it); the Royal Dagger plus a second weapon Bryan names; two gear pieces with one stat each (defaults: padded vest for max health, light shawl for block); item codes `W` and `G`; owned weapons and gear saved (schema v4).
 - Playtest: buy the dagger, equip it, fight with it; gear stat shows in `.state`.
 
-### Phase 5F: Bounty Hunting
+### Later milestone: Missions (Bounty Hunting, Carriage Escort and other types; Bryan, 2026-09-29)
 - `BountyService`: crimes (intercepting a courier, robbing a knocked courier) add a bounty; `BountyBoard` part in each city lists the wanted on the server; knock out a wanted player and press E to turn them in: the bounty in coin, 25 to 50 Magoi scaled, 2 Gold Rukh; turning in needs Adventurer rank; no jail.
 - Client `BountyController`: the board UI in the menu style, the turn-in prompt.
 - Playtest: earn a bounty by interception, get hunted, turn someone in.

@@ -150,3 +150,5 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | done (merged) | Same stock and look; no double charge; colour-aware ownership |
 | M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | done (merged) | Only you see your highlight |
 | M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | ready: Bryan plays when home | Bryan OK |
+| M8 Missions | Bounty Hunting, Carriage Escort and other mission types, the bounty board (Bryan, 2026-09-29: pushed out of M5) | todo |
+| M9 Weapons and gear | The Rathole blacksmith, several weapon types as fighting styles, gear with stats (Bryan, 2026-09-29: after multiple weapon types exist) | todo |
