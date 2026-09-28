@@ -27,3 +27,6 @@ Files touched (matches task scope, nothing else): `Shared/Config.luau`, `CombatC
 ## For Bryan
 
 This adds real fighting-style support: each weapon's punch/stab chain, timing, and wind-up speed now come from data instead of being hardcoded to two punches, so Dagger's 3-hit chain works the same way Fist's 2-hit one does. The Royal Dagger now visibly appears in the right hand (reusing your old grip position) whenever someone's using that style, purely for looks — it's not a real equippable weapon yet, that's M5. Bleed now shows droplets and a cut decal that get more intense with more stacks, and knockback reuses the old hit particle. One tiny paperwork fix needed: a code comment cites the wrong commit hash for where the dagger grip position came from (the actual number is right, just the "receipt" pointing to it is wrong) — one-line fix, not a behavior bug. Recommend: fix that comment, then this is ready to merge once the matching server branch (M3-FIX4-S) lands.
+
+## Fix (lead, 2026-09-28, branch client-m3): PASS
+The grip-provenance comment now cites a70f9ae. Client side ready; merges with M3-FIX4-S.
