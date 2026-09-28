@@ -2330,6 +2330,34 @@ local function testTrainers(results: { Check })
 		teardown(trainer, target)
 	end
 
+	-- REVIEW-M3B-02: the non-reacting branch is a lone jab, not the full
+	-- Sam-style chain - with the target idle, she should throw (Attacking
+	-- true) and then self-cancel her own heavy (Attacking false again,
+	-- well before the heavy's own hitWindow would resolve it naturally).
+	do
+		local trainer = buildFakeCombatant("SelfTestDalilaRhythm", Vector3.new(2085, 5, 0), Vector3.new(2085, 5, 1))
+		local target = buildFakeCombatant("SelfTestDalilaRhythmTarget", Vector3.new(2085, 5, 3), Vector3.new(2085, 5, 4))
+		target:SetAttribute("Attacking", false)
+		target:SetAttribute("CurrentHit", "")
+		registerTrainer(trainer)
+		local bb = buildTrainerBlackboard(trainer, target, 50)
+		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.01, engageRadius = 50 })
+
+		local jabbed = pollUntil(1, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == true
+		end)
+		expect(results, "Trainers: Dashing Dalila jabs on rhythm when the target isn't winding up a Heavy", jabbed)
+
+		local cancelled = pollUntil(1.3, function()
+			tree.Tick(bb)
+			return trainer:GetAttribute("Attacking") == false
+		end)
+		expect(results, "Trainers: Dashing Dalila cancels her own heavy - a lone jab, never the full chain", cancelled)
+
+		teardown(trainer, target)
+	end
+
 	do
 		expect(results, "Trees.WeightedPick: a single 100% option always wins", NpcTrees.WeightedPick({ throw = 1, cancel = 0, parry = 0, dash = 0 }, 0.5) == "throw")
 		expect(results, "Trees.WeightedPick: picks the option the roll actually falls into", NpcTrees.WeightedPick({ throw = 0, cancel = 1, parry = 0, dash = 0 }, 0.999) == "cancel")

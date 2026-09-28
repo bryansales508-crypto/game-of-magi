@@ -519,16 +519,36 @@ local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 		return "Running"
 	end
 
-	bb.phase = "idle"
-	if bb.character:GetAttribute("Attacking") == true then
+	-- REVIEW-M3B-02: a lone jab, not the full chain - the exact same
+	-- self-cancel Feinting Mohammed uses (CombatService.AttackCancel once
+	-- her own CurrentHit becomes "Heavy"), just without his re-jab: she
+	-- just pokes once per rhythmSeconds and waits for the next cycle,
+	-- never committing to a heavy on her own initiative.
+	if bb.phase == "jabbing" then
+		if bb.character:GetAttribute("Attacking") ~= true then
+			-- Ended some other way (interrupted, say) before ever reaching
+			-- the heavy - the rhythm timer restarts from here either way.
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Failure"
+		end
+		if bb.character:GetAttribute("CurrentHit") == "Heavy" then
+			CombatService.AttackCancel(bb.character)
+			bb.phase = "idle"
+			bb.phaseAt = now
+			return "Success"
+		end
 		return "Running"
 	end
+
+	bb.phase = "idle"
 	if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
 		return "Failure"
 	end
 	CombatService.Attack(bb.character)
+	bb.phase = "jabbing"
 	bb.phaseAt = now
-	return "Success"
+	return "Running"
 end
 
 -- Sparring Sinbad: picks throw/cancel/parry/dash by Config.Npc.Trainers.
