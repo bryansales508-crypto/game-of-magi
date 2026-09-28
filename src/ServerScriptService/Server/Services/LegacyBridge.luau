@@ -74,47 +74,6 @@ local function splitInventory(joined: string): { string }
 	return string.split(joined, ";")
 end
 
-local COIN_GUI_TIMEOUT = 5
-
--- Old OnCharacterStore2 kept the coin purse HUD text in sync itself (it was
--- the only thing that ever wrote it), on both the initial load and every
--- later change, plus a CoinReward sound on change (REVIEW-M1-03 M5).
--- Bounded WaitForChild (old code's was unbounded) so a missing/renamed GUI
--- can't hang the bridge the way the old MainScreen wait used to (H3).
-local function coinPurseLabel(player: Player, coin: "Copper" | "Silver" | "Gold"): TextLabel?
-	local playerGui = player:FindFirstChild("PlayerGui")
-	if playerGui == nil then
-		return nil
-	end
-	local currency = playerGui:WaitForChild("Currency", COIN_GUI_TIMEOUT)
-	if currency == nil then
-		return nil
-	end
-	local bank = currency:FindFirstChild("Bank")
-	local purse = bank and bank:FindFirstChild("CoinPurse")
-	local label = purse and purse:FindFirstChild(coin)
-	if label and label:IsA("TextLabel") then
-		return label
-	end
-	return nil
-end
-
-local function updateCoinPurseText(player: Player, coin: "Copper" | "Silver" | "Gold", amount: number)
-	local label = coinPurseLabel(player, coin)
-	if label then
-		label.Text = tostring(amount)
-	end
-end
-
-local function playCoinRewardSound(player: Player)
-	local character = player.Character
-	local torso = character and character:FindFirstChild("Torso")
-	local sound = torso and torso:FindFirstChild("CoinReward")
-	if sound and sound:IsA("Sound") then
-		sound:Play()
-	end
-end
-
 -- Pushes `data` onto every mirrored Value (data -> Value direction). Used
 -- for the initial Build and for Refresh after a Wipe.
 local function pushToInstances(player: Player, rig: Rig, data: Data)
@@ -145,9 +104,6 @@ local function pushToInstances(player: Player, rig: Rig, data: Data)
 	rig.copper.Value = data.Economy.Copper
 	rig.silver.Value = data.Economy.Silver
 	rig.gold.Value = data.Economy.Gold
-	updateCoinPurseText(player, "Copper", data.Economy.Copper)
-	updateCoinPurseText(player, "Silver", data.Economy.Silver)
-	updateCoinPurseText(player, "Gold", data.Economy.Gold)
 	rig.hat1.Value = data.Gear.Hats[1] or ""
 	rig.hat2.Value = data.Gear.Hats[2] or ""
 	rig.hat3.Value = data.Gear.Hats[3] or ""
@@ -259,28 +215,24 @@ local function connectAll(player: Player, data: Data, rig: Rig)
 			data.Gear.Pants = v
 		end
 	end)
-	-- Currency also keeps the old coin purse HUD text and CoinReward sound
-	-- in sync (REVIEW-M1-03 M5): old OnCharacterStore2 did both on every
-	-- change, and nothing else does it now that script is gone.
+	-- M5A-01: EconomyService now owns the purse HUD (Copper/Silver/Gold
+	-- attributes) and the CoinReward sound moved client-side
+	-- (CurrencyController, on any attribute change) - this direction is
+	-- just the old readers (e.g. the mission script) still writing the
+	-- Value directly.
 	watch(rig.copper, function(v: number)
 		if data.Economy.Copper ~= v then
 			data.Economy.Copper = v
-			updateCoinPurseText(player, "Copper", v)
-			playCoinRewardSound(player)
 		end
 	end)
 	watch(rig.silver, function(v: number)
 		if data.Economy.Silver ~= v then
 			data.Economy.Silver = v
-			updateCoinPurseText(player, "Silver", v)
-			playCoinRewardSound(player)
 		end
 	end)
 	watch(rig.gold, function(v: number)
 		if data.Economy.Gold ~= v then
 			data.Economy.Gold = v
-			updateCoinPurseText(player, "Gold", v)
-			playCoinRewardSound(player)
 		end
 	end)
 	watch(rig.hat1, function(v: string)

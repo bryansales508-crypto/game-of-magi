@@ -28,6 +28,8 @@ local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
 local RankService = require(script.Parent.RankService)
+local Economy = require(ReplicatedStorage.Shared.Data.Economy)
+local EconomyService = require(script.Parent.EconomyService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
@@ -923,6 +925,121 @@ local function testRankService(results: { Check })
 		local okRenowned = RankService.ApplyChooseEpithet(data, 1)
 		local fourth = RankService.NextRankAfterChoice(data, third :: number)
 		expect(results, "RankService H1: once caught up to the actual rank, nothing more is announced", okRenowned and fourth == nil)
+	end
+end
+
+-- M5A-01: Economy's rounding rule and EconomyService's pure core, both
+-- exercised with no Player/DataService involved - Affords/ApplyPay/
+-- ApplyGive/ApplySet only ever touch data.Economy.
+local function fakeEconomyData(copper: number, silver: number, gold: number): SaveSchema.Data
+	return ({
+		Economy = { Copper = copper, Silver = silver, Gold = gold },
+	} :: any) :: SaveSchema.Data
+end
+
+local function testEconomy(results: { Check })
+	-- Bryan's price-band table (M5-PLAN.md Phase 5A, replaced 2026-09-29:
+	-- bands, not rounding). 200/201 and 10,000/10,001 are the sharpest
+	-- cases - one Copper past a full 100/10,000 is what actually crosses
+	-- into the next band, not a rounding midpoint (see Economy.toPrice's
+	-- own comment).
+	for _, example in Economy.PriceExamples do
+		local coin, amount = Economy.toPrice(example.copper)
+		expect(
+			results,
+			string.format("Economy: toPrice(%d) = %s", example.copper, Economy.format(example.coin, example.amount)),
+			coin == example.coin and amount == example.amount
+		)
+	end
+
+	expect(results, "Economy: format renders \"N Coin\"", Economy.format("Silver", 3) == "3 Silver")
+
+	-- roundReward is the same rule as toPrice (kept for the Bank milestone,
+	-- unused today - see its own comment and GiveCopperValue below).
+	do
+		local coin, amount = Economy.roundReward(5000)
+		expect(results, "Economy: roundReward follows the same banding rule as toPrice", coin == "Silver" and amount == 49)
+	end
+
+	-- CanAfford/Pay are exact-coin only: 120 Copper can't pay a 1-Silver
+	-- price, even though 120 Copper is worth more than 1 Silver converted.
+	do
+		local data = fakeEconomyData(120, 0, 0)
+		expect(results, "EconomyService: Affords is exact-coin only (120 Copper can't afford 1 Silver)", not EconomyService.Affords(data, "Silver", 1))
+
+		local ok, failure = EconomyService.ApplyPay(data, "Silver", 1)
+		expect(
+			results,
+			"EconomyService: ApplyPay(Silver, 1) against 120 Copper fails as \"convert\" (enough wealth, wrong coin)",
+			not ok and failure == "convert"
+		)
+		expect(results, "EconomyService: a failed Pay leaves the wallet untouched", data.Economy.Copper == 120 and data.Economy.Silver == 0)
+	end
+
+	-- Not enough wealth in ANY coin fails as "no" instead (the old
+	-- MarketHandler NeedMoney line, not the Convert one).
+	do
+		local data = fakeEconomyData(0, 0, 0)
+		local ok, failure = EconomyService.ApplyPay(data, "Silver", 1)
+		expect(results, "EconomyService: ApplyPay against an empty wallet fails as \"no\" (not enough money at all)", not ok and failure == "no")
+	end
+
+	-- REVIEW-M5A-01 L1: a bad amount (less than 1, or not a whole number)
+	-- is rejected as "no" before it ever touches the wallet, even against a
+	-- wallet that could otherwise afford it.
+	do
+		local data = fakeEconomyData(0, 5, 0)
+		local okZero, failureZero = EconomyService.ApplyPay(data, "Silver", 0)
+		expect(results, "EconomyService (L1): ApplyPay rejects an amount below 1", not okZero and failureZero == "no")
+
+		local okNegative, failureNegative = EconomyService.ApplyPay(data, "Silver", -1)
+		expect(results, "EconomyService (L1): ApplyPay rejects a negative amount", not okNegative and failureNegative == "no")
+
+		local okFraction, failureFraction = EconomyService.ApplyPay(data, "Silver", 1.5)
+		expect(results, "EconomyService (L1): ApplyPay rejects a non-integer amount", not okFraction and failureFraction == "no")
+
+		expect(results, "EconomyService (L1): none of the rejected amounts touched the wallet", data.Economy.Silver == 5)
+	end
+
+	-- A payment that CAN be made in the exact coin succeeds and only moves
+	-- that one coin.
+	do
+		local data = fakeEconomyData(0, 5, 0)
+		local ok = EconomyService.ApplyPay(data, "Silver", 2)
+		expect(results, "EconomyService: ApplyPay succeeds when the exact coin covers the price", ok and data.Economy.Silver == 3)
+	end
+
+	-- Give never goes negative: a dev `.coins+` with a negative number can
+	-- empty a coin but not push it below 0.
+	do
+		local data = fakeEconomyData(20, 0, 0)
+		EconomyService.ApplyGive(data, "Copper", -1000)
+		expect(results, "EconomyService: ApplyGive clamps the wallet at 0", data.Economy.Copper == 0)
+	end
+
+	-- ApplySet (the dev `.coins` set form) clamps and floors every coin.
+	do
+		local data = fakeEconomyData(0, 0, 0)
+		EconomyService.ApplySet(data, -5, 2.7, 10)
+		expect(
+			results,
+			"EconomyService: ApplySet clamps negatives at 0 and floors fractions",
+			data.Economy.Copper == 0 and data.Economy.Silver == 2 and data.Economy.Gold == 10
+		)
+	end
+
+	-- Bryan's refinement (2026-09-29): rewards pay Copper only for now -
+	-- GiveCopperValue is exactly ApplyGive(data, "Copper", copper), which
+	-- never rounds into Silver/Gold the way Economy.roundReward would (a
+	-- 5,000-Copper reward stays 5,000 Copper, not 50 Silver).
+	do
+		local data = fakeEconomyData(0, 0, 0)
+		EconomyService.ApplyGive(data, "Copper", 5000)
+		expect(
+			results,
+			"EconomyService: a Copper reward doesn't round into Silver/Gold (Bryan's refinement, 2026-09-29)",
+			data.Economy.Copper == 5000 and data.Economy.Silver == 0 and data.Economy.Gold == 0
+		)
 	end
 end
 
@@ -2516,6 +2633,7 @@ function SelfTestService:Start()
 		testAgeService(collected)
 		testHealthService(collected)
 		testRankService(collected)
+		testEconomy(collected)
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)

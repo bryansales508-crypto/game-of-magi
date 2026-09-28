@@ -181,6 +181,17 @@ Remotes.Definitions = {
 		args = { Validate.number({ min = 1, max = 3, integer = true }) },
 		rate = { count = 3, per = 10 },
 	},
+	-- M5A-01: EconomyService. Server -> client only (EconomyService never
+	-- registers a handler, so a client calling this back is just dropped,
+	-- same pattern as HeartAttack/CombatEvent). One flavour line at a time -
+	-- the old MarketHandler "the character says it in chat" feel (its
+	-- ForcedChat remote), just through the new Net folder; the client posts
+	-- the string to chat the same way InputHandler did for ForcedChat.
+	CoinMessage = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 100 }) },
+		rate = { count = 3, per = 5 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"
