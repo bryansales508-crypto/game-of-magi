@@ -466,3 +466,39 @@ Setup as before. Dev commands: `.magoi <n>`, `.magoi+ <n>`, `.rukh <gold> <black
 
 ### M4-F Remote abuse
 - With nothing pending: `Net.ChooseEpithet:FireServer(2)` -> rejected, nothing changes. With a pending choice: `FireServer(7)` and `FireServer("The Cheat")` -> dropped with `[Remotes]` warnings; `FireServer(1)` then `FireServer(2)` -> only the first counts. **Pass:** every line; `[Rank]` log confirms.
+
+---
+
+## M3B Stance, unlock, training dummies (Bryan runs all of it)
+
+Setup: Play, `.state`. Marker names per style must already match your animations (`Config.Combat.Markers`), or every hit report is dropped; `.combat log on` shows each decision. Dev commands: `.weapon Fist|Dagger`, `.unlock combat`, `.lock combat`, `.dummy spawn <name>`, `.dummy clear`, `.dummy list`, `.style`.
+
+### M3B-A Stance and unlock
+- Click without pressing C: nothing happens (no swing, and `.combat log` shows AttackStart rejected: not in combat). Press C: the stance idle plays (placeholder may be empty), clicks now swing. Press C again: back to nothing. `.lock combat`, press C: the "You don't know how to fight yet." line; `.unlock combat` restores it. **Pass:** all four.
+
+### M3B-B Weapon click
+- `.weapon Dagger` (the dagger appears in hand), press C off, then click: you enter the stance and the stab comes out as the first hit. **Pass:** one click did both; `.weapon Fist` removes the dagger.
+
+### M3B-C Straight Sam (block, then parry)
+- `.dummy spawn StraightSam`. Hold F: his light and heavy are blocked, your block meter drains, breaks on the heavies. Then time F just before his light: parry effect, he is stunned, land your light-heavy. **Pass:** blocked hits do no damage; a parry stuns him long enough for your full chain.
+
+### M3B-D Turtle Tariq (heavies break block)
+- Spawn him, land light-heavy chains: his block breaks on a heavy (block-break effect, TrueStun), then your chain lands. **Pass:** the break happens within about three chains; lights alone never break him.
+
+### M3B-E Jabbing Jamal (bait the interrupt)
+- Spawn him. Throw a straight chain: his jab interrupts your heavy (you get "interrupted", cancel highlight not shown). Then: light, start the heavy, right-click cancel into holding F as his jab comes: parry, punish. **Pass:** both outcomes as described.
+
+### M3B-F Parry Pete (feint the parry)
+- Spawn him. Throw a straight: he parries your light and you get stunned. Then: light (he parries air because you cancel it before the wind-up? no: cancel the LIGHT before its wind-up marker with right-click, wait a beat, then throw): his parry window has passed, the light lands. **Pass:** the delayed hit lands; the straight one is parried.
+
+### M3B-G Feinting Mohammed (punish the feint)
+- Spawn him. Hold F when his heavy would come: it never comes; the re-jab is blocked; with the Fist style he has no feint recovery, so instead read the cancel highlight and jab him during his re-jab wind-up? Lights can't be interrupted, so: block the re-jab, then answer with your own chain while he recovers his rhythm. `.weapon Dagger` on YOURSELF to see the punishable feint: your feint stab blocked by Tariq gives you half a second of Recovery. **Pass:** you see the cancel highlight on Mohammed every cycle; with the dagger, a blocked feint locks you out for 0.5 s.
+
+### M3B-H Dashing Dalila (spacing)
+- Spawn her. Land your light: she is light-stunned and dashes out of your heavy wind-up. Chase and land the light again with the heavy delayed. **Pass:** her dash has a cooldown; the second time your heavy lands.
+
+### M3B-I Sparring Sinbad (the exam)
+- Spawn him and fight for two minutes. **Pass:** no errors, no stuck states (`Attacking` never stays true after a swing ends; controls always return), knockback on your 6th hit taken and on his, bleed if you use the dagger.
+
+### M3B-J Cleanup
+- `.dummy clear` removes them all; `.dummy list` shows none; a spawned dummy that gets knocked out gets up with full health. **Pass:** all three; no errors.
