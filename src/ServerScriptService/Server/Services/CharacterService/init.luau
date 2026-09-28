@@ -607,8 +607,8 @@ local lastDuplicateCreateWarn: { [Player]: number } = {}
 local DUPLICATE_CREATE_WARN_COOLDOWN = 30
 
 function CharacterService:Init()
-	-- F6: register both groups if missing (ClothingRackGroup is normally
-	-- registered later by CollisionsHandler, only after the map loads) so
+	-- F6: register both groups if missing (CollisionService also registers
+	-- them at its own Init; both sides check first, so the order is safe) so
 	-- SetCollidable below always has two real groups to work with, and
 	-- runs with no pcall: a real failure here should be loud, not silent.
 	if not PhysicsService:IsCollisionGroupRegistered(COLLISION_GROUP) then

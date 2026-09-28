@@ -446,11 +446,12 @@ Config.World = {
 		CullDistance = 6000,
 	},
 	Footsteps = {
-		WalkVolume = 0.3,
-		RunVolume = 0.5,
-		-- Sand and mud prints: how long one stays and how far below the
+		-- The old game's numbers (REVIEW-M6-02): 0.1 walking, 0.25 running.
+		WalkVolume = 0.1,
+		RunVolume = 0.25,
+		-- Sand and mud prints: how long one stays (the old fade was 0.75 s) and how far below the
 		-- torso the raycast looks for the ground (studs).
-		PrintSeconds = 8,
+		PrintSeconds = 0.75,
 		PrintRayStuds = 6,
 	},
 }

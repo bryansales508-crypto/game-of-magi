@@ -171,7 +171,6 @@ local function onPlayerAdded(player: Player)
 		kick(player)
 	end)
 
-
 	log:Info(string.format("Loaded save for %s (scope %s)", player.Name, Config.Debug.SaveScope))
 	loadedBindable:Fire(player)
 end

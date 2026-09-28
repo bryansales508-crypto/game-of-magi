@@ -3245,7 +3245,7 @@ local function testWorld(results: { Check })
 	local midnight = WorldClockService.ClockTimeAt(1000 + D + N / 2, 1000, L)
 	expect(results, "WorldClock: mid-night reads 00:00", math.min(midnight, 24 - midnight) < 0.01)
 	expect(results, "WorldClock: end of the night wraps to 06:00", near(WorldClockService.ClockTimeAt(1000 + L, 1000, L), 6))
-	expect(results, "WorldClock: a scaled day length keeps the ratio", near(WorldClockService.ClockTimeAt(1000 + D / 4, 1000, L / 2), 18))
+	expect(results, "WorldClock: a scaled day length keeps the ratio", near(WorldClockService.ClockTimeAt(1000 + D / 2, 1000, L / 2), 18))
 
 	local fakePlayer = ({ Name = "SelfTestWorld", UserId = 27938432 } :: any) :: Player
 	local wasPaused = WorldClockService.IsPaused()

@@ -94,7 +94,7 @@ function ItemService.Owns(data: Data, code: string): boolean
 end
 
 -- Pure: the 3-slot Gear.Hats array holds both hats AND cloaks (same as the
--- old OnCharacter.Hats it mirrors to) - checked before EconomyService.Pay
+-- save alone; nothing mirrors it since M6) - checked before EconomyService.Pay
 -- ever runs, not after.
 function ItemService.HasFreeHatSlot(data: Data): boolean
 	for _, hatCode in data.Gear.Hats do

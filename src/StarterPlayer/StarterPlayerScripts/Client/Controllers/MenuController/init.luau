@@ -31,7 +31,6 @@ local UIGUI = GUI:WaitForChild("UIGUI")
 local MENU_TEMPLATE = UIGUI:WaitForChild("MenuGUI") :: ScreenGui
 -- Assets/init.luau isn't --!strict (check.sh ignores its own diagnostics);
 -- `:: any` keeps its loose inference from leaking into this strict file.
-local Assets = require(ReplicatedFirst:WaitForChild("Assets")) :: any
 
 local KINGDOM_NAMES: { [number]: string } = {
 	[1] = "MIDLANDER",
@@ -190,57 +189,12 @@ end
 -- unlike the templates above this nested path was read from a binary
 -- rbxm, not confirmed byte-for-byte, so a mismatch here should warn once
 -- instead of hanging or erroring.
-local function findStoneContainer(inventoryFrame: Instance, slotIndex: number): Instance?
-	local backdrop = inventoryFrame:FindFirstChild("InventoryBackdropSecondary")
-	local scrolling = backdrop and backdrop:FindFirstChild("ScrollingFrame")
-	local apparelRow = scrolling and scrolling:FindFirstChild("StoneContainerApparel")
-	local row1 = apparelRow and apparelRow:FindFirstChild("Row1")
-	local placementPart = row1 and row1:FindFirstChild("PlacementPart" .. slotIndex)
-	return placementPart and placementPart:FindFirstChild("StoneContainer")
-end
-
-local function fillInventoryTokens(inventoryFrame: Instance)
-	-- docs/SYSTEMS.md §1 legacy bridge: player.OnCharacter.Inventory.Row1,
-	-- ";"-joined item codes, two-way mirrored with the real save's
-	-- Gear.Inventory until Gear itself replicates directly (not yet, M2).
-	local onCharacter = player:FindFirstChild("OnCharacter")
-	local inventory = onCharacter and onCharacter:FindFirstChild("Inventory")
-	local row1 = inventory and inventory:FindFirstChild("Row1")
-	if not row1 or not row1:IsA("StringValue") then
-		return
-	end
-
-	local tokensFolder = UIGUI:FindFirstChild("Tokens")
-	if not tokensFolder then
-		log:Warn("ReplicatedFirst.GUI.UIGUI.Tokens missing; apparel tab will show no items")
-		return
-	end
-
-	local slotIndex = 0
-	for code in string.gmatch(row1.Value, "[^;]+") do
-		local itemName = Assets.itemLookUp(code)
-		if typeof(itemName) ~= "string" then
-			-- FIX L13: an unknown code used to error the whole fill; skip it.
-			log:Warn(string.format("unknown inventory item code %q; skipping", tostring(code)))
-			continue
-		end
-
-		local tokenTemplate = tokensFolder:FindFirstChild(itemName .. "Token")
-		if not tokenTemplate then
-			log:Warn(string.format("no token template for item %q (%s); skipping", tostring(code), itemName))
-			continue
-		end
-
-		slotIndex += 1
-		local stoneContainer = findStoneContainer(inventoryFrame, slotIndex)
-		if not stoneContainer then
-			log:Warn(string.format("no inventory slot %d to place %s in", slotIndex, itemName))
-			continue
-		end
-
-		local token = tokenTemplate:Clone()
-		token.Parent = stoneContainer
-	end
+local function fillInventoryTokens(_inventoryFrame: Instance)
+	-- REVIEW-M6-01 F2: the old player.OnCharacter.Inventory.Row1 mirror is
+	-- gone with the legacy bridge, and nothing writes Gear.Inventory yet, so
+	-- the apparel tab shows no tokens (as it effectively did before). When
+	-- inventory becomes real the server publishes it and this gets rebuilt.
+	return
 end
 
 local function closeApparel(appPressed: BoolValue)
