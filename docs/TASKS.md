@@ -127,7 +127,7 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | built (with the account-wide flag), in Opus review | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
+| M3B-01 | Stance (`SetStance`, `InCombat` gating), tool-to-style mapping, unlock flag + schema v3, dev commands | server-builder | fixing Opus review (docs/reviews/M3B-01.md: new players must start locked; knockout/death clear the stance) | Clicks do nothing outside the stance, server-side; a weapon tool sets the style; locked players can't enter |
 | M3B-02 | Seven trainer dummies (trees, `Config.Npc.Trainers`, `.dummy spawn|clear|list`, name billboards, reset after knockout) | server-builder | in progress (cloud) | Each dummy does only its habit; spawn/clear work |
 | M3B-03 | Client: `C` stance toggle, clicks only in stance, weapon-click enters combat, stance idle placeholders, locked message | client-builder | reviewed PASS (client branch; merges with M3B-01/02) | Same on every client; no style sent by the client |
 | M3B-04 | PLAYTEST.md M3B scenarios (one per dummy); Bryan plays; agent only if a check needs tooling | Bryan + lead | scenarios drafted; Bryan plays when home | Bryan approves the feel |
