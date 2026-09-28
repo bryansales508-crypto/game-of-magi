@@ -344,6 +344,16 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 			-- REVIEW-M3-FIX4-S L1: every knockout resets the count-based
 			-- knockback tracker, not just the ones ApplyHit itself causes.
 			resetHitCount(character)
+			-- REVIEW-M3B-01 H1: knockout drops a PLAYER out of the combat
+			-- stance ("knockout, death and the death scene clear it") -
+			-- never an NPC, which is always InCombat by design (NpcService
+			-- sets it once at registration and never toggles it).
+			local entry = registered[character]
+			if entry and entry.owner ~= nil then
+				pcall(function()
+					character:SetAttribute("InCombat", false)
+				end)
+			end
 		end
 		reconcileTier(character)
 		if not active then
@@ -1215,7 +1225,19 @@ end
 
 local function onToolEquipped(character: Model, tool: Tool)
 	local weaponName = tool:GetAttribute("Weapon")
-	if type(weaponName) ~= "string" or Combat.styleFor(weaponName) == nil then
+	if type(weaponName) ~= "string" then
+		-- The common case: most Tools (non-weapons) don't carry this
+		-- attribute at all - nothing to warn about.
+		return
+	end
+	if Combat.styleFor(weaponName) == nil then
+		-- REVIEW-M3B-01 M1: unlike a missing attribute, a Weapon string that
+		-- names no real style (a typo, or a style retired later) is a real
+		-- misconfiguration - warn instead of silently leaving whatever style
+		-- was equipped before, and fall back to Fist so the combatant is
+		-- never left on a style the client can't actually see a Tool for.
+		log:Warn(string.format("%s's Tool %q has an unknown Weapon attribute %q; falling back to Fist", character.Name, tool.Name, weaponName))
+		CombatService.SetWeapon(character, "Fist")
 		return
 	end
 	CombatService.SetWeapon(character, weaponName)
@@ -1281,6 +1303,16 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 	if humanoid then
 		local okDied, diedConn = pcall(function()
 			return humanoid.Died:Connect(function()
+				-- REVIEW-M3B-01 H1: a dead PLAYER's corpse shouldn't keep
+				-- playing the InCombat stance idle for other clients (an NPC
+				-- is always InCombat and Unregister tears its whole entry
+				-- down right after this regardless, so this is a no-op for
+				-- one).
+				if entry.owner ~= nil then
+					pcall(function()
+						character:SetAttribute("InCombat", false)
+					end)
+				end
 				CombatService.Unregister(character)
 			end)
 		end)
@@ -1373,6 +1405,13 @@ function CombatService.SetUnlocked(player: Player, unlocked: boolean)
 	data.Meta.Unlocks.Combat = unlocked
 	refreshCombatUnlockedAttribute(player, data)
 	log:Info(string.format("%s's combat unlock: %s", player.Name, tostring(unlocked)))
+
+	-- REVIEW-M3B-01 L1: locking someone already in the stance has to
+	-- actually leave it - CombatUnlocked going false doesn't do that on its
+	-- own (SetStance only ever checks it on the way IN).
+	if not unlocked and player.Character then
+		CombatService.SetStance(player.Character, false)
+	end
 end
 
 -- ==================== dev commands ====================

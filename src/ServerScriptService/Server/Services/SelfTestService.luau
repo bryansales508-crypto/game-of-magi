@@ -259,6 +259,33 @@ local function testDataService(results: { Check })
 		)
 	end
 
+	-- REVIEW-M3B-01 C1: a brand-new profile follows exactly this path
+	-- (ProfileStore's own deep copy of SaveSchema.Template, then
+	-- Profile:Reconcile(), then SaveSchema.Migrate - DataService.luau's
+	-- onPlayerAdded). Migrate must be a no-op for it now that the
+	-- template's own Version is already current - before the fix, this
+	-- walked a fresh profile through Migrations[3] too, which grandfathered
+	-- it into Meta.Unlocks.Combat = true even though nothing was ever
+	-- "existing" to grandfather.
+	do
+		local function deepCopy(value: any): any
+			if type(value) ~= "table" then
+				return value
+			end
+			local copy = {}
+			for key, inner in value do
+				copy[key] = deepCopy(inner)
+			end
+			return copy
+		end
+
+		local data = deepCopy(SaveSchema.Template) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: migrating a fresh deep copy of the template is a no-op (Version is already current)", data.Version == Config.Data.SchemaVersion)
+		expect(results, "SaveSchema: a brand-new profile starts with Meta.Unlocks.Combat false (earned, not automatic)", data.Meta.Unlocks.Combat == false)
+		expect(results, "SaveSchema: a brand-new profile starts with a full Character.LivesLeft", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
+	end
+
 	-- M3B-01 (Bryan's refinement, 2026-09-28): the combat unlock is
 	-- per-player forever, not per-life - DataService.ResetToTemplate is the
 	-- exact reset both Wipe and NewLife build on, so exercising it directly
@@ -1923,14 +1950,34 @@ local function testCombatStance(results: { Check })
 			startedUnlocked == true and character:GetAttribute("InCombat") == true
 		)
 
-		CombatService.SetStance(character, false)
+		-- REVIEW-M3B-01 H1: still InCombat (from the SetStance(true) just
+		-- above) when the knockout lands - onStatusChanged's Knocked branch
+		-- has to be what drops it, not a caller remembering to leave first.
 		StatusService.Apply(character, "Knocked", 5)
+		expect(results, "CombatService: a knockout drops a player out of the combat stance on its own", character:GetAttribute("InCombat") ~= true)
+
 		local startedKnocked = CombatService.SetStance(character, true)
 		expect(
 			results,
 			"CombatService: SetStance is rejected while knocked",
 			startedKnocked == false and character:GetAttribute("InCombat") ~= true
 		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	-- REVIEW-M3B-01 H1's own guard: an NPC (owner == nil) is always
+	-- InCombat by design and a knockout must never touch that.
+	do
+		local character = buildFakeCombatant("SelfTestStanceNpc", Vector3.new(1210, 5, 0), Vector3.new(1210, 5, 1))
+		StatusService.Register(character)
+		CombatService.Register(character, nil, "Fist")
+		character:SetAttribute("InCombat", true) -- NpcService's own job normally, not CombatService's
+
+		StatusService.Apply(character, "Knocked", 5)
+		expect(results, "CombatService: a knockout never drops an NPC out of InCombat", character:GetAttribute("InCombat") == true)
 
 		StatusService.Unregister(character)
 		CombatService.Unregister(character)

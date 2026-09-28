@@ -88,7 +88,19 @@ export type Data = {
 local SaveSchema = {}
 
 local template: Data = {
-	Version = 1,
+	-- REVIEW-M3B-01 C1: a fresh template is already current - not 1, which
+	-- used to make Migrate walk a brand-new profile AND DataService.
+	-- ResetToTemplate (Wipe/NewLife) through every migration up to
+	-- Config.Data.SchemaVersion, including Migrations[3]'s own "grandfather
+	-- an EXISTING save" logic. That's backwards for anything actually new:
+	-- Migrations[3] set Meta.Unlocks.Combat = true and Character.LivesLeft
+	-- to a full count on a brand-new profile too, when the whole point of
+	-- both fields is that a genuinely new one starts at the template's own
+	-- values instead (false / already-full, respectively - Wipe/NewLife
+	-- never actually lost anything here, but the unlock flag becoming
+	-- unconditionally true broke the entire premise of "earned, not
+	-- automatic" the moment Bryan turns Config.Combat.UnlockedByDefault off).
+	Version = Config.Data.SchemaVersion,
 	Character = {
 		FirstName = "",
 		Gender = 0,
