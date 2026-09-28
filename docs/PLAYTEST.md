@@ -513,7 +513,7 @@ Setup: Play, `.state`. Marker names per style must already match your animations
 Dev commands: `.coins <copper> [silver] [gold]`, `.coins+ ...`, `.price <copper>`, `.pay <coin> <amount>`, `.state`.
 
 ### M5A-A Rounding table
-- `.price 40` -> "40 Copper"; `.price 60` -> "1 Silver"; `.price 103` -> "1 Silver"; `.price 149` -> "1 Silver"; `.price 150` -> "2 Silver"; `.price 5000` -> "50 Silver"; `.price 6000` -> "1 Gold"; `.price 15000` -> "2 Gold". **Pass:** every line, never a decimal.
+- `.price 40` -> "40 Copper"; `.price 100` -> "100 Copper"; `.price 101` -> "1 Silver"; `.price 150` -> "1 Silver"; `.price 200` -> "1 Silver"; `.price 201` -> "2 Silver"; `.price 5000` -> "49 Silver"; `.price 10000` -> "99 Silver"; `.price 10001` -> "1 Gold"; `.price 20001` -> "2 Gold". **Pass:** every line, never a decimal.
 
 ### M5A-B Exact coin, no change
 - `.coins 120 0 0`, `.pay Silver 1` -> refused, your character says the "not enough Silver / exchange at the bank" line, purse unchanged. `.coins 120 1 0`, `.pay Silver 1` -> paid, purse shows 120 Copper 0 Silver. `.pay Copper 40` -> 80 Copper. **Pass:** all three; the purse HUD updates live and looks as before.

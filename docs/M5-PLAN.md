@@ -5,7 +5,7 @@ Bryan's direction: break it into phases, get each right before the next. Keep ev
 ## Decisions so far (Bryan, 2026-09-29)
 
 - **Coins:** 1 Gold = 100 Silver = 10,000 Copper (Bryan confirmed 2026-09-29).
-- **No mixed coins, whole numbers only.** A price is shown in the largest coin where the rounded amount is at least 1: 40 Copper stays 40 Copper; 60 Copper rounds to 1 Silver; 103 to 1 Silver; 150 to 2 Silver (round half up); Silver amounts round up into Gold the same way. No decimals anywhere.
+- **No mixed coins, whole numbers only, in bands (Bryan, 2026-09-29):** 1 to 100 Copper shows as Copper; 101 to 200 is 1 Silver; 201 to 300 is 2 Silver (Silver = ceil(copper / 100) - 1); the same from Silver into Gold: 10,001 to 20,000 Copper is 1 Gold. No decimals anywhere.
 - **Paying:** NO automatic change. A price is in one coin and you pay with that coin; if you hold the wrong coins the purchase fails with the old flavour line, and the Bank (later milestone) is the only place to exchange. Rewards stay Copper for now (Bryan, 2026-09-29); Silver and Gold come only from the dev `.coins` command until the Bank milestone.
 - **Money changer:** out; Bank milestone later.
 - **Coin sound:** the `CoinReward` sound plays on ANY coin change (Bryan, 2026-09-29), owned by the client purse controller from 5A on.
