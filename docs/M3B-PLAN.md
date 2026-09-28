@@ -47,3 +47,7 @@ Bryan runs one scenario per dummy (spawn, do the taught answer, confirm the log 
 **Later (new milestone after M6):** talking NPCs and the tutorial: the alley teacher, dialogue, the dummies introduced one by one, the unlock at the end.
 
 **Reminder of your open follow-ups:** combat feel, rank and Rukh tweaks, heartbeat sound, afterlife cutscene, viewport framing, NPC animations, NPC type attribute, Studio-only script deletions, and now: stance animations and marker names per style.
+
+## 6. Lives (Bryan, 2026-09-28)
+
+A character has 4 lives (`Config.Life.LivesPerCharacter`). Every death from any cause except a heart attack costs one life and the character simply respawns, no scene. The death that takes the last life plays the return-to-the-Rukh scene and wipes to a completely new character with 4 lives. A fatal heart attack ignores lives and always wipes. Knockouts are not deaths. The combat unlock is account-wide (`Meta.Unlocks.Combat`), so the new character keeps it. `Meta.Lives` stays the incarnation count; the new field is `Character.LivesLeft`. Dev: `.lives <n>`, `.kill`.

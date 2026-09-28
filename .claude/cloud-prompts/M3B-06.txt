@@ -1,0 +1,13 @@
+Follow-up M3B-06: the last-life death on the client (client). Do this after M3B-03 is pushed, on your same branch; git fetch origin main && git merge origin/main first. Same rules: never push main, check.sh at 0 errors, LAST commit starts with "DONE M3B-06:".
+
+CONTRACT (server M3B-05, built in parallel): new remote Died (server -> client, one table { cause = "lastLife" }); the existing HeartAttack {age, fatal} stays for old age. Attribute LivesLeft on the Player. The server sets Dying and expects RukhSceneDone exactly as for a fatal heart attack.
+
+BRYAN'S RULE: a character has 4 lives; an ordinary death costs one and just respawns (no scene); the death that takes the last life plays the afterlife scene and wipes to a new character; a fatal heart attack always does.
+
+BUILD (RukhController):
+1. On Died { cause = "lastLife" }: play the return-to-the-Rukh scene directly (no heartbeat pulses, no "Your heart gave out." line); same freeze, camera, golden body, walk, fade, then fire RukhSceneDone; same cleanup on the next CharacterAdded. Reuse the existing playRukhScene; do not duplicate it.
+2. Keep every guard: a second Died or HeartAttack during a running scene does not stack; a respawn mid-scene cleans up.
+3. An ordinary death (lives left) needs nothing from this controller; make sure nothing in it reacts to Humanoid.Died by itself.
+4. DevController overlay: add a livesLeft line if the snapshot has it (skip if server-driven). MenuController: no change (Bryan: no menu indication needed for now).
+
+Style as always. Reply with BRANCH, commit hash, files, check.sh counts, and a 3-line explanation for Bryan.
