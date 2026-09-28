@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, Milestone 4 (Status and Rukh): planning** (M3 gate passed 2026-09-27 with combat feel tuning left to Bryan, docs/FOLLOWUPS.md; see CLAUDE.md for all phases)
+Current phase: **Phase 5: Build, Milestone 5 (Economy and missions): plan awaiting Bryan's decisions** (M4 gate passed 2026-09-28; tweaks are Bryan's follow-up; see CLAUDE.md for all phases)
 
 ## Phase 1: Inventory and extract (done, gate passed 2026-09-26)
 
@@ -45,7 +45,7 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | M1 Foundation | Layout, data service (#1), remotes, join pipeline (#2), dev commands (#21), debug tools (#29), data wipe, parks and removals | **done (gate passed 2026-09-27)** |
 | M2 A life | Creation (#3), aging, visible aging and death (#4), health (#14), menu (#18) | **done (gate passed 2026-09-27)** |
 | M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | **done (gate passed 2026-09-27; feel tuning = Bryan follow-up)** |
-| M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | **planning** |
+| M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | **done (gate passed 2026-09-28; tweaks = Bryan follow-up)** |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
 | M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22) | todo |
 
@@ -116,4 +116,4 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | --- | --- | --- | --- | --- |
 | M4-01 | RankService (rank-up detection, pending epithet choice in the save, ChooseEpithet, AddMagoi/AddDeed API, attributes) + schema v2 | server-builder | done (merged) | `.magoi 300` sends RankUp with 3 choices; choice persists across rejoin; bad ChooseEpithet rejected; v1 save migrates to v2 |
 | M4-02 | RankController: Rukh flutter in the alignment colour + epithet card (menu style), origin choice at birth | client-builder | done (merged) | Flutter and card on rank-up; 1/2/3 or click chooses; card returns if a choice is pending at join |
-| M4-03 | PLAYTEST.md M4 scenarios; Bryan plays the moments, agent checks the remote | Bryan + lead + playtester | agent remote check PASS (rejections and throttling); join stalled at Loaded in that run (BUG-27, needs Bryan to confirm); Bryan pass pending | All pass |
+| M4-03 | PLAYTEST.md M4 scenarios; Bryan plays the moments, agent checks the remote | Bryan + lead + playtester | done: Bryan passed A-E 2026-09-28 after BUG-28; tweaks in FOLLOWUPS | All pass |

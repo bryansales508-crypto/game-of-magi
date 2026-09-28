@@ -49,6 +49,12 @@ Conventions in the new code: services on the server live in `src/ServerScriptSer
 
 ---
 
+## Rank and Rukh
+
+- **Numbers and text:** `Shared/Data/Ranks.luau` (the Magoi ladder and titles; `titleFor` renders King/Queen by gender), `Shared/Data/Epithets.luau` (the banks per rank and alignment; gendered entries), `Shared/Data/Alignment.luau` (`MinDeeds` before you are judged, `Lean` = 0.65 share for a side), `Config.Rukh` in `Shared/Config.luau` (`FlutterSeconds`, `Emitters` per alignment, `EmitRate`).
+- **Server:** `Server/Services/RankService.luau`: watches `Progress` (Magoi, GoldRukh, BlackRukh), sets the `Rank`/`RankIndex`/`Epithet`/`Alignment`/`EpithetPending` attributes, stores a pending choice in the save (`Progress.PendingEpithet`), fires `RankUp` and `AlignmentChanged`, validates `ChooseEpithet`. Choices queue: while one is pending no new card; after choosing, the next rank is announced if you are already past it. `AddMagoi`/`AddDeed` are what missions call. Dev: `.magoi`, `.magoi+`, `.rukh`, `.rankup`, `.epithet clear`.
+- **Client:** `Client/Controllers/RankController/init.luau`: `playFlutter` (clones the emitters onto the torso for `FlutterSeconds`), `showCard` (the card in the menu style; fonts are read from your MenuGUI template; buttons and 1/2/3 keys send `ChooseEpithet`).
+
 ## Heartbeat sound and heart-attack pulses
 
 - **`Shared/Config.luau`**: `Config.Sfx.Heartbeat` (the sound id; swap it), `Config.Scene` (`BeatGap`, `PairGap`, `NonFatalCycles`, `FatalCycles`, `FatalSlowFactor`, `MessageSeconds`).
