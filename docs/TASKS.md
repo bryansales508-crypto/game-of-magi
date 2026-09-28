@@ -133,3 +133,11 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 | M3B-04 | PLAYTEST.md M3B scenarios (one per dummy); Bryan plays; agent only if a check needs tooling | Bryan + lead | scenarios drafted; Bryan plays when home | Bryan approves the feel |
 | M3B-05 | Lives per character: `Character.LivesLeft` (4), ordinary death costs one and respawns, the last one runs the afterlife wipe, a fatal heart attack wipes regardless; `.lives`, `.kill` | server-builder | done (merged) | Rules hold in the self-test; Meta.Unlocks survives a new character |
 | M3B-06 | Client: `Died {cause="lastLife"}` plays the Rukh scene without the heartbeat; overlay shows livesLeft | client-builder | done (merged) | Same scene, no pulses; no stacking |
+
+### M5 Economy and missions, Phase 5A Currency (approved 2026-09-29; docs/M5-PLAN.md)
+
+| ID | Task | Owner | Status | Acceptance criteria |
+| --- | --- | --- | --- | --- |
+| M5A-01 | `Shared/Data/Economy.luau` (1/100/10,000, whole-coin rounding rule) + `EconomyService` (wallet, exact-coin Pay, Give, reward rounding, attributes, coin messages; bridge stops writing the purse) | server-builder | in progress (cloud) | Rounding table passes; 120 Copper cannot pay 1 Silver; purse follows attributes |
+| M5A-02 | `CurrencyController`: the old purse HUD from attributes; coin messages posted as the character speaking | client-builder | in progress (cloud) | Same look; messages show |
+| M5A-03 | PLAYTEST.md 5A scenarios; Bryan plays | Bryan + lead | todo | Bryan OK |
