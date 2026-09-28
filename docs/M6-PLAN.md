@@ -77,4 +77,4 @@ Everything here is built on the read-only Studio survey in `docs/reference/m6-st
 ## Order and cost
 6A and 6C are pure client work and can run in parallel with 6B (server clock + client lighting) and 6E (server). 6D waits for your Studio deletion. Two cloud builders at a time, Sonnet reviews except 6E (Opus, since it deletes the bridge and touches every player's collision). Estimated four build sessions and three reviews of cloud credit; the lead's local work is merges and docs only.
 
-**One question for Bryan:** how long should an in-game day be, and which hours count as night? (Proposed: the old 16-minute day, 10 minutes of light and 6 of dark. Say "keep" or give two numbers.)
+**Bryan (2026-09-29): approved, all phases at once.** Day length is the lead's call as long as day is longer than night: the old 10-minute day and 6-minute night stand. Bryan tags the city lights later; torches work as a model with a flame part and a separate light part (the tag goes on the model). The sound-asset items and the leftover ServerStorage scripts are his to fix at leisure.

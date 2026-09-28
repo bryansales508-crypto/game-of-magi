@@ -47,7 +47,7 @@ The milestones come from the approved TRIAGE.md, and each ends with a playtest a
 | M3 Combat | Movement (#9), status (#13), combat (#10, #11), dummies (#20), dagger removal (#12) | **done (gate passed 2026-09-27; feel tuning = Bryan follow-up)** |
 | M4 Status and Rukh | Rank, alignment, epithets (#25), HUD (#17) | **done (gate passed 2026-09-28; tweaks = Bryan follow-up)** |
 | M5 Economy and missions | Currency (#6), shop (#7), weapons (#28), delivery (#8), Bounty Hunting (#26) | todo |
-| M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22), legacy bridge removal | plan drafted (`docs/M6-PLAN.md`, 2026-09-29), awaiting Bryan |
+| M6 World | Day/night and lights (#27), regions and music (#15), footsteps (#16), ocean (#23), collisions (#22), legacy bridge removal | **approved 2026-09-29, building** (M6-01 server, M6-02 client in the cloud; Bryan tags city lights later) |
 
 ### M1 Foundation: plan
 
