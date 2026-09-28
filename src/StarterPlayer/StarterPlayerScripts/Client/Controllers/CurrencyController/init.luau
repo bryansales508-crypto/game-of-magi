@@ -17,6 +17,12 @@
 --
 -- No client-side money logic: the labels only ever mirror the Copper/
 -- Silver/Gold attributes the server already computed.
+--
+-- Follow-up (Bryan, 2026-09-29): the CoinReward sound (CharacterService
+-- clones it onto character.Torso, the same one the old save script and
+-- LegacyBridge played) must play on every real Copper/Silver/Gold change,
+-- up or down, so the player is alerted even without looking at the purse --
+-- but never on the initial fill at join/respawn.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -34,8 +40,10 @@ local CurrencyController = {}
 
 local COINS = { "Copper", "Silver", "Gold" }
 local CURRENCY_GUI_TIMEOUT = 5
+local COIN_SOUND_TIMEOUT = 5
 
 local loggedMissingGui = false
+local loggedMissingSound = false
 
 local function warnMissingGuiOnce(message: string)
 	if not loggedMissingGui then
@@ -44,19 +52,26 @@ local function warnMissingGuiOnce(message: string)
 	end
 end
 
-local function bindPurse(): { RBXScriptConnection }
+local function warnMissingSoundOnce(message: string)
+	if not loggedMissingSound then
+		loggedMissingSound = true
+		log:Warn(message)
+	end
+end
+
+local function findPurseLabels(): { [string]: TextLabel }?
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 	local currencyGui = playerGui:FindFirstChild("Currency") or playerGui:WaitForChild("Currency", CURRENCY_GUI_TIMEOUT)
 	if not currencyGui then
 		warnMissingGuiOnce("PlayerGui.Currency missing; coin purse HUD disabled")
-		return {}
+		return nil
 	end
 
 	local bank = currencyGui:FindFirstChild("Bank")
 	local purse = bank and bank:FindFirstChild("CoinPurse")
 	if not purse then
 		warnMissingGuiOnce("Currency.Bank.CoinPurse missing; coin purse HUD disabled")
-		return {}
+		return nil
 	end
 
 	local labels: { [string]: TextLabel } = {}
@@ -68,16 +83,53 @@ local function bindPurse(): { RBXScriptConnection }
 	end
 	if not (labels.Copper and labels.Silver and labels.Gold) then
 		warnMissingGuiOnce("Currency.Bank.CoinPurse.{Gold,Silver,Copper} missing; coin purse HUD disabled")
-		return {}
+		return nil
 	end
 
-	local function update(coin: string)
-		local label = labels[coin]
+	return labels
+end
+
+-- CharacterService clones CoinReward onto the character's Torso (the same
+-- sound the old save script and LegacyBridge played); bounded-wait since
+-- it's attached server-side and may replicate a beat after CharacterAdded.
+local function findCoinSound(): Sound?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+	local torso = character:FindFirstChild("Torso") or character:WaitForChild("Torso", COIN_SOUND_TIMEOUT)
+	if not torso then
+		warnMissingSoundOnce("character has no Torso; coin sound disabled")
+		return nil
+	end
+	local sound = torso:FindFirstChild("CoinReward") or torso:WaitForChild("CoinReward", COIN_SOUND_TIMEOUT)
+	if not sound or not sound:IsA("Sound") then
+		warnMissingSoundOnce("Torso.CoinReward missing; coin sound disabled")
+		return nil
+	end
+	return sound
+end
+
+-- Binds the purse labels and the coin alert sound to the Copper/Silver/Gold
+-- attributes. The sound plays on every real change (up or down) but never
+-- on the initial fill below (join or respawn) -- only GetAttributeChangedSignal
+-- firings count as a "change".
+local function bindCurrency(): { RBXScriptConnection }
+	local labels = findPurseLabels()
+	local coinSound = findCoinSound()
+
+	local function update(coin: string, playSound: boolean)
 		local amount = player:GetAttribute(coin)
 		if typeof(amount) ~= "number" then
 			return
 		end
-		label.Text = tostring(amount)
+		local label = labels and labels[coin]
+		if label then
+			label.Text = tostring(amount)
+		end
+		if playSound and coinSound then
+			coinSound:Play()
+		end
 	end
 
 	local connections: { RBXScriptConnection } = {}
@@ -85,10 +137,10 @@ local function bindPurse(): { RBXScriptConnection }
 		table.insert(
 			connections,
 			player:GetAttributeChangedSignal(coin):Connect(function()
-				update(coin)
+				update(coin, true)
 			end)
 		)
-		update(coin)
+		update(coin, false)
 	end
 
 	return connections
@@ -105,7 +157,7 @@ end
 
 local function bindForCurrentGui()
 	disconnectAll()
-	for _, connection in bindPurse() do
+	for _, connection in bindCurrency() do
 		table.insert(activeConnections, connection)
 	end
 end
