@@ -148,6 +148,7 @@ local function clearStock()
 				and part.Name ~= Shop.PantsHLName
 			then
 				part.Transparency = 1
+				part.CollisionGroup = "ClothingRackGroup" -- REVIEW-M5B-01: an undressed rack must not stay solid
 			end
 		end
 		local shirt = rack:FindFirstChildOfClass("Shirt")
