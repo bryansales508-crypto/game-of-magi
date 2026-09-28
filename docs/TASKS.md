@@ -146,7 +146,7 @@ Bryan's rules: NPCs are combatants like players with AI controllers (behavior tr
 
 | ID | Task | Owner | Status | Acceptance criteria |
 | --- | --- | --- | --- | --- |
-| M5B-00 | Read-only Studio dump of the stand model and the ClothingSpawn script for the builders | lead (agent) | running | `docs/reference/m5b-studio-dump.md` |
-| M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | todo | Same stock and look; no double charge; colour-aware ownership |
-| M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | todo | Only you see your highlight |
+| M5B-00 | Read-only Studio dump of the stand model and the ClothingSpawn script for the builders | lead (agent) | done (106k Sonnet tokens) | `docs/reference/m5b-studio-dump.md` |
+| M5B-01 | `Shared/Data/Shop.luau` + `ShopService` (stock the stand from data, server prompts, checks before charging, exact-coin Pay, wear through `ItemService`) + `ItemService` (old ItemHandler ported); old MarketHandler removed; the Studio-only script disabled at startup | server-builder | in progress (cloud) | Same stock and look; no double charge; colour-aware ownership |
+| M5B-02 | `ShopController`: hover highlight for the hovering player only; price on the prompt | client-builder | in progress (cloud) | Only you see your highlight |
 | M5B-03 | PLAYTEST.md 5B scenarios; Bryan plays | Bryan + lead | scenarios drafted | Bryan OK |

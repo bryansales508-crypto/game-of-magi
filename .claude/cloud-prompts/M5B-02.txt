@@ -1,0 +1,14 @@
+You are the client-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/client-builder.md` exactly. Your task is **M5B-02: the clothing shop on the client (ShopController)**, Phase 5B of Milestone 5. Read `docs/M5-PLAN.md` (Phase 5B) and `docs/reference/m5b-studio-dump.md` (the stand model and the OLD script's hover behaviour).
+
+Git: work on the branch your session starts on. Never push main, never merge, never force-push. LAST commit starts with `DONE M5B-02:`. `bash scripts/check.sh` to 0 errors. Pattern: existing controllers under `Client/Controllers/`.
+
+## Contract with the server (M5B-01, built in parallel)
+- The server stocks `Workspace.Qarzin.ClothesStand` and creates the ProximityPrompts (always Enabled, `RequiresLineOfSight = false`, `ActionText` = the price). The rig parts `ShirtHL` and `PantsHL` inside each `OutfitTable.ClothingRack` model have a `Highlight` child; the server no longer touches it.
+- Purchases are server-side; the client sends nothing new (the prompt's `Triggered` is handled on the server). Coin messages already show through `CoinMessage` (5A).
+
+## Build: `Client/Controllers/ShopController/init.luau`
+1. Hover highlight for the LOCAL player only: for each `ShirtHL`/`PantsHL` part (found under the stand at start and for racks filled later: watch the stand folder for changes), on mouse hover within 10 studs (use a `ClickDetector` if the server creates one, its `MouseHoverEnter/Leave` fire on the client; otherwise `UserInputService`/`Mouse.Target` polling on `RenderStepped` limited to when the player is within 12 studs of the stand) set that part's `Highlight.Enabled = true` locally and `Transparency = 0.999` (as the old script did), and undo on leave. Since `Highlight.Enabled` set on the client does not replicate, only you see it.
+2. Nothing else: no prices computed on the client, no purchase logic.
+3. Respawn-safe, no per-frame work when far from the stand, tracked connections, `--!strict`, Log only.
+
+Reply with BRANCH, commit hash, files, check.sh counts, and a 3-line explanation for Bryan.
