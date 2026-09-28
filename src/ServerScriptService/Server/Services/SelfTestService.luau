@@ -256,21 +256,22 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
 	end
 
-	-- M5C-01: schema v4 adds Progress.DeliveryStreak and Progress.Routes, an
-	-- intentional no-op migration (same reasoning as v1 -> v2 above - both
-	-- new fields already read the same as their template default before
-	-- Migrate ever runs).
+	-- M5C-01: schema v4 adds Progress.DeliveryStreak, Progress.Routes and
+	-- (the intercepted mark, added later while still unmerged) Progress.
+	-- Intercepted - an intentional no-op migration (same reasoning as
+	-- v1 -> v2 above - all three new fields already read the same as their
+	-- template default before Migrate ever runs).
 	do
 		local data = ({
 			Version = 3,
-			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 		} :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
 		expect(results, "SaveSchema: v3 -> v4 migration bumps Version to 4", data.Version == 4)
 		expect(
 			results,
-			"SaveSchema: v3 -> v4 migration leaves DeliveryStreak/Routes at their already-backfilled defaults",
-			data.Progress.DeliveryStreak == 0 and next(data.Progress.Routes) == nil
+			"SaveSchema: v3 -> v4 migration leaves DeliveryStreak/Routes/Intercepted at their already-backfilled defaults",
+			data.Progress.DeliveryStreak == 0 and next(data.Progress.Routes) == nil and data.Progress.Intercepted == 0
 		)
 	end
 
@@ -362,7 +363,7 @@ local function testDataService(results: { Check })
 				LivesLeft = Config.Life.LivesPerCharacter,
 			},
 			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 			Bounty = 0,
 			Economy = { Copper = 20, Silver = 0, Gold = 0 },
 			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -608,7 +609,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 		Bounty = 0,
 		Economy = { Copper = 20, Silver = 0, Gold = 0 },
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -2835,10 +2836,18 @@ local function testLifeService(results: { Check })
 	end
 end
 
-local function fakeMissionData(routes: { [string]: number }?, streak: number?): SaveSchema.Data
+local function fakeMissionData(routes: { [string]: number }?, streak: number?, intercepted: number?): SaveSchema.Data
 	return ({
 		Bounty = 0,
-		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = streak or 0, Routes = routes or {} },
+		Progress = {
+			Magoi = 0,
+			GoldRukh = 0,
+			BlackRukh = 0,
+			Epithet = "",
+			DeliveryStreak = streak or 0,
+			Routes = routes or {},
+			Intercepted = intercepted or 0,
+		},
 	} :: any) :: SaveSchema.Data
 end
 
@@ -3003,6 +3012,71 @@ local function testMissionService(results: { Check })
 			results,
 			"MissionService (F5): WireModifiers pins {key, name, chance, text} - name is the display name, not the internal key",
 			entry.key == "TimeCrunch" and entry.name == "Time Crunch" and entry.chance == 20 and entry.text == "Complete in 3:00." and entry.payMultiplier == nil
+		)
+	end
+
+	-- The intercepted mark (Bryan): OfferMultiplier halves per stack with a
+	-- 10% floor - 0.5, 0.25, floor at 0.1 once the halving would drop below
+	-- it (0.5^4 = 0.0625).
+	do
+		expect(results, "MissionService (intercepted mark): 0 stacks is no reduction at all", MissionService.OfferMultiplier(0) == 1)
+		expect(results, "MissionService (intercepted mark): 1 stack halves the offer", MissionService.OfferMultiplier(1) == 0.5)
+		expect(results, "MissionService (intercepted mark): 2 stacks quarters it", MissionService.OfferMultiplier(2) == 0.25)
+		expect(results, "MissionService (intercepted mark): 3 stacks is still above the floor (0.125)", math.abs(MissionService.OfferMultiplier(3) - 0.125) < 1e-9)
+		expect(results, "MissionService (intercepted mark): 4+ stacks floors at 0.1, never reaches 0", MissionService.OfferMultiplier(4) == 0.1 and MissionService.OfferMultiplier(10) == 0.1)
+	end
+
+	-- ApplyOfferMultiplier/MarkIntercepted/ClearIntercepted: the pure pieces
+	-- board offers, a courier's own reduced payout, and one delivery washing
+	-- the mark away are all built from.
+	do
+		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier halves and floors", MissionService.ApplyOfferMultiplier(101, 0.5) == 50)
+		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier at 1x changes nothing", MissionService.ApplyOfferMultiplier(101, 1) == 101)
+
+		local data = fakeMissionData(nil, nil, 2)
+		MissionService.MarkIntercepted(data)
+		expect(results, "MissionService (intercepted mark): MarkIntercepted advances the stack by exactly one", data.Progress.Intercepted == 3)
+		MissionService.ClearIntercepted(data)
+		expect(results, "MissionService (intercepted mark): ClearIntercepted wipes every stack, not just decrements", data.Progress.Intercepted == 0)
+	end
+
+	-- Board offers are reduced the same way a courier's own finish payout
+	-- is - both are BaseAmount/ComputePay combined with the SAME
+	-- OfferMultiplier, so a marked player's board and their eventual payout
+	-- never disagree.
+	do
+		local rankIndex, population, streak = 2, 10, 3
+		local modifiers = { fakeMod("TimeCrunch", 1.2) }
+		local base = MissionService.ComputePay(rankIndex, population, streak, modifiers)
+		local oneStackOffer = MissionService.ApplyOfferMultiplier(base, MissionService.OfferMultiplier(1))
+		local twoStackOffer = MissionService.ApplyOfferMultiplier(base, MissionService.OfferMultiplier(2))
+		expect(results, "MissionService (intercepted mark): a marked player's board offer is half the unmarked one", oneStackOffer == math.floor(base * 0.5))
+		expect(results, "MissionService (intercepted mark): two stacks quarters the offer, not just halves it again", twoStackOffer == math.floor(base * 0.25))
+	end
+
+	-- The interceptor of an ALREADY-marked victim: reduced Copper (the same
+	-- OfferMultiplier applied to their own InterceptPay) and no Black Rukh -
+	-- but a FIRST-ever interception (0 stacks beforehand) still pays full
+	-- price and a real Black Rukh.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("HeavyCargo", 1.3) }
+		local rawPayout = MissionService.InterceptPay(base, modifiers, {})
+
+		local firstInterception = MissionService.ApplyOfferMultiplier(rawPayout, MissionService.OfferMultiplier(0))
+		expect(results, "MissionService (intercepted mark): a courier's first-ever interception pays full price", firstInterception == rawPayout)
+		expect(results, "MissionService (intercepted mark): a first-ever interception still earns the interceptor a Black Rukh", MissionService.InterceptorEarnsBlackRukh(MissionService.OfferMultiplier(0)))
+
+		local secondInterception = MissionService.ApplyOfferMultiplier(rawPayout, MissionService.OfferMultiplier(1))
+		expect(
+			results,
+			"MissionService (intercepted mark): intercepting an already-marked courier pays reduced Copper",
+			secondInterception == math.floor(rawPayout * 0.5) and secondInterception < rawPayout
+		)
+		expect(
+			results,
+			"MissionService (intercepted mark): intercepting an already-marked courier earns NO Black Rukh",
+			not MissionService.InterceptorEarnsBlackRukh(MissionService.OfferMultiplier(1))
 		)
 	end
 

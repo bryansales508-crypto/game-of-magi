@@ -151,6 +151,50 @@ function MissionService.InterceptPay(baseAmount: number, modifiers: { ModifierRo
 	return MissionService.CurrentPay(baseAmount, modifiers, excluding)
 end
 
+-- Pure (the intercepted mark, Bryan): every interception adds one stack to
+-- the COURIER (Progress.Intercepted) - this is the multiplier that stack
+-- count earns them, halved per stack with a 10% floor so it never hits
+-- zero. Applies to that player's own board offers, their own reduced
+-- payout if they still complete a marked delivery, and an interceptor's
+-- own payout while the victim is marked (see ApplyOfferMultiplier/
+-- interceptRun) - `stacks == 0` is exactly 1 (no reduction at all).
+function MissionService.OfferMultiplier(stacks: number): number
+	return math.max(Config.Missions.InterceptedFloor, Config.Missions.InterceptedDecay ^ stacks)
+end
+
+-- Pure: applies an already-computed OfferMultiplier to an already-computed
+-- pay number - kept as its own tiny step (rather than folded into
+-- ComputePay/CurrentPay/InterceptPay) so none of those - or their existing
+-- self-tests - need to know the intercepted mark exists at all; a run's own
+-- `offerMultiplier` is fixed once at roll time (same reasoning as
+-- `baseAmount`), same as everything else this stacks with.
+function MissionService.ApplyOfferMultiplier(pay: number, offerMultiplier: number): number
+	return math.floor(pay * offerMultiplier)
+end
+
+-- Pure: the courier's OWN mark advances by one on every interception -
+-- never cleared by a failure, only by ClearIntercepted below (a completed
+-- delivery).
+function MissionService.MarkIntercepted(data: Data)
+	data.Progress.Intercepted += 1
+end
+
+-- Pure: one completed delivery washes the mark away entirely - AFTER that
+-- delivery itself is paid at whatever the reduced rate was at the time it
+-- was rolled (finishRun's own ordering, not this function's).
+function MissionService.ClearIntercepted(data: Data)
+	data.Progress.Intercepted = 0
+end
+
+-- Pure (Bryan): an interceptor earns a Black Rukh only if the victim
+-- WASN'T already marked before this interception - `offerMultiplierAtStart`
+-- is a run's own `offerMultiplier` (fixed at roll/start time, i.e. before
+-- this interception's own mark), which is exactly 1 only when stacks was 0
+-- at that point.
+function MissionService.InterceptorEarnsBlackRukh(offerMultiplierAtStart: number): boolean
+	return offerMultiplierAtStart >= 1
+end
+
 -- Pure (Bryan's post-review refinement): marks one modifier failed in
 -- `failedKeys`, idempotently - returns true only the first time (so a
 -- caller fires the ModifierFailed update/log exactly once per modifier per
@@ -259,7 +303,8 @@ type BoardDestination = {
 	key: string,
 	modifiers: { ModifierRoll },
 	baseAmount: number,
-	pay: number, -- preview: baseAmount x every rolled modifier's multiplier (the best case)
+	offerMultiplier: number, -- the intercepted mark, fixed at roll time like baseAmount
+	pay: number, -- preview: baseAmount x every rolled modifier's multiplier x offerMultiplier (the best case)
 }
 
 type Board = {
@@ -278,6 +323,7 @@ type Run = {
 	originPosition: Vector3,
 	modifiers: { ModifierRoll }, -- the full rolled set, immutable through the run
 	baseAmount: number,
+	offerMultiplier: number, -- the intercepted mark, fixed at roll time (>= 1 means the courier wasn't marked at start - no Black Rukh withheld from an interceptor)
 	phase: RunPhase,
 	returnPosition: Vector3?,
 	hasCourierLoop: boolean,
@@ -390,7 +436,7 @@ function MissionService.WireModifiers(modifiers: { ModifierRoll }): { any }
 	return list
 end
 
-local function sendBoard(player: Player, board: Board)
+local function sendBoard(player: Player, board: Board, data: Data)
 	local destinationsPayload = {}
 	for _, destKey in Cities.Routes[board.city] do
 		local dest = board.destinations[destKey]
@@ -407,7 +453,18 @@ local function sendBoard(player: Player, board: Board)
 			})
 		end
 	end
-	Remotes.Server.Fire("MissionBoard", player, { city = board.city, destinations = destinationsPayload })
+	-- The intercepted mark (Bryan): a headline figure for the board itself -
+	-- `intercepted` the player's CURRENT stack count, `offerMultiplier` what
+	-- it's worth right now. Every destination's own `pay` above is already
+	-- multiplied (fixed at whichever moment IT was rolled/cached - REVIEW-
+	-- M5C-01 M3), so these two fields are informational display only, not a
+	-- second multiplication the client needs to apply itself.
+	Remotes.Server.Fire("MissionBoard", player, {
+		city = board.city,
+		destinations = destinationsPayload,
+		intercepted = data.Progress.Intercepted,
+		offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted),
+	})
 end
 
 -- Rolls one destination fresh (never cached itself - GetOrRoll/
@@ -419,8 +476,9 @@ local function rollDestination(player: Player, data: Data, destKey: string): Boa
 	local factors = MissionService.FactorsFor(data, destKey)
 	local modifiers = Cities.RollModifiers(factors, rollDie)
 	local baseAmount = MissionService.BaseAmount(rankIndex, population, streak)
-	local pay = math.floor(baseAmount * Cities.CombinedMultiplier(modifiers))
-	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount, pay = pay }
+	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
+	local pay = MissionService.ApplyOfferMultiplier(MissionService.ComputePay(rankIndex, population, streak, modifiers), offerMultiplier)
+	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount, offerMultiplier = offerMultiplier, pay = pay }
 end
 
 -- M3: reuses a player's existing roll for `destKey` if one is still cached
@@ -638,7 +696,7 @@ end
 -- ==================== run lifecycle ====================
 
 local function currentPay(run: Run): number
-	return MissionService.CurrentPay(run.baseAmount, run.modifiers, run.failedKeys)
+	return MissionService.ApplyOfferMultiplier(MissionService.CurrentPay(run.baseAmount, run.modifiers, run.failedKeys), run.offerMultiplier)
 end
 
 local function sendUpdate(player: Player, run: Run, state: string)
@@ -685,7 +743,8 @@ local function startRun(
 	destinationKey: string,
 	destinationPosition: Vector3,
 	modifiers: { ModifierRoll },
-	baseAmount: number
+	baseAmount: number,
+	offerMultiplier: number
 )
 	local now = Workspace:GetServerTimeNow()
 	local hasTimeCrunch = hasModifier(modifiers, "TimeCrunch")
@@ -699,6 +758,7 @@ local function startRun(
 		originPosition = originPosition,
 		modifiers = modifiers,
 		baseAmount = baseAmount,
+		offerMultiplier = offerMultiplier,
 		phase = "ToDestination",
 		returnPosition = nil,
 		hasCourierLoop = hasModifier(modifiers, "CourierLoop"),
@@ -790,6 +850,10 @@ local function finishRun(player: Player, run: Run)
 	local data = DataService.Get(player)
 	if data then
 		MissionService.ApplySuccess(data, run.destination)
+		-- The intercepted mark: this delivery already paid at the reduced
+		-- rate (`payout` above, via run.offerMultiplier) - now that it's
+		-- actually landed, the mark is gone.
+		MissionService.ClearIntercepted(data)
 		refreshAttributes(player, data)
 	end
 
@@ -838,9 +902,19 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 	-- reaction (falling back to the current failedKeys if this interception
 	-- didn't come from a real landed hit at all, e.g. a dev `.knock`), and
 	-- Clear the Route never counts for an interceptor either way.
-	local payout = MissionService.InterceptPay(run.baseAmount, run.modifiers, run.preHitFailedKeys or run.failedKeys)
+	local rawPayout = MissionService.InterceptPay(run.baseAmount, run.modifiers, run.preHitFailedKeys or run.failedKeys)
+	-- The intercepted mark: run.offerMultiplier reflects the courier's OWN
+	-- stacks as they stood at roll/start time - i.e. before this very
+	-- interception's own mark - since nothing else can touch Progress.
+	-- Intercepted while a run is active. offerMultiplier < 1 means the
+	-- courier was ALREADY marked from an earlier interception: the
+	-- attacker's payout is reduced the same way a board offer would be, and
+	-- (Bryan) no Black Rukh at all while the victim is marked.
+	local payout = MissionService.ApplyOfferMultiplier(rawPayout, run.offerMultiplier)
 	EconomyService.GiveCopperValue(attacker, payout, string.format("Delivery interception: %s", run.destination))
-	RankService.AddDeed(attacker, "Black", 1)
+	if MissionService.InterceptorEarnsBlackRukh(run.offerMultiplier) then
+		RankService.AddDeed(attacker, "Black", 1)
+	end
 
 	local attackerData = DataService.Get(attacker)
 	if attackerData then
@@ -851,6 +925,7 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 	local courierData = DataService.Get(courier)
 	if courierData then
 		MissionService.ApplyFailure(courierData)
+		MissionService.MarkIntercepted(courierData)
 		refreshAttributes(courier, courierData)
 	end
 
@@ -893,7 +968,7 @@ local function onOpenBoard(player: Player, cityKey: string)
 	end
 
 	boards[player] = board
-	sendBoard(player, board)
+	sendBoard(player, board, data)
 
 	if missionLogEnabled then
 		log:Info(string.format("%s opened the %s delivery board", player.Name, cityKey))
@@ -931,7 +1006,7 @@ local function onMissionStart(player: Player, destinationKey: string)
 	local originPosition = board.part.Position
 	closeBoard(player)
 	clearCachedRoll(player, destinationKey) -- M3: used up - the next board open re-rolls this destination
-	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount)
+	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount, dest.offerMultiplier)
 
 	if missionLogEnabled then
 		log:Info(string.format("%s started a delivery from %s to %s (%d Copper)", player.Name, board.city, destinationKey, dest.pay))
@@ -1175,7 +1250,7 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	local dest = rollDestination(target, data, cityKey)
 
 	closeBoard(target)
-	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount)
+	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount, dest.offerMultiplier)
 
 	return string.format("%s's delivery to %s started: %d Copper, modifiers: %s", target.Name, cityKey, dest.pay, modNames(dest.modifiers))
 end
@@ -1224,6 +1299,65 @@ local function missionStreakDevCommand(caller: Player, args: { string }): string
 	return string.format("%s's delivery streak set to %d", target.Name, data.Progress.DeliveryStreak)
 end
 
+-- The intercepted mark: shows or sets a player's own stacks directly.
+local function missionMarkDevCommand(caller: Player, args: { string }): string
+	-- The first token is the stack count only if it parses as a number -
+	-- otherwise (or if there's no first token at all) it's the optional
+	-- trailing player name and this is a "show" call.
+	local maybeN = tonumber(args[1])
+	local n: number?, playerArg: string?
+	if maybeN ~= nil then
+		n = maybeN
+		playerArg = args[2]
+	else
+		playerArg = args[1]
+	end
+
+	local target, err = DevService.ResolvePlayer(caller, playerArg)
+	if target == nil then
+		return err or "player not found"
+	end
+	local data = DataService.Get(target)
+	if data == nil then
+		return string.format("%s has no save loaded", target.Name)
+	end
+
+	if n == nil then
+		return string.format(
+			"%s: %d stack(s), offer multiplier %.2f",
+			target.Name,
+			data.Progress.Intercepted,
+			MissionService.OfferMultiplier(data.Progress.Intercepted)
+		)
+	end
+
+	data.Progress.Intercepted = math.max(0, math.floor(n))
+	refreshAttributes(target, data)
+	return string.format(
+		"%s's intercepted mark set to %d (offer multiplier %.2f)",
+		target.Name,
+		data.Progress.Intercepted,
+		MissionService.OfferMultiplier(data.Progress.Intercepted)
+	)
+end
+
+-- "Intercepted by nobody": fails the caller's OWN active delivery and adds
+-- one stack, with no attacker to pay - so Bryan can test the mark solo,
+-- without a second account to actually knock him out.
+local function missionInterceptDevCommand(caller: Player, _args: { string }): string
+	local run = runs[caller]
+	if run == nil then
+		return "you have no active delivery"
+	end
+	local data = DataService.Get(caller)
+	if data then
+		MissionService.MarkIntercepted(data)
+		refreshAttributes(caller, data)
+	end
+	failRun(caller, run, "dev intercept (marked, no payout - by nobody)")
+	return "your delivery was intercepted by nobody: marked, no payout"
+end
+
 local function missionLogDevCommand(_caller: Player, args: { string }): string
 	local mode = args[1] and args[1]:lower()
 	if mode ~= "on" and mode ~= "off" then
@@ -1250,16 +1384,20 @@ local function missionCommand(caller: Player, args: { string }): string
 		return missionFailDevCommand(caller, rest)
 	elseif sub == "streak" then
 		return missionStreakDevCommand(caller, rest)
+	elseif sub == "mark" then
+		return missionMarkDevCommand(caller, rest)
+	elseif sub == "intercept" then
+		return missionInterceptDevCommand(caller, rest)
 	elseif sub == "log" then
 		return missionLogDevCommand(caller, rest)
 	end
-	return "usage: .mission start <city> [player] | finish [player] | fail [player] | streak <n> [player] | log on|off"
+	return "usage: .mission start <city> [player] | finish [player] | fail [player] | streak <n> [player] | mark [n] [player] | intercept | log on|off"
 end
 
 local function registerDevCommands()
 	DevService.Register(
 		"mission",
-		"start <city> [player] | finish [player] | fail [player] | streak <n> [player] | log on|off - delivery missions",
+		"start <city> [player] | finish [player] | fail [player] | streak <n> [player] | mark [n] [player] | intercept | log on|off - delivery missions",
 		missionCommand
 	)
 end

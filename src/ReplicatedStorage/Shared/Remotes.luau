@@ -213,7 +213,13 @@ Remotes.Definitions = {
 	-- that already failed on the first leg; the one-shot
 	-- `state = "ModifierFailed", key = ...` update is still what greys a
 	-- pop-out the moment it fails, `failed` is only for a rebuild to catch
-	-- up, never a second trigger for the same key.
+	-- up, never a second trigger for the same key. The intercepted mark
+	-- (Bryan): MissionBoard also carries `intercepted` (the player's current
+	-- Progress.Intercepted stack count) and `offerMultiplier` (what that's
+	-- worth right now, `MissionService.OfferMultiplier`) - purely
+	-- informational headline numbers, since every destination's own `pay`
+	-- is already multiplied by whatever the multiplier was when THAT
+	-- destination was rolled/cached.
 	MissionBoard = {
 		kind = "Event",
 		args = {},

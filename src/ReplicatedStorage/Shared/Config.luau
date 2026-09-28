@@ -309,6 +309,15 @@ Config.Missions = {
 	-- to the board they just opened.
 	InterceptMinStuds = 100,
 	InterceptMinSeconds = 30,
+	-- The intercepted mark (Bryan): every interception adds one stack to the
+	-- courier (Progress.Intercepted); MissionService.OfferMultiplier =
+	-- max(InterceptedFloor, InterceptedDecay ^ stacks) multiplies that
+	-- player's own board offers, their own reduced payout if they still
+	-- complete a marked delivery, and an interceptor's own payout while the
+	-- victim is marked (no Black Rukh either, while marked) - one completed
+	-- delivery clears every stack, after paying it at the reduced rate.
+	InterceptedDecay = 0.5,
+	InterceptedFloor = 0.1,
 	HeavyCargoSpeedMult = 0.75,
 	MagoiPerDelivery = 10,
 	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch
