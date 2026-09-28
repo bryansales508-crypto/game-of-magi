@@ -14,6 +14,14 @@
 -- fires HeartAttack; a fatal roll freezes the humanoid, waits for the
 -- client's return-to-the-Rukh scene (or Config.Aging.SceneTimeout), then
 -- starts a brand-new life.
+--
+-- M3B-05 (Bryan, 2026-09-28) added a second way to reach that same scene:
+-- LifeService.luau's Character.LivesLeft running out on a real death
+-- (falling, the void, drowning - never a combat knockout). The exported
+-- AgeService.StartDeathSequence(player, data, cause) is the one function
+-- both causes share; a fatal heart attack (cause = "heartAttack") is
+-- unchanged, still firing its own richer HeartAttack remote itself before
+-- calling in here.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -203,9 +211,19 @@ end
 
 -- Freezes the humanoid, starts a completely fresh life right away, waits
 -- for the scene (or its timeout), then respawns. Runs as its own task so
--- it never blocks the shared aging loop for every other player.
-local function startDeathSequence(player: Player, data: Data)
+-- it never blocks the shared aging loop for every other player. Shared by
+-- a fatal heart attack (cause = "heartAttack", the HeartAttack remote is
+-- already fired by the caller before this runs - unchanged) and M3B-05's
+-- last-life death (cause = "lastLife", the new Died remote is fired here -
+-- LifeService.luau calls this directly for that path). Exported so
+-- LifeService can reuse it without duplicating the freeze/NewLife/scene-
+-- wait/respawn plumbing this file already owns (Dying, RukhSceneDone).
+function AgeService.StartDeathSequence(player: Player, data: Data, cause: "heartAttack" | "lastLife")
 	player:SetAttribute("Dying", true)
+
+	if cause == "lastLife" then
+		Remotes.Server.Fire("Died", player, { cause = "lastLife" })
+	end
 
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -237,6 +255,14 @@ local function startDeathSequence(player: Player, data: Data)
 	LegacyBridge.Refresh(player, data)
 	player:SetAttribute("Age", data.Age.Years)
 	player:SetAttribute("Lives", data.Meta.Lives)
+	-- M3B-05: LifeService owns LivesLeft conceptually, but NewLife already
+	-- reset it (DataService.ResetToTemplate) by the time we're here, and
+	-- this is the one place both death causes already refresh the sibling
+	-- Lives attribute right after NewLife - simplest to mirror it alongside
+	-- Lives rather than round-trip back through LifeService for this.
+	pcall(function()
+		player:SetAttribute("LivesLeft", data.Character.LivesLeft)
+	end)
 
 	waitForRukhSceneDone(player)
 
@@ -303,7 +329,9 @@ local function onBirthday(player: Player, data: Data): boolean
 	end
 
 	active[player] = nil
-	task.spawn(startDeathSequence, player, data)
+	task.spawn(function()
+		AgeService.StartDeathSequence(player, data, "heartAttack")
+	end)
 	return true
 end
 
@@ -358,7 +386,9 @@ function AgeService.ForceHeartAttack(player: Player, fatal: boolean): (boolean, 
 	Remotes.Server.Fire("HeartAttack", player, data.Age.Years, fatal)
 	if fatal then
 		active[player] = nil
-		task.spawn(startDeathSequence, player, data)
+		task.spawn(function()
+			AgeService.StartDeathSequence(player, data, "heartAttack")
+		end)
 	end
 	return true, nil
 end

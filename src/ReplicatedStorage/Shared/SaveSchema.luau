@@ -25,6 +25,13 @@ export type Data = {
 		MouthShape: number,
 		Height: number, -- 10 = "not rolled yet" sentinel
 		GrowthProfile: string, -- "" until AgeHandler rolls one; format "v1|start|adult|spurtAge|fatEnd"
+		-- Schema v3 (M3B-05): this character's own remaining lives
+		-- (Config.Life.LivesPerCharacter at birth). A real death
+		-- (Humanoid.Died - not a combat knockout) costs one; the death
+		-- that takes the last one wipes to a brand-new character with a
+		-- fresh count (LifeService.luau). Distinct from Meta.Lives below,
+		-- which counts CHARACTERS, not lives within one.
+		LivesLeft: number,
 	},
 	Age: {
 		Years: number,
@@ -61,6 +68,10 @@ export type Data = {
 	Meta: {
 		Created: number, -- os.time() of first load; 0 until then
 		LastSeen: number, -- os.time() of the most recent load
+		-- The INCARNATION count - how many characters this player has had
+		-- (bumped by DataService.NewLife). Not the same thing as
+		-- Character.LivesLeft above, which is how many lives the CURRENT
+		-- character has left before it becomes the next incarnation.
 		Lives: number,
 		-- Schema v3 (M3B-01): combat is earned, not automatic (DESIGN: a
 		-- tutorial unlocks it; until that ships, Config.Combat.
@@ -90,6 +101,7 @@ local template: Data = {
 		MouthShape = 1,
 		Height = 10,
 		GrowthProfile = "",
+		LivesLeft = Config.Life.LivesPerCharacter,
 	},
 	Age = {
 		Years = 13,
@@ -142,17 +154,23 @@ SaveSchema.Migrations = {} :: { [number]: (data: Data) -> () }
 -- migration, not just the loop's own version-number increment.
 SaveSchema.Migrations[2] = function(_data: Data) end
 
--- v3 (M3B-01): adds Meta.Unlocks.Combat. Migrate is always called after
--- Profile:Reconcile() (DataService.onPlayerAdded), which already backfilled
--- the whole Unlocks table from the template's own {Combat = false} default
--- before this runs - so this only has to flip it, not create it. Explicitly
--- true here (not left at the template's false): an EXISTING save already
--- had full combat access before v3 ever existed, and nobody should lose
--- that just because the schema grew a flag for it. Only a save that's
--- genuinely new as of v3 (never reconciled before, so there's no "existing
--- access" to preserve) starts at the template's own false.
+-- v3 (M3B-01/M3B-05): adds Meta.Unlocks.Combat and Character.LivesLeft.
+-- Migrate is always called after Profile:Reconcile() (DataService.
+-- onPlayerAdded), which already backfilled both from the template's own
+-- defaults before this runs - so this only has to flip/set them, not
+-- create them. Unlocks.Combat is explicitly true here (not left at the
+-- template's false): an EXISTING save already had full combat access
+-- before v3 ever existed, and nobody should lose that just because the
+-- schema grew a flag for it. LivesLeft is set to a full
+-- Config.Life.LivesPerCharacter for the same reason Reconcile's own
+-- backfill would already give it - explicit here so retuning
+-- LivesPerCharacter later doesn't leave an old save's migration frozen at
+-- whatever the number used to be. Only a save that's genuinely new as of
+-- v3 (never reconciled before, so there's no "existing access"/"already
+-- has lives" to preserve) starts at the template's own values.
 SaveSchema.Migrations[3] = function(data: Data)
 	data.Meta.Unlocks.Combat = true
+	data.Character.LivesLeft = Config.Life.LivesPerCharacter
 end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,

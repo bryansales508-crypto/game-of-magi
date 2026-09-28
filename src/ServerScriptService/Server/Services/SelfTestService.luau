@@ -23,6 +23,7 @@ local Alignment = require(ReplicatedStorage.Shared.Data.Alignment)
 local Epithets = require(ReplicatedStorage.Shared.Data.Epithets)
 local CharacterService = require(script.Parent.CharacterService)
 local AgeService = require(script.Parent.AgeService)
+local LifeService = require(script.Parent.LifeService)
 local AgeHandler = require(script.Parent.AgeService.AgeHandler)
 local HeightHandler = require(script.Parent.AgeService.HeightHandler)
 local HealthService = require(script.Parent.HealthService)
@@ -266,6 +267,7 @@ local function testDataService(results: { Check })
 	do
 		local data = ({
 			Version = Config.Data.SchemaVersion,
+			Character = { LivesLeft = 0 },
 			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
 		} :: any) :: SaveSchema.Data
 		local keepCombatUnlocked = data.Meta.Unlocks.Combat
@@ -274,6 +276,9 @@ local function testDataService(results: { Check })
 		data.Meta.Unlocks.Combat = keepCombatUnlocked -- NewLife's own restore step
 
 		expect(results, "DataService: NewLife's reset carries Meta.Unlocks.Combat over (per-player forever, not per-life)", data.Meta.Unlocks.Combat == true)
+		-- M3B-05: a brand-new character always starts with a full life count,
+		-- regardless of how many the character it replaces had left (0 here).
+		expect(results, "DataService: NewLife's reset gives the new character a full Character.LivesLeft again", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
 	end
 
 	do
@@ -302,6 +307,7 @@ local function testDataService(results: { Check })
 				MouthShape = 1,
 				Height = 1,
 				GrowthProfile = "",
+				LivesLeft = Config.Life.LivesPerCharacter,
 			},
 			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
 			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
@@ -519,6 +525,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			MouthShape = 1,
 			Height = 10,
 			GrowthProfile = "",
+			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
 		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
@@ -2300,6 +2307,40 @@ local function testTrainers(results: { Check })
 	scratch:Destroy()
 end
 
+-- M3B-05: LifeService.HandleDeath's own branch logic (a live Humanoid.Died
+-- round-trip needs a real Player - Player.Character/:LoadCharacter() aren't
+-- fakeable the way DataService.ResetToTemplate's plain data table is, same
+-- limitation as DataService.Wipe/.NewLife above).
+local function testLifeService(results: { Check })
+	do
+		local data = ({ Character = { LivesLeft = 3 } } :: any) :: SaveSchema.Data
+		local outcome = LifeService.HandleDeath(data)
+		expect(
+			results,
+			"LifeService: a death with lives left just respawns the same character, no scene",
+			outcome == "respawn" and data.Character.LivesLeft == 2
+		)
+	end
+
+	do
+		local data = ({ Character = { LivesLeft = 1 } } :: any) :: SaveSchema.Data
+		local outcome = LifeService.HandleDeath(data)
+		expect(
+			results,
+			"LifeService: the death that takes the last life runs the afterlife scene",
+			outcome == "lastLife" and data.Character.LivesLeft == 0
+		)
+	end
+
+	do
+		expect(
+			results,
+			"SaveSchema: a fresh template starts with a full Character.LivesLeft",
+			SaveSchema.Template.Character.LivesLeft == Config.Life.LivesPerCharacter
+		)
+	end
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -2328,6 +2369,7 @@ function SelfTestService:Start()
 		testBehaviorTree(collected)
 		testNpcService(collected)
 		testTrainers(collected)
+		testLifeService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

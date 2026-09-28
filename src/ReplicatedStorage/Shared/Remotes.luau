@@ -84,6 +84,18 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 2, per = 60 },
 	},
+	-- M3B-05: server -> client only (LifeService/AgeService never register a
+	-- handler, same pattern as HeartAttack/CombatEvent). Fired instead of
+	-- HeartAttack when Character.LivesLeft runs out on a real death (not old
+	-- age) - the client plays the same return-to-the-Rukh scene either way
+	-- and still answers with RukhSceneDone. The one table argument
+	-- (`{cause = "lastLife"}`) isn't shape-checked for the same reason
+	-- CombatEvent/RankUp's own data arguments aren't.
+	Died = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 5 },
+	},
 	-- M3-02: MovementService. Intentions only - the server decides whether
 	-- Run/Dash actually apply (stunned/knocked/blocking, cooldowns).
 	Run = {

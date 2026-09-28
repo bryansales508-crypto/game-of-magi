@@ -29,7 +29,8 @@ Config.Debug = {
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
 	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
-	-- v3 (M3B-01): Meta.Unlocks.Combat, SaveSchema.Migrations[3].
+	-- v3 (M3B-01/M3B-05): Meta.Unlocks.Combat, Character.LivesLeft,
+	-- SaveSchema.Migrations[3].
 	SchemaVersion = 3,
 }
 
@@ -72,6 +73,14 @@ Config.Aging = {
 	SceneTimeout = 30,
 	-- How often the online aging loop ticks, in real seconds.
 	Tick = 10,
+}
+
+-- M3B-05 (Bryan, 2026-09-28): a character ("a life") gets this many lives
+-- before a real death (Humanoid.Died - falling, the void, drowning, later
+-- executions; a combat knockout never touches this) wipes to a brand-new
+-- character. See Character.LivesLeft, SaveSchema.luau, LifeService.luau.
+Config.Life = {
+	LivesPerCharacter = 4,
 }
 
 -- M2-03: max health and block (DESIGN.md section 3a "Rank raises max
@@ -278,6 +287,7 @@ for _, point in Config.Aging.DeathChance do
 end
 table.freeze(Config.Aging.DeathChance)
 table.freeze(Config.Aging)
+table.freeze(Config.Life)
 table.freeze(Config.Health.RankBonus)
 table.freeze(Config.Health.RegenPerSecond)
 table.freeze(Config.Health)

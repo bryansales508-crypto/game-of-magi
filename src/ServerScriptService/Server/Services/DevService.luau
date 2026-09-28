@@ -260,6 +260,7 @@ local SNAPSHOT_KEY_ORDER = {
 	"freshSave",
 	"timeScale",
 	"mortal",
+	"livesLeft",
 	"sessionSeconds",
 }
 
@@ -302,6 +303,9 @@ local function buildSnapshot(target: Player): { [string]: any }
 		freshSave = Config.Debug.FreshSave,
 		timeScale = DevService.GetTimeScale(),
 		mortal = DevService.IsMortal(),
+		-- M3B-05: Character.LivesLeft (this character's own remaining lives),
+		-- not Meta.Lives (the incarnation count, still "n/a" here like rank).
+		livesLeft = if data then data.Character.LivesLeft else "n/a",
 		sessionSeconds = if started then math.floor(os.clock() - started) else "n/a",
 	}
 end
