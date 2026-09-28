@@ -573,3 +573,29 @@ Dev commands: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mis
 - Get intercepted once: the board now shows the "merchants doubt you" line and every offer is half the usual number; `.mission mark` (or `.state`) shows 1 stack. Get intercepted again: a quarter. Keep going: it never drops below a tenth.
 - The interceptor of a marked courier gets the same reduced Copper and Bounty and NO Black Rukh while the courier is marked.
 - Complete one delivery while marked: it pays the reduced amount, then the mark is gone and the next board is back to full offers. `.mission mark 0` clears it by hand.
+
+## M6 World (2026-09-29; all phases at once)
+
+Before playing: reconnect the Rojo plugin if it dropped (this merge deletes files). Do NOT delete the ocean scripts until scenario D says so.
+
+### M6-A Regions and music
+- Spawn outside Qarzin, walk in: the "Q A R Z I N / The Merchant's Playground" banner bounces in and drops out after 5 s; one of the three Qarzin tracks fades in over 1 s at the same volume every time. Walk out: it fades out (no hard cut). Walk in again: a different track than the last one.
+- Stand at the shore: the ocean ambient plays under the city music (or alone outside the city). `.region` lists what you are in; `.music next` skips; `.music stop` silences.
+- Die and respawn inside Qarzin: music continues or restarts cleanly, no doubled tracks; Output shows no per-frame region work in `.state`.
+
+### M6-B Day and night
+- `.time` prints the hour. `.time 17.5`: over the next minute dusk arrives for everyone in the server (open a second client if you can: same hour on both). `.time 22`: night is dark but you can still read the world. `.time 5.5`: dawn.
+- Tag the six Qarzin bulbs `CityLight` in the Tag Editor (Model > Tag Editor, or the part's Tags property): at `.time 18` they light over 2 s; at `.time 6` they go out and the Neon turns matte. Tag a whole torch model with a flame part and a separate light part: both switch together. `.lights on|off|auto` forces it for testing.
+- `.time pause` freezes; `.time speed 10` runs a full day in about 1.6 minutes; `.time speed 1` restores. Rejoin: the clock is where the server says, not reset.
+
+### M6-C Footsteps
+- Walk on stone, dirt, sand and carpet if you can find them: the step sound changes with the floor; run: louder. Nobody else hears your steps louder than before (they are local now).
+- Sand and mud: a print appears under each step and fades over about 8 s; no server Output per step; `.state` is quiet.
+
+### M6-D Ocean
+- First with `Config.World.Ocean.Enabled = false`: the ocean is as it was.
+- Run the TINKER.md snippet in the command bar to delete every Script under `Workspace.MAP.OCEAN` (it prints 766), set `Enabled = true`, and play: the tiles bob 2 studs over 15 s up, 3 s hold, 15 s down; the wave decals breathe in and out over 10 s each with a 10 s pause; frame rate at the shore is steady; far tiles stay still.
+
+### M6-E Collisions and the bridge
+- Walk into a clothes rack: you pass through it; walk into a building: you do not. `.state` shows no `Stats`, `OnCharacter` or `Loaded` under your Player in the Explorer.
+- Output at server start has one CollisionService line with the counts and no errors; the self-tests pass.
