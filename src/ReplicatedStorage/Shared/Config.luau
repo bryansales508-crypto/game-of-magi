@@ -81,6 +81,11 @@ Config.Aging = {
 -- character. See Character.LivesLeft, SaveSchema.luau, LifeService.luau.
 Config.Life = {
 	LivesPerCharacter = 4,
+	-- REVIEW-M3B-05 M1: how long a death with lives left waits before
+	-- respawning the same character - long enough to read as a real death
+	-- moment, short enough not to feel like a hang (Players.RespawnTime,
+	-- the engine's own default, is left alone).
+	RespawnDelay = 3,
 }
 
 -- M2-03: max health and block (DESIGN.md section 3a "Rank raises max

@@ -174,12 +174,14 @@ SaveSchema.Migrations[2] = function(_data: Data) end
 -- template's false): an EXISTING save already had full combat access
 -- before v3 ever existed, and nobody should lose that just because the
 -- schema grew a flag for it. LivesLeft is set to a full
--- Config.Life.LivesPerCharacter for the same reason Reconcile's own
--- backfill would already give it - explicit here so retuning
--- LivesPerCharacter later doesn't leave an old save's migration frozen at
--- whatever the number used to be. Only a save that's genuinely new as of
--- v3 (never reconciled before, so there's no "existing access"/"already
--- has lives" to preserve) starts at the template's own values.
+-- Config.Life.LivesPerCharacter too, but that line is redundant on
+-- purpose (REVIEW-M3B-05 L3) - Reconcile's own backfill already gave an
+-- existing save this exact value before Migrate ever runs, same as it did
+-- for Unlocks.Combat's false; setting it again here just keeps both v3
+-- fields explicit and symmetric, not because anything would otherwise be
+-- missing. Only a save that's genuinely new as of v3 (never reconciled
+-- before, so there's no "existing access"/"already has lives" to
+-- preserve) starts at the template's own values.
 SaveSchema.Migrations[3] = function(data: Data)
 	data.Meta.Unlocks.Combat = true
 	data.Character.LivesLeft = Config.Life.LivesPerCharacter

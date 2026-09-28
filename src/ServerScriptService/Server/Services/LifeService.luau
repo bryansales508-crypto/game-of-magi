@@ -11,16 +11,18 @@
 -- is unrelated to LivesLeft entirely - it always wipes, cause = "heartAttack",
 -- unchanged from before this milestone.
 --
--- Players.RespawnTime is bumped well past Config.Aging.SceneTimeout at
--- Init: with the default CharacterAutoLoads/RespawnTime (5s), Roblox's own
--- automatic respawn would otherwise race AgeService.StartDeathSequence's
--- own (up to 30s) scene-then-LoadCharacter on a real Humanoid.Died and fire
--- a SECOND, unwanted respawn moments after the real one - a heart attack
--- never hit this because it's a scripted freeze, not a real Health-reaches-
--- 0 death, so Humanoid.Died never fires for it and there was never a timer
--- to race. The LivesLeft > 0 path still "just respawns, no scene" - this
--- service calls player:LoadCharacter() itself rather than waiting out that
--- now-much-longer timer.
+-- REVIEW-M3B-05 M1: the "still has lives" respawn waits Config.Life.
+-- RespawnDelay (3s) instead of firing the same frame - an instant pop-back
+-- left no death moment at all - via a guarded task.delay rather than
+-- touching Players.RespawnTime (left at the engine default; a global
+-- change there had its own side effects on paths this service doesn't
+-- otherwise touch, e.g. a death this service skips outright). The guard
+-- (player.Character == the character that just died) only protects against
+-- OUR OWN delayed call firing after something else already respawned the
+-- player by the time it runs - it can't reach into Roblox's own separate
+-- CharacterAutoLoads/RespawnTime(5s) timer, which is still live and still a
+-- possible second respawn; the playtester needs to confirm in Studio that
+-- one doesn't show up 5s after a `.kill` with lives left.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -56,9 +58,21 @@ function LifeService.HandleDeath(data: Data): "respawn" | "lastLife"
 	return "lastLife"
 end
 
+-- REVIEW-M3B-05 M1: guarded so this specific delayed call is a no-op if the
+-- player already has a DIFFERENT character (already respawned some other
+-- way) by the time it fires - `character` is the one that just died, not
+-- whatever player.Character happens to be when this runs.
+local function respawnAfterDelay(player: Player, character: Model)
+	task.delay(Config.Life.RespawnDelay, function()
+		if player.Parent == Players and player.Character == character then
+			player:LoadCharacter()
+		end
+	end)
+end
+
 -- Runs on the player's own current character's Humanoid.Died. Never for an
 -- NPC (LifeService only ever hooks a Player's own character).
-local function onDied(player: Player)
+local function onDied(player: Player, character: Model)
 	if player:GetAttribute("Dying") == true then
 		-- The heart-attack sequence (AgeService) already owns this death -
 		-- it freezes the humanoid rather than ever zeroing its health, so in
@@ -69,6 +83,10 @@ local function onDied(player: Player)
 
 	local data = DataService.Get(player)
 	if data == nil then
+		-- No save to charge a life against (not loaded yet, or the profile
+		-- was already released) - still owe the player SOME respawn, the
+		-- same delayed/guarded way as an ordinary "lives left" death.
+		respawnAfterDelay(player, character)
 		return
 	end
 
@@ -81,8 +99,10 @@ local function onDied(player: Player)
 	if outcome == "respawn" then
 		-- "Simply respawns as the same character with no scene" - the join
 		-- pipeline (PlayerService's CharacterAdded/CharacterRemoving) does
-		-- everything else exactly like any other respawn.
-		player:LoadCharacter()
+		-- everything else exactly like any other respawn, just not on the
+		-- very same frame (REVIEW-M3B-05 M1 - a real death moment, not an
+		-- instant pop-back).
+		respawnAfterDelay(player, character)
 		return
 	end
 
@@ -96,8 +116,10 @@ local function hookCharacter(player: Player, character: Model)
 	if humanoid == nil then
 		return
 	end
-	humanoid.Died:Connect(function()
-		onDied(player)
+	-- REVIEW-M3B-05 L1: :Once, not :Connect - a stray second Died fire on
+	-- the same (already-dead) character can never charge a second life.
+	humanoid.Died:Once(function()
+		onDied(player, character)
 	end)
 end
 
@@ -115,7 +137,10 @@ local function registerDevCommands()
 		if data == nil then
 			return string.format("%s: no save loaded", target.Name)
 		end
-		data.Character.LivesLeft = math.floor(n)
+		-- REVIEW-M3B-05 L2: clamped, not raw - a negative or absurdly large
+		-- value would otherwise reach the exact same field HandleDeath does
+		-- unconditional arithmetic on.
+		data.Character.LivesLeft = math.clamp(math.floor(n), 0, 99)
 		refreshLivesLeftAttribute(target, data)
 		LegacyBridge.Refresh(target, data)
 		return string.format("%s's LivesLeft: %d", target.Name, data.Character.LivesLeft)
@@ -137,11 +162,6 @@ local function registerDevCommands()
 end
 
 function LifeService:Init()
-	-- See the header comment: this only matters for the LivesLeft == 0
-	-- path's own scene; the LivesLeft > 0 path already respawns itself
-	-- explicitly (onDied above) rather than depending on this timer at all.
-	Players.RespawnTime = Config.Aging.SceneTimeout + 5
-
 	registerDevCommands()
 end
 

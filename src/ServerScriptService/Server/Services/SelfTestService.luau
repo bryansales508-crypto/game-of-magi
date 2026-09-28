@@ -2414,6 +2414,85 @@ local function testLifeService(results: { Check })
 			SaveSchema.Template.Character.LivesLeft == Config.Life.LivesPerCharacter
 		)
 	end
+
+	-- REVIEW-M3B-05 M2(a): a combat knockout never reaches Humanoid.Died in
+	-- the first place - CombatService.ApplyHit floors a lethal hit at 1 HP
+	-- and applies Knocked instead of ever letting Health hit 0, so
+	-- LifeService.onDied is never even invoked. No Player/DataService is
+	-- involved in this scratch rig at all, which is itself the point: this
+	-- combat path has no LivesLeft to touch.
+	do
+		local attacker = Instance.new("Model")
+		attacker.Name = "SelfTestLifeKnockoutAttacker"
+		local attackerHrp = Instance.new("Part")
+		attackerHrp.Name = "HumanoidRootPart"
+		attackerHrp.Anchored = true
+		attackerHrp.CFrame = CFrame.new(Vector3.new(2100, 5, 0), Vector3.new(2100, 5, 1))
+		attackerHrp.Parent = attacker
+		attacker.Parent = Workspace
+
+		local target = Instance.new("Model")
+		target.Name = "SelfTestLifeKnockoutTarget"
+		local targetHrp = Instance.new("Part")
+		targetHrp.Name = "HumanoidRootPart"
+		targetHrp.Anchored = true
+		targetHrp.CFrame = CFrame.new(Vector3.new(2100, 5, 3), Vector3.new(2100, 5, 0))
+		targetHrp.Parent = target
+		local targetHumanoid = Instance.new("Humanoid")
+		targetHumanoid.MaxHealth = 100
+		targetHumanoid.Health = 3 -- less than the Jab's damage
+		targetHumanoid.Parent = target
+		target.Parent = Workspace
+
+		StatusService.Register(target)
+
+		local fist = Combat.styleFor("Fist") :: Combat.Style
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
+
+		expect(
+			results,
+			"LifeService: a lethal combat hit knocks out (Health 1, Knocked) instead of reaching Humanoid.Died - LivesLeft is never in play",
+			targetHumanoid.Health == 1 and StatusService.Has(target, "Knocked")
+		)
+
+		StatusService.Unregister(target)
+		target:Destroy()
+		attacker:Destroy()
+	end
+
+	-- REVIEW-M3B-05 M2(b): a fatal heart attack calls AgeService.
+	-- StartDeathSequence with cause = "heartAttack" unconditionally (see
+	-- AgeService.onBirthday/.ForceHeartAttack) - it never reads
+	-- Character.LivesLeft at all, so it still wipes even with a full 4 left.
+	-- DataService.NewLife's own reset pattern (capture Meta.Lives/keep the
+	-- combat unlock, ResetToTemplate, restore them) is exactly what that
+	-- path runs into.
+	do
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Character = { LivesLeft = Config.Life.LivesPerCharacter },
+			Meta = { Created = 222, LastSeen = 0, Lives = 2, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+		local keepLives = data.Meta.Lives + 1
+		local keepCreated = data.Meta.Created
+		local keepCombatUnlocked = data.Meta.Unlocks.Combat
+
+		DataService.ResetToTemplate(data)
+		data.Meta.Lives = keepLives
+		data.Meta.Created = keepCreated
+		data.Meta.Unlocks.Combat = keepCombatUnlocked
+
+		expect(
+			results,
+			"LifeService: a fatal heart attack with a full LivesLeft still wipes to a new character (Meta.Lives n -> n+1)",
+			data.Meta.Lives == 3
+		)
+		expect(
+			results,
+			"LifeService: the new character from a heart attack starts with a full LivesLeft again",
+			data.Character.LivesLeft == Config.Life.LivesPerCharacter
+		)
+	end
 end
 
 local SelfTestService = {}
