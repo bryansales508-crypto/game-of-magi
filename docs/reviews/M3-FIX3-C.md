@@ -18,3 +18,6 @@ Scope: only `Shared/Config.luau`, `CombatController/init.luau`, `EffectsControll
 
 ## For Bryan
 The client now plays one fist animation per click and reports each punch off that animation's own wind-up/hit markers, instead of a single server-timed swing. Right-click still cancels, but only in the split-second before the animation's first wind-up point — after that the punch always finishes. One low-severity, non-blocking suggestion (defensive duplicate-hit guard); everything else matches your design and passes checks.
+
+## Refinement round (lead review, 2026-09-28, commit 91ab7bb): PASS
+Wind-up slowed to `Config.Combat.WindupSpeed` (0.5) between each wind-up marker and its hit marker, restored on hit/cancel/stop; no gating after a cancel (re-reads `NextAttackAt`, which the server sets to now); duplicate hit markers ignored via `swing.hit[index]`. Lint clean. Client branch ready; merges with M3-FIX3-S.
