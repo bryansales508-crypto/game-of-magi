@@ -50,6 +50,15 @@ export type Data = {
 		-- (missing the key entirely) already reads the same as nil - nothing
 		-- for Migrations[2] to fill in.
 		PendingEpithet: { rank: number, choices: { string } }?,
+		-- Schema v4 (M5C-01, delivery missions). A REAL consecutive-success
+		-- streak (AUDIT M21: the old "SuccessRate" folder reset on every
+		-- respawn and wasn't a streak at all) - +1 on a completed delivery,
+		-- reset to 0 on any failed/intercepted run. City key -> completed
+		-- delivery count (AUDIT M12: feeds the modifier roll's PlayerActive
+		-- factor for real, instead of a global counter nothing ever wrote
+		-- to); missing keys mean 0 deliveries to that city.
+		DeliveryStreak: number,
+		Routes: { [string]: number },
 	},
 	Bounty: number,
 	Economy: {
@@ -125,6 +134,8 @@ local template: Data = {
 		GoldRukh = 0,
 		BlackRukh = 0,
 		Epithet = "",
+		DeliveryStreak = 0,
+		Routes = {},
 	},
 	Bounty = 0,
 	Economy = {
@@ -186,6 +197,17 @@ SaveSchema.Migrations[3] = function(data: Data)
 	data.Meta.Unlocks.Combat = true
 	data.Character.LivesLeft = Config.Life.LivesPerCharacter
 end
+
+-- v4 (M5C-01): adds Progress.DeliveryStreak and Progress.Routes. An
+-- intentional no-op, same reasoning as Migrations[2] - both are new fields
+-- with a "nothing has happened yet" default (0 / an empty table) that
+-- Profile:Reconcile() already backfills before Migrate ever runs, so an
+-- existing pre-v4 save reads exactly like a save that's always had them:
+-- no streak, no route history, nothing to carry over from the old
+-- (never-persisted) SuccessRate folder. Kept as an explicit entry, not left
+-- out, for the same reason Migrations[2] is - the version bump always
+-- walks through a real migration function.
+SaveSchema.Migrations[4] = function(_data: Data) end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,
 -- in order. Call Profile:Reconcile() before this, so missing template keys

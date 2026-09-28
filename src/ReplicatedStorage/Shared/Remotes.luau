@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 
 local Validate = require(script.Parent.Validate)
 local Log = require(script.Parent.Log)
+local Cities = require(script.Parent.Data.Cities)
 
 local log = Log.new("Remotes")
 
@@ -190,6 +191,40 @@ Remotes.Definitions = {
 	CoinMessage = {
 		kind = "Event",
 		args = { Validate.string({ maxLen = 100 }) },
+		rate = { count = 3, per = 5 },
+	},
+	-- M5C-01: delivery missions. MissionOpenBoard/MissionStart only ever
+	-- name one of the seven known city keys (Shared/Data/Cities.Keys) -
+	-- MissionService still checks the caller is actually near that city's
+	-- delivery part, and that the destination is on the board it opened
+	-- (AUDIT H7: the old server trusted any string the client sent).
+	-- MissionBoard/MissionUpdate are server -> client only (MissionService
+	-- never registers a handler for either, so a client calling one back is
+	-- just dropped, same pattern as CombatEvent/RankUp); their one table
+	-- argument isn't shape-checked for the same reason those aren't.
+	MissionBoard = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 5 },
+	},
+	MissionOpenBoard = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 32, oneOf = Cities.Keys }) },
+		rate = { count = 2, per = 1 },
+	},
+	MissionStart = {
+		kind = "Event",
+		args = { Validate.string({ maxLen = 32, oneOf = Cities.Keys }) },
+		rate = { count = 2, per = 1 },
+	},
+	MissionExit = {
+		kind = "Event",
+		args = {},
+		rate = { count = 2, per = 1 },
+	},
+	MissionUpdate = {
+		kind = "Event",
+		args = {},
 		rate = { count = 3, per = 5 },
 	},
 } :: { [string]: RemoteDef }

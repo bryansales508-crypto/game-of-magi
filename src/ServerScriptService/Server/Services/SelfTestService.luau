@@ -40,6 +40,8 @@ local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
 local NpcService = require(script.Parent.NpcService)
 local NpcTrees = require(script.Parent.NpcService.Trees)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
+local Cities = require(ReplicatedStorage.Shared.Data.Cities)
+local MissionService = require(script.Parent.MissionService)
 local Assets = require(ReplicatedFirst.Assets) :: any
 
 local log = Log.new("SelfTest")
@@ -254,6 +256,24 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
 	end
 
+	-- M5C-01: schema v4 adds Progress.DeliveryStreak and Progress.Routes, an
+	-- intentional no-op migration (same reasoning as v1 -> v2 above - both
+	-- new fields already read the same as their template default before
+	-- Migrate ever runs).
+	do
+		local data = ({
+			Version = 3,
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v3 -> v4 migration bumps Version to 4", data.Version == 4)
+		expect(
+			results,
+			"SaveSchema: v3 -> v4 migration leaves DeliveryStreak/Routes at their already-backfilled defaults",
+			data.Progress.DeliveryStreak == 0 and next(data.Progress.Routes) == nil
+		)
+	end
+
 	do
 		expect(results, "SaveSchema: a fresh template starts Meta.Unlocks.Combat false (earned, not automatic)", SaveSchema.Template.Meta.Unlocks.Combat == false)
 		local wouldBeUnlocked = SaveSchema.Template.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault
@@ -342,7 +362,7 @@ local function testDataService(results: { Check })
 				LivesLeft = Config.Life.LivesPerCharacter,
 			},
 			Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
 			Bounty = 0,
 			Economy = { Copper = 20, Silver = 0, Gold = 0 },
 			Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -560,7 +580,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {} },
 		Bounty = 0,
 		Economy = { Copper = 20, Silver = 0, Gold = 0 },
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -2747,6 +2767,156 @@ local function testLifeService(results: { Check })
 	end
 end
 
+local function fakeMissionData(routes: { [string]: number }?, streak: number?): SaveSchema.Data
+	return ({
+		Bounty = 0,
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = streak or 0, Routes = routes or {} },
+	} :: any) :: SaveSchema.Data
+end
+
+-- A canned nextRoll sequence for Cities.RollModifiers's self-test: returns
+-- the queued values in order, so a modifier draw is fully deterministic
+-- with no math.random involved.
+local function cannedRolls(queue: { number }): (max: number) -> number
+	local i = 0
+	return function(_max: number): number
+		i += 1
+		return queue[i] :: number
+	end
+end
+
+-- M5C-01: delivery missions. Every check here is against the pure core
+-- (Cities.RollModifiers/CombinedMultiplier, MissionService.FactorsFor/
+-- ComputePay/TrySettle/ApplySuccess/ApplyFailure/ApplyInterception/
+-- IsOnRoute) - no Player, Instance or remote involved, same as every other
+-- service's self-test in this file.
+local function testMissionService(results: { Check })
+	-- H7: route validation rejects an off-route city.
+	expect(results, "MissionService: IsOnRoute accepts a real route destination", MissionService.IsOnRoute("Qarzin", "Saleh"))
+	expect(results, "MissionService: IsOnRoute rejects a destination not on that city's route", not MissionService.IsOnRoute("Qarzin", "Rathole"))
+	expect(results, "MissionService: IsOnRoute rejects an unknown city key entirely", not MissionService.IsOnRoute("Nope", "Qarzin"))
+
+	-- The two old broken route names are fixed to real cities (never nil).
+	expect(results, "Cities: Saleh's route no longer names the broken \"JADDATYSHUT\"", MissionService.IsOnRoute("Saleh", "JaddatysHut"))
+	expect(results, "Cities: Rathole's route no longer names the broken \"CITYF\"", MissionService.IsOnRoute("Rathole", "Sahraqin"))
+
+	-- L15: payout formula with the old numbers - rank 1 (the dead "level"
+	-- used to divide by zero here) no longer errors or blows up.
+	do
+		local pay = MissionService.ComputePay(1, 4, 0, {})
+		expect(results, "MissionService: ComputePay at rank 1 doesn't divide by zero (AUDIT L15)", pay == math.floor(1 + 10 / 1 + 4 * 1.25 + 0 * 1.25))
+	end
+	do
+		local withMods = MissionService.ComputePay(2, 10, 3, { { name = "TimeCrunch", chance = 20, text = "", payMultiplier = 1.2 } })
+		local base = math.floor(1 + 10 / 2 + 10 * 1.25 + 3 * 1.25)
+		expect(results, "MissionService: ComputePay applies the modifier multiplier on top of the base (AUDIT L14)", withMods == math.floor(base * 1.2))
+	end
+
+	-- AUDIT H8: a run settles (pays out/fails/is intercepted) exactly once.
+	do
+		local run = ({ settled = false } :: any) :: MissionService.SettleState
+		expect(results, "MissionService: TrySettle succeeds the first time", MissionService.TrySettle(run))
+		expect(results, "MissionService: TrySettle refuses a second time (paid exactly once)", not MissionService.TrySettle(run))
+	end
+
+	-- AUDIT M21: a real, persisted streak - success advances it and records
+	-- route history; any failure (including an interception) resets it.
+	do
+		local data = fakeMissionData(nil, 2)
+		MissionService.ApplySuccess(data, "Qarzin")
+		expect(results, "MissionService: ApplySuccess advances the streak", data.Progress.DeliveryStreak == 3)
+		expect(results, "MissionService: ApplySuccess records the destination in Routes", data.Progress.Routes["Qarzin"] == 1)
+		MissionService.ApplySuccess(data, "Qarzin")
+		expect(results, "MissionService: ApplySuccess accumulates Routes across repeat deliveries", data.Progress.Routes["Qarzin"] == 2)
+
+		MissionService.ApplyFailure(data)
+		expect(results, "MissionService: ApplyFailure resets the streak to 0", data.Progress.DeliveryStreak == 0)
+		expect(results, "MissionService: ApplyFailure never touches Routes", data.Progress.Routes["Qarzin"] == 2)
+	end
+
+	-- AUDIT H8: interception pays the attacker's Bounty and never touches
+	-- the courier's own save at all (nothing to farm back and forth).
+	do
+		local attackerData = fakeMissionData()
+		local courierData = fakeMissionData(nil, 5)
+		MissionService.ApplyInterception(attackerData, 42)
+		MissionService.ApplyFailure(courierData)
+		expect(results, "MissionService: ApplyInterception adds the reward to the attacker's Bounty", attackerData.Bounty == 42)
+		expect(results, "MissionService: the courier's own Bounty is untouched by an interception", courierData.Bounty == 0)
+		expect(results, "MissionService: the courier's streak still breaks on the interception (ApplyFailure)", courierData.Progress.DeliveryStreak == 0)
+	end
+
+	-- AUDIT M12: modifier roll weights respect route history and city
+	-- safety - not a global counter nothing ever updated.
+	do
+		local inactive = fakeMissionData({ Qarzin = 3 })
+		local active = fakeMissionData({ Qarzin = 20 })
+		local factorsInactive = MissionService.FactorsFor(inactive, "Qarzin")
+		local factorsActive = MissionService.FactorsFor(active, "Qarzin")
+		expect(results, "MissionService: FactorsFor.PlayerActive is false below the threshold", not factorsInactive.PlayerActive)
+		expect(results, "MissionService: FactorsFor.PlayerActive is true once the player has run the route enough", factorsActive.PlayerActive)
+		expect(results, "MissionService: FactorsFor.SafeRoute follows Qarzin's own (Busy) safety rating", factorsActive.SafeRoute)
+
+		local warTorn = MissionService.FactorsFor(fakeMissionData(), "Rathole")
+		expect(results, "MissionService: FactorsFor.SafeRoute is false for a War-Torn city (Rathole)", not warTorn.SafeRoute)
+	end
+
+	-- Cities.RollModifiers: VIP/CleartheRoute only ever appear on an unsafe
+	-- route (AUDIT M12 - reqs are checked for real now); HighlyValuable only
+	-- on a safe one. A canned roll sequence makes every draw deterministic.
+	do
+		local safe = { PlayerActive = false, SafeRoute = true }
+		local unsafe = { PlayerActive = false, SafeRoute = false }
+
+		local eligibleSafe = Cities.EligiblePool(safe)
+		local eligibleUnsafe = Cities.EligiblePool(unsafe)
+
+		local function poolHas(pool: { Cities.ModifierDef }, name: string): boolean
+			for _, def in pool do
+				if def.name == name then
+					return true
+				end
+			end
+			return false
+		end
+
+		expect(results, "Cities: HighlyValuable is only eligible on a safe route", poolHas(eligibleSafe, "HighlyValuable") and not poolHas(eligibleUnsafe, "HighlyValuable"))
+		expect(results, "Cities: VIP is only eligible on an unsafe route", poolHas(eligibleUnsafe, "VIP") and not poolHas(eligibleSafe, "VIP"))
+		expect(results, "Cities: CleartheRoute is only eligible on an unsafe route", poolHas(eligibleUnsafe, "CleartheRoute") and not poolHas(eligibleSafe, "CleartheRoute"))
+		expect(results, "Cities: TimeCrunch/HeavyCargo/FragilePackage have no reqs - eligible either way", poolHas(eligibleSafe, "TimeCrunch") and poolHas(eligibleUnsafe, "TimeCrunch"))
+
+		-- Roll 1 in the (ordered) eligible pool always lands on its first
+		-- entry (TimeCrunch, chance 20, cumulative 1-20); a gate roll of 6
+		-- fails the "<= 5" 50% check for a second draw, so exactly one
+		-- modifier comes back - fully deterministic, no math.random.
+		local rolled = Cities.RollModifiers(unsafe, cannedRolls({ 1, 6 }))
+		expect(results, "Cities: RollModifiers's first draw picks the lowest-cumulative eligible modifier for roll 1", #rolled == 1 and rolled[1].name == "TimeCrunch")
+
+		-- A gate roll of 5 (<= 5) DOES pass, so a second draw happens; the
+		-- next roll (11, past CourierLoop's cumulative 10 but within its
+		-- own+CourierLoop's 13) lands on HeavyCargo. A second gate of 4
+		-- (> 3) then stops it at exactly two modifiers.
+		local rolledTwo = Cities.RollModifiers(unsafe, cannedRolls({ 1, 5, 11, 4 }))
+		expect(
+			results,
+			"Cities: RollModifiers draws a second modifier when the 50% gate passes",
+			#rolledTwo == 2 and rolledTwo[1].name == "TimeCrunch" and rolledTwo[2].name == "HeavyCargo"
+		)
+	end
+
+	-- Cities.CombinedMultiplier: a bare mission (no modifiers) pays exactly
+	-- the base amount; each modifier adds its own (payMultiplier - 1).
+	expect(results, "Cities: CombinedMultiplier is 1 with no modifiers rolled", Cities.CombinedMultiplier({}) == 1)
+	expect(
+		results,
+		"Cities: CombinedMultiplier stacks TimeCrunch (1.2) and HeavyCargo (1.3) additively (old citymodifier + 1)",
+		math.abs(Cities.CombinedMultiplier({
+			{ name = "TimeCrunch", chance = 20, text = "", payMultiplier = 1.2 },
+			{ name = "HeavyCargo", chance = 3, text = "", payMultiplier = 1.3 },
+		}) - 1.5) < 1e-9
+	)
+end
+
 local SelfTestService = {}
 
 function SelfTestService:Init() end
@@ -2780,6 +2950,7 @@ function SelfTestService:Start()
 		testNpcService(collected)
 		testTrainers(collected)
 		testLifeService(collected)
+		testMissionService(collected)
 		testCompatShims(collected)
 		return collected
 	end)

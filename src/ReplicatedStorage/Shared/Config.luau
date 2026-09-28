@@ -31,7 +31,9 @@ Config.Data = {
 	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
 	-- v3 (M3B-01/M3B-05): Meta.Unlocks.Combat, Character.LivesLeft,
 	-- SaveSchema.Migrations[3].
-	SchemaVersion = 3,
+	-- v4 (M5C-01): Progress.DeliveryStreak, Progress.Routes,
+	-- SaveSchema.Migrations[4].
+	SchemaVersion = 4,
 }
 
 -- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.
@@ -285,6 +287,39 @@ Config.Npc = {
 	},
 }
 
+-- M5C-01: delivery missions (M5-PLAN.md Phase 5C, Bryan's rules 2026-09-29).
+-- OpenStuds/BoardCloseStuds give the board some hysteresis (open close to
+-- the part, close only once well clear of it, so standing right at the
+-- part's edge doesn't flicker); ArriveStuds is the same idea for the
+-- destination part. PlayerActiveThreshold/SafeRouteThreshold are the old
+-- MissionHandler's own numbers (AUDIT M12's fix wires them to something
+-- real: the player's own Progress.Routes count and each city's static
+-- Safety value, instead of a global counter nothing ever updated).
+Config.Missions = {
+	OpenStuds = 12,
+	BoardCloseStuds = 20,
+	ArriveStuds = 10,
+	PlayerActiveThreshold = 10,
+	SafeRouteThreshold = 0.75,
+	TimeCrunchSeconds = 180,
+	HeavyCargoSpeedMult = 0.75,
+	MagoiPerDelivery = 10,
+	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch
+	-- expiry, the beacon) - not a per-frame loop (AUDIT H9).
+	Tick = 0.5,
+	-- Courier beacon (Bryan, 2026-09-29): a Highlight visible through walls,
+	-- same look as the old MissionHandler:316 (DepthMode = AlwaysOnTop) -
+	-- the client draws it off the CourierBeacon character attribute this
+	-- toggles. The old code had no real equivalent timing to port (its only
+	-- similar effect, HighlyValuable's package sparkle at MissionHandler:
+	-- 311-328, cycles on its own unrelated 1s-fade/6s-hold/20s-off tween for
+	-- a different purpose) - these are Bryan's own approved numbers.
+	Beacon = {
+		everySeconds = 30,
+		forSeconds = 3,
+	},
+}
+
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
 -- Emitters are exactly the ParticleEmitter names under
 -- ReplicatedFirst.VFX.RukhEffects; Bryan can rename, add or remap any of
@@ -344,6 +379,8 @@ table.freeze(Config.Rukh.Emitters.Black)
 table.freeze(Config.Rukh.Emitters.GoldBlack)
 table.freeze(Config.Rukh.Emitters)
 table.freeze(Config.Rukh)
+table.freeze(Config.Missions.Beacon)
+table.freeze(Config.Missions)
 table.freeze(Config)
 
 return Config
