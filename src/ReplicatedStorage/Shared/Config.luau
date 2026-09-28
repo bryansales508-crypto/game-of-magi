@@ -302,6 +302,13 @@ Config.Missions = {
 	PlayerActiveThreshold = 10,
 	SafeRouteThreshold = 0.75,
 	TimeCrunchSeconds = 180,
+	-- REVIEW-M5C-01 M2 (lead decision, Bryan may change it): an interception
+	-- only pays if the courier is genuinely out on the route - at least this
+	-- far from where they started, or this far into the run - so two
+	-- accounts can't farm the reward by knocking a courier out right next
+	-- to the board they just opened.
+	InterceptMinStuds = 100,
+	InterceptMinSeconds = 30,
 	HeavyCargoSpeedMult = 0.75,
 	MagoiPerDelivery = 10,
 	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch

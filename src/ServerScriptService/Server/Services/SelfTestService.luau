@@ -2166,6 +2166,46 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
+	-- REVIEW-M5C-01 M5: HitLanded fires for EVERY landed hit, Light or
+	-- Heavy alike - unlike the bridged `Hit` status (Heavy-only,
+	-- M3-FIX4-S), which is what let a Light-hit courier through untouched
+	-- against FragilePackage/VIP before this signal existed.
+	do
+		local attacker = buildFakeCombatant("SelfTestHitLandedAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 3))
+		local target = buildFakeCombatant("SelfTestHitLandedTarget", Vector3.new(1200, 5, 3), Vector3.new(1200, 5, 0))
+		StatusService.Register(attacker)
+		StatusService.Register(target)
+		CombatService.Register(attacker, nil, "Fist")
+		CombatService.Register(target, nil, "Fist")
+
+		local landed: { string } = {}
+		local conn = CombatService.HitLanded:Connect(function(hitTarget: Model, _hitAttacker: Model, kind: string)
+			if hitTarget == target then
+				table.insert(landed, kind)
+			end
+		end)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1) -- Light
+		local sawLight = pollUntil(1, function()
+			return #landed >= 1
+		end)
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- Heavy
+		local sawBoth = pollUntil(1, function()
+			return #landed >= 2
+		end)
+
+		conn:Disconnect()
+		expect(results, "CombatService: HitLanded fires for a landed Light hit (not just Heavy - REVIEW-M5C-01 M5)", sawLight and landed[1] == "Light")
+		expect(results, "CombatService: HitLanded fires for a landed Heavy hit too", sawBoth and landed[2] == "Heavy")
+
+		StatusService.Unregister(attacker)
+		StatusService.Unregister(target)
+		CombatService.Unregister(attacker)
+		CombatService.Unregister(target)
+		attacker:Destroy()
+		target:Destroy()
+	end
+
 	scratch:Destroy()
 end
 
@@ -2785,9 +2825,14 @@ local function cannedRolls(queue: { number }): (max: number) -> number
 	end
 end
 
+local function fakeMod(key: string, payMultiplier: number): Cities.ModifierRoll
+	return { key = key, displayName = key, chance = 20, text = "", payMultiplier = payMultiplier }
+end
+
 -- M5C-01: delivery missions. Every check here is against the pure core
 -- (Cities.RollModifiers/CombinedMultiplier, MissionService.FactorsFor/
--- ComputePay/TrySettle/ApplySuccess/ApplyFailure/ApplyInterception/
+-- BaseAmount/ComputePay/CurrentPay/TrySettle/MarkFailed/OnArrival/
+-- CanIntercept/GetOrRoll/ApplySuccess/ApplyFailure/ApplyInterception/
 -- IsOnRoute) - no Player, Instance or remote involved, same as every other
 -- service's self-test in this file.
 local function testMissionService(results: { Check })
@@ -2800,6 +2845,26 @@ local function testMissionService(results: { Check })
 	expect(results, "Cities: Saleh's route no longer names the broken \"JADDATYSHUT\"", MissionService.IsOnRoute("Saleh", "JaddatysHut"))
 	expect(results, "Cities: Rathole's route no longer names the broken \"CITYF\"", MissionService.IsOnRoute("Rathole", "Sahraqin"))
 
+	-- REVIEW-M5C-01 H1: every real modifier's displayName is the old
+	-- MissionDeliniation.Modifiers[*].Name, word for word - the client
+	-- matches pop-outs (and Time Crunch/Courier Loop's own special cases)
+	-- on this field, not the internal key.
+	local expectedDisplayNames: { [string]: string } = {
+		TimeCrunch = "Time Crunch",
+		CourierLoop = "Courier Loop",
+		HighlyValuable = "Highly Valuable",
+		HeavyCargo = "Heavy Cargo",
+		VIP = "Very Important Noble",
+		FragilePackage = "Fragile Package",
+		CleartheRoute = "Clear the Route",
+	}
+	for _, def in Cities.Modifiers do
+		local expected = expectedDisplayNames[def.key]
+		if expected then
+			expect(results, string.format("Cities: %s's displayName matches the old GUI's title (\"%s\")", def.key, expected), def.displayName == expected)
+		end
+	end
+
 	-- L15: payout formula with the old numbers - rank 1 (the dead "level"
 	-- used to divide by zero here) no longer errors or blows up.
 	do
@@ -2807,9 +2872,103 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: ComputePay at rank 1 doesn't divide by zero (AUDIT L15)", pay == math.floor(1 + 10 / 1 + 4 * 1.25 + 0 * 1.25))
 	end
 	do
-		local withMods = MissionService.ComputePay(2, 10, 3, { { name = "TimeCrunch", chance = 20, text = "", payMultiplier = 1.2 } })
+		local withMods = MissionService.ComputePay(2, 10, 3, { fakeMod("TimeCrunch", 1.2) })
 		local base = math.floor(1 + 10 / 2 + 10 * 1.25 + 3 * 1.25)
 		expect(results, "MissionService: ComputePay applies the modifier multiplier on top of the base (AUDIT L14)", withMods == math.floor(base * 1.2))
+	end
+
+	-- Bryan's refinement: CurrentPay is ComputePay's live equivalent once
+	-- some rolled modifiers may have failed mid-run - a failed one's own
+	-- multiplier just drops out of the sum, everything else still counts.
+	do
+		local base = MissionService.BaseAmount(2, 10, 3)
+		local modifiers = { fakeMod("TimeCrunch", 1.2), fakeMod("HeavyCargo", 1.3) }
+		local allIntact = MissionService.CurrentPay(base, modifiers, {})
+		expect(results, "MissionService: CurrentPay with nothing failed matches ComputePay", allIntact == MissionService.ComputePay(2, 10, 3, modifiers))
+
+		-- M5/Bryan's refinement: a timer expiry or a landed hit against
+		-- FragilePackage/VIP marks the modifier failed and drops its share
+		-- of the payout - the run itself was never touched here at all
+		-- (there's no run in this test, only the pure pay math).
+		local timeCrunchFailed = MissionService.CurrentPay(base, modifiers, { TimeCrunch = true })
+		expect(
+			results,
+			"MissionService (M5C-01 refinement): a failed modifier's multiplier drops out of CurrentPay, the rest still counts",
+			timeCrunchFailed == math.floor(base * 1.3) and timeCrunchFailed < allIntact
+		)
+
+		local bothFailed = MissionService.CurrentPay(base, modifiers, { TimeCrunch = true, HeavyCargo = true })
+		expect(results, "MissionService: every modifier failed leaves just the base amount", bothFailed == base)
+	end
+
+	-- M4: Clear the Route's bonus is conditional (earned a knockout during
+	-- the run) - CurrentPay treats a not-yet-cleared CleartheRoute exactly
+	-- like any other failed modifier once finishRun marks it so.
+	do
+		local base = MissionService.BaseAmount(1, 0, 0)
+		local modifiers = { fakeMod("CleartheRoute", 1.5) }
+		local cleared = MissionService.CurrentPay(base, modifiers, {})
+		local notCleared = MissionService.CurrentPay(base, modifiers, { CleartheRoute = true })
+		expect(results, "MissionService (M4): Clear the Route's multiplier only counts when credited", cleared == math.floor(base * 1.5) and notCleared == base)
+	end
+
+	-- Bryan's refinement: MarkFailed is idempotent - a caller fires the
+	-- ModifierFailed update/log exactly once per modifier per run, even if
+	-- the same trigger (e.g. several landed hits) fires repeatedly.
+	do
+		local failedKeys: { [string]: boolean } = {}
+		expect(results, "MissionService: MarkFailed succeeds the first time", MissionService.MarkFailed(failedKeys, "FragilePackage"))
+		expect(results, "MissionService: MarkFailed refuses a second time for the same key", not MissionService.MarkFailed(failedKeys, "FragilePackage"))
+		expect(results, "MissionService: a different key still marks independently", MissionService.MarkFailed(failedKeys, "VIP"))
+	end
+
+	-- H2: the CourierLoop return leg sends "Started" with a phase change,
+	-- never the old "Cleared" - REVIEW-M5C-01 H2, the client tears the
+	-- whole run down on anything but "Started".
+	do
+		local nextPhase, state = MissionService.OnArrival("ToDestination", true)
+		expect(results, "MissionService (H2): arriving with CourierLoop rolled switches to Returning", nextPhase == "Returning")
+		expect(results, "MissionService (H2): the CourierLoop return leg sends \"Started\", never \"Cleared\"", state == "Started")
+
+		local finishPhase, finishState = MissionService.OnArrival("ToDestination", false)
+		expect(results, "MissionService: arriving with no CourierLoop means the run is done (finishRun)", finishPhase == nil and finishState == nil)
+
+		local returningPhase = MissionService.OnArrival("Returning", true)
+		expect(results, "MissionService: arriving back at the origin on the return leg means the run is done", returningPhase == nil)
+	end
+
+	-- M2 (lead decision, Bryan may change it): an interception only pays if
+	-- the courier is genuinely out on the route - far enough from the
+	-- origin OR far enough into the run - so two accounts can't farm the
+	-- reward with no travel at all.
+	do
+		expect(results, "MissionService (M2): far enough from the origin counts as interceptable", MissionService.CanIntercept(Config.Missions.InterceptMinStuds, 0))
+		expect(results, "MissionService (M2): far enough into the run counts even standing still", MissionService.CanIntercept(0, Config.Missions.InterceptMinSeconds))
+		expect(
+			results,
+			"MissionService (M2): neither far enough nor long enough refuses the interception",
+			not MissionService.CanIntercept(Config.Missions.InterceptMinStuds - 1, Config.Missions.InterceptMinSeconds - 1)
+		)
+	end
+
+	-- M3: reopening the board reuses the same roll for a destination - the
+	-- old MissionHandler's CityMods, ported - instead of re-rolling every
+	-- time (which used to let a player fish for VIP/HighlyValuable).
+	do
+		local cache: { [string]: number } = {}
+		local rolls = 0
+		local function roll(): number
+			rolls += 1
+			return rolls
+		end
+		local first = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		local second = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		expect(results, "MissionService (M3): GetOrRoll only rolls once per key", rolls == 1)
+		expect(results, "MissionService (M3): a cache hit returns the exact same value as the first roll", first == second)
+
+		cache["Qarzin"] = nil -- simulates clearCachedRoll once a run to it starts
+		local third = MissionService.GetOrRoll(cache, "Qarzin", roll)
+		expect(results, "MissionService (M3): clearing the cache lets the next open roll fresh", rolls == 2 and third == 2)
 	end
 
 	-- AUDIT H8: a run settles (pays out/fails/is intercepted) exactly once.
@@ -2871,9 +3030,9 @@ local function testMissionService(results: { Check })
 		local eligibleSafe = Cities.EligiblePool(safe)
 		local eligibleUnsafe = Cities.EligiblePool(unsafe)
 
-		local function poolHas(pool: { Cities.ModifierDef }, name: string): boolean
+		local function poolHas(pool: { Cities.ModifierDef }, key: string): boolean
 			for _, def in pool do
-				if def.name == name then
+				if def.key == key then
 					return true
 				end
 			end
@@ -2890,7 +3049,7 @@ local function testMissionService(results: { Check })
 		-- fails the "<= 5" 50% check for a second draw, so exactly one
 		-- modifier comes back - fully deterministic, no math.random.
 		local rolled = Cities.RollModifiers(unsafe, cannedRolls({ 1, 6 }))
-		expect(results, "Cities: RollModifiers's first draw picks the lowest-cumulative eligible modifier for roll 1", #rolled == 1 and rolled[1].name == "TimeCrunch")
+		expect(results, "Cities: RollModifiers's first draw picks the lowest-cumulative eligible modifier for roll 1", #rolled == 1 and rolled[1].key == "TimeCrunch")
 
 		-- A gate roll of 5 (<= 5) DOES pass, so a second draw happens; the
 		-- next roll (11, past CourierLoop's cumulative 10 but within its
@@ -2900,7 +3059,7 @@ local function testMissionService(results: { Check })
 		expect(
 			results,
 			"Cities: RollModifiers draws a second modifier when the 50% gate passes",
-			#rolledTwo == 2 and rolledTwo[1].name == "TimeCrunch" and rolledTwo[2].name == "HeavyCargo"
+			#rolledTwo == 2 and rolledTwo[1].key == "TimeCrunch" and rolledTwo[2].key == "HeavyCargo"
 		)
 	end
 
@@ -2910,12 +3069,10 @@ local function testMissionService(results: { Check })
 	expect(
 		results,
 		"Cities: CombinedMultiplier stacks TimeCrunch (1.2) and HeavyCargo (1.3) additively (old citymodifier + 1)",
-		math.abs(Cities.CombinedMultiplier({
-			{ name = "TimeCrunch", chance = 20, text = "", payMultiplier = 1.2 },
-			{ name = "HeavyCargo", chance = 3, text = "", payMultiplier = 1.3 },
-		}) - 1.5) < 1e-9
+		math.abs(Cities.CombinedMultiplier({ fakeMod("TimeCrunch", 1.2), fakeMod("HeavyCargo", 1.3) }) - 1.5) < 1e-9
 	)
 end
+
 
 local SelfTestService = {}
 

@@ -26,6 +26,16 @@
 -- (more people, more eyes) than a War-Torn one. PlayerActive is likewise
 -- wired to something real - the PLAYER's own delivery count to that city
 -- (Progress.Routes, schema v4), not a global counter nothing ever wrote to.
+--
+-- Wire contract (REVIEW-M5C-01 H1, and Bryan's own follow-up naming it
+-- exactly): every modifier MissionService sends the client - in a
+-- MissionBoard destination's `modifiers` and in MissionUpdate's own
+-- `modifiers` - is `{ key, name, chance, text }`, where `key` is a
+-- ModifierRoll's internal `key` (what the client's own greying-out logic
+-- and a ModifierFailed update's own `key` match against) and `name` is
+-- `displayName` below. Never send the internal key as `name` - the client
+-- matches its Time Crunch/Courier Loop special-cases, and shows every
+-- other modifier's pop-out title, off that field.
 
 export type CityKey = "Qarzin" | "Sahraqin" | "IllegalPort" | "AinJamala" | "Saleh" | "Rathole" | "JaddatysHut"
 
@@ -40,7 +50,13 @@ export type City = {
 }
 
 export type ModifierDef = {
-	name: string,
+	key: string, -- the internal name (e.g. "TimeCrunch") - what MissionService compares against, and the wire "key" field
+	displayName: string, -- verbatim from the old MissionDeliniation.Modifiers[*].Name (e.g. "Time Crunch") - REVIEW-M5C-01 H1: the client matches modifier pop-outs by this, not the internal key
+	-- REVIEW-M5C-01 L4: this is the roll WEIGHT among the eligible pool
+	-- (RollModifiers below), not a true percentage - the real odds depend
+	-- on which other modifiers are eligible for the same destination. Sent
+	-- to the client as-is (same as the old GUI's "25%" badge); label it as
+	-- a weight, not a percentage, wherever it's described.
 	chance: number,
 	text: string, -- the pop-out description, verbatim from MissionDeliniation.Modifiers
 	payMultiplier: number, -- 1 = no change; "Nothing" has none, it's the empty draw
@@ -51,7 +67,8 @@ export type ModifierDef = {
 }
 
 export type ModifierRoll = {
-	name: string,
+	key: string,
+	displayName: string,
 	chance: number,
 	text: string,
 	payMultiplier: number,
@@ -172,32 +189,47 @@ end
 -- always win a slot) but is never handed back to a caller.
 
 local modifiers: { ModifierDef } = {
-	{ name = "TimeCrunch", chance = 20, payMultiplier = 1.2, text = "Complete in 3:00." },
-	{ name = "CourierLoop", chance = 10, payMultiplier = 1, text = "Deliver the package and then return with another." },
+	{ key = "TimeCrunch", displayName = "Time Crunch", chance = 20, payMultiplier = 1.2, text = "Complete in 3:00." },
 	{
-		name = "HighlyValuable",
+		key = "CourierLoop",
+		displayName = "Courier Loop",
+		chance = 10,
+		payMultiplier = 1,
+		text = "Deliver the package and then return with another.",
+	},
+	{
+		key = "HighlyValuable",
+		displayName = "Highly Valuable",
 		chance = 10,
 		payMultiplier = 1.5,
 		text = "You are carrying something valuable, protect it.",
 		requires = { SafeRoute = true },
 	},
-	{ name = "HeavyCargo", chance = 3, payMultiplier = 1.3, text = "The package is heavy." },
+	{ key = "HeavyCargo", displayName = "Heavy Cargo", chance = 3, payMultiplier = 1.3, text = "The package is heavy." },
 	{
-		name = "VIP",
+		key = "VIP",
+		displayName = "Very Important Noble",
 		chance = 1,
 		payMultiplier = 2,
 		text = "Protect them to the next city, they are important and will draw attention.",
 		requires = { PlayerActive = false, SafeRoute = false },
 	},
-	{ name = "FragilePackage", chance = 20, payMultiplier = 1.3, text = "You are carrying something fragile, don't get into a fight." },
 	{
-		name = "CleartheRoute",
+		key = "FragilePackage",
+		displayName = "Fragile Package",
+		chance = 20,
+		payMultiplier = 1.3,
+		text = "You are carrying something fragile, don't get into a fight.",
+	},
+	{
+		key = "CleartheRoute",
+		displayName = "Clear the Route",
 		chance = 3,
 		payMultiplier = 1.5,
 		text = "The route is dangerous, your Broker has requested you clear the way.",
 		requires = { SafeRoute = false },
 	},
-	{ name = "Nothing", chance = 40, payMultiplier = 1, text = "" },
+	{ key = "Nothing", displayName = "", chance = 40, payMultiplier = 1, text = "" },
 }
 Cities.Modifiers = modifiers
 
@@ -259,8 +291,14 @@ function Cities.RollModifiers(factors: Factors, nextRoll: (max: number) -> numbe
 		for i, def in pool do
 			cumulative += def.chance
 			if roll <= cumulative then
-				if def.name ~= "Nothing" then
-					table.insert(selected, { name = def.name, chance = def.chance, text = def.text, payMultiplier = def.payMultiplier })
+				if def.key ~= "Nothing" then
+					table.insert(selected, {
+						key = def.key,
+						displayName = def.displayName,
+						chance = def.chance,
+						text = def.text,
+						payMultiplier = def.payMultiplier,
+					})
 				end
 				table.remove(pool, i)
 				return true

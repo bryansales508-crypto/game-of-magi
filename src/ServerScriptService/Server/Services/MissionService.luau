@@ -10,6 +10,27 @@
 -- streak (fixes M21); the old reward formula with the dead "level" replaced
 -- by rank index (fixes L15's division by zero).
 --
+-- REVIEW-M5C-01 fix round (CHANGES NEEDED): H1 (modifier displayName, see
+-- Shared/Data/Cities.luau), H2 (the CourierLoop return leg sends "Started",
+-- not "Cleared"), M1 (the shared tick is pcall-wrapped), M2 (interception
+-- needs distance/time into the run - Bryan's call, Config.Missions.
+-- InterceptMin*), M3 (board rolls are cached per player per destination
+-- until a run to it starts), M5 (FragilePackage/VIP react to CombatService.
+-- HitLanded - ANY landed hit, not just the Heavy-only `Hit` status), M6
+-- (the package's FragilePackage/HighlyValuable looks restored), L1 (leaving
+-- fails the run before local state is dropped), L2 (Mission attributes
+-- refresh after a new life), L3 (the interceptor is resolved by UserId, not
+-- name - see CombatService's byUserId).
+--
+-- Bryan's own follow-up refinement (after the fix round): failing a
+-- modifier (TimeCrunch's timer, a FragilePackage/VIP hit, Clear the Route
+-- with no knockout) never ends the run any more - it just drops that
+-- modifier's own share of the payout and tells the client which pop-out to
+-- grey (`MissionUpdate` state "ModifierFailed", `{key}`). Only leaving,
+-- dying, respawning, an interception, or `.mission fail` end a run early.
+-- HighlyValuable also keeps `CourierBeacon` on for the WHOLE run now,
+-- instead of pulsing on the shared 30s/3s cycle everyone else uses.
+--
 -- Ported from (now removed) SSS/MISC/MissionHandler/init.server.luau,
 -- RS/Modules/MissionDeliniation.luau and RS/Modules/RewardHandler.luau; see
 -- docs/SYSTEMS.md section 7 and docs/reference/m5c-studio-dump.md.
@@ -18,6 +39,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local TweenService = game:GetService("TweenService")
 
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
@@ -29,12 +51,14 @@ local EconomyService = require(script.Parent.EconomyService)
 local RankService = require(script.Parent.RankService)
 local MovementService = require(script.Parent.MovementService)
 local StatusService = require(script.Parent.StatusService)
+local CombatService = require(script.Parent.CombatService)
 local DevService = require(script.Parent.DevService)
 
 local log = Log.new("MissionService")
 
 type Data = SaveSchema.Data
 type ModifierRoll = Cities.ModifierRoll
+type RunPhase = "ToDestination" | "Returning"
 
 local MissionService = {}
 
@@ -73,25 +97,97 @@ function MissionService.FactorsFor(data: Data, destinationKey: string): Cities.F
 	}
 end
 
--- Pure: the old RewardHandler.rewardcaculation formula (base + weaklingBonus
--- + population*1.25 + streak*1.25, floored), ported with two fixes:
--- `rankIndex` replaces the dead race-branched "level" (Ranks.rankFor never
--- returns less than 1, so 10/rankIndex can no longer divide by zero -
--- AUDIT L15), and `streak` is the real, saved DeliveryStreak instead of the
--- old per-spawn SuccessRate folder (AUDIT M21). The modifier multiplier
--- (Cities.CombinedMultiplier - the old citymodifier + 1) is applied on top,
--- same as the old missionsuccess's `amount * mods`.
+-- Pure: the pre-multiplier base amount (rank/population/streak only - no
+-- modifiers). Cached once per board roll (M3) and combined with whichever
+-- modifiers are still intact at settlement (CurrentPay below) to get the
+-- actual payout - kept separate so a modifier failing DURING the run only
+-- ever lowers the final number, never recomputes rank/population/streak
+-- from a different moment. `rankIndex` replaces the old race-branched
+-- "level" (Ranks.rankFor never returns less than 1, so 10/rankIndex can't
+-- divide by zero - AUDIT L15); `streak` is the real, saved DeliveryStreak,
+-- not the old per-spawn SuccessRate folder (AUDIT M21).
+function MissionService.BaseAmount(rankIndex: number, population: number, streak: number): number
+	return math.floor(1 + 10 / rankIndex + population * 1.25 + streak * 1.25)
+end
+
+-- Pure: the old RewardHandler.rewardcaculation × citymodifier formula,
+-- given a fixed set of modifiers - used for the board's PREVIEW pay (every
+-- rolled modifier assumed intact, the best case) and by the self-test.
+-- CurrentPay below is the live equivalent once some may have failed.
 function MissionService.ComputePay(rankIndex: number, population: number, streak: number, modifiers: { ModifierRoll }): number
-	local weaklingBonus = 10 / rankIndex
-	local base = math.floor(1 + weaklingBonus + population * 1.25 + streak * 1.25)
-	return math.floor(base * Cities.CombinedMultiplier(modifiers))
+	return math.floor(MissionService.BaseAmount(rankIndex, population, streak) * Cities.CombinedMultiplier(modifiers))
+end
+
+-- Pure (Bryan's refinement): the ACTUAL payout at settlement - `baseAmount`
+-- combined only with whichever rolled modifiers are still intact (not
+-- listed in `failedKeys`). A modifier failing during the run (TimeCrunch's
+-- timer, a landed hit against FragilePackage/VIP, Clear the Route with no
+-- knockout) never ends the run any more - it just drops out of this sum.
+function MissionService.CurrentPay(baseAmount: number, modifiers: { ModifierRoll }, failedKeys: { [string]: boolean }): number
+	local intact: { ModifierRoll } = {}
+	for _, mod in modifiers do
+		if not failedKeys[mod.key] then
+			table.insert(intact, mod)
+		end
+	end
+	return math.floor(baseAmount * Cities.CombinedMultiplier(intact))
+end
+
+-- Pure (Bryan's post-review refinement): marks one modifier failed in
+-- `failedKeys`, idempotently - returns true only the first time (so a
+-- caller fires the ModifierFailed update/log exactly once per modifier per
+-- run, even if the same trigger fires repeatedly, e.g. several landed hits
+-- against FragilePackage).
+function MissionService.MarkFailed(failedKeys: { [string]: boolean }, key: string): boolean
+	if failedKeys[key] then
+		return false
+	end
+	failedKeys[key] = true
+	return true
+end
+
+-- Pure (H2): decides the phase transition on arrival. `"Returning"` with a
+-- `"Started"` update means loop back (CourierLoop) - REVIEW-M5C-01 H2: the
+-- client only re-arms its tracker on `"Started"` with `returnPosition` set;
+-- it tears the WHOLE run down on any other state, including the old
+-- `"Cleared"` this used to send. `nil` means the run is actually done
+-- (finishRun decides Finished vs. whatever else).
+function MissionService.OnArrival(phase: RunPhase, hasCourierLoop: boolean): (RunPhase?, string?)
+	if phase == "ToDestination" and hasCourierLoop then
+		return "Returning", "Started"
+	end
+	return nil, nil
+end
+
+-- Pure (M2, lead decision, Bryan may change it): an interception only pays
+-- if the courier is genuinely out on the route - AUDIT H8's remaining gap
+-- was two accounts farming the reward by knocking a courier out right next
+-- to the board they just opened, with no travel at all.
+function MissionService.CanIntercept(distanceFromOrigin: number, elapsedSeconds: number): boolean
+	return distanceFromOrigin >= Config.Missions.InterceptMinStuds or elapsedSeconds >= Config.Missions.InterceptMinSeconds
+end
+
+-- Pure (M3): the board-roll cache's own get-or-roll logic - extracted so
+-- "reopening the board doesn't re-roll" is testable with a fake cache and
+-- no Player/DataService/remote involved. `roll` only runs on a cache miss;
+-- a hit returns the exact same table every time (the old MissionHandler's
+-- `CityMods`, ported: once rolled, a destination's modifiers/pay don't
+-- change until a run to it actually starts and clears the entry).
+function MissionService.GetOrRoll<T>(cache: { [string]: T }, key: string, roll: () -> T): T
+	local cached = cache[key]
+	if cached ~= nil then
+		return cached
+	end
+	local entry = roll()
+	cache[key] = entry
+	return entry
 end
 
 -- Pure: a run "settles" (pays out, fails or is intercepted) exactly once -
--- whichever of the arrival check, the TimeCrunch timeout or a StatusService
--- Knocked notification gets there first wins; every other caller sees
--- `settled` already true and does nothing (AUDIT H8 - "the reward is paid
--- exactly once per run").
+-- whichever of the arrival check or a disqualifying event gets there first
+-- wins; every other caller sees `settled` already true and does nothing
+-- (AUDIT H8 - "the reward is paid exactly once per run"). Unrelated to
+-- MarkFailed above: a failed MODIFIER never settles the run by itself.
 export type SettleState = { settled: boolean }
 function MissionService.TrySettle(state: SettleState): boolean
 	if state.settled then
@@ -129,7 +225,8 @@ end
 type BoardDestination = {
 	key: string,
 	modifiers: { ModifierRoll },
-	pay: number,
+	baseAmount: number,
+	pay: number, -- preview: baseAmount x every rolled modifier's multiplier (the best case)
 }
 
 type Board = {
@@ -138,7 +235,7 @@ type Board = {
 	destinations: { [string]: BoardDestination },
 }
 
-type RunPhase = "ToDestination" | "Returning"
+type ValuablePulsePhase = "FadeIn" | "Hold" | "FadeOut" | "Off"
 
 type Run = {
 	player: Player,
@@ -146,17 +243,27 @@ type Run = {
 	destination: string,
 	destinationPosition: Vector3,
 	originPosition: Vector3,
-	modifiers: { ModifierRoll },
-	pay: number,
+	modifiers: { ModifierRoll }, -- the full rolled set, immutable through the run
+	baseAmount: number,
 	phase: RunPhase,
 	returnPosition: Vector3?,
 	hasCourierLoop: boolean,
 	heavyCargo: boolean,
-	fragile: boolean,
+	hasFragilePackage: boolean,
+	hasVip: boolean,
+	hasClearTheRoute: boolean,
+	hasHighlyValuable: boolean,
+	clearedRoute: boolean, -- M4: earned a knockout during the run
+	failedKeys: { [string]: boolean }, -- Bryan's refinement: dropped from the payout, run continues
 	timerEndsAt: number?, -- Workspace:GetServerTimeNow(), also the wire value
+	startedAt: number, -- for M2's elapsed-seconds gate
 	pack: Instance?,
+	valuableHighlight: Highlight?,
+	valuablePhase: ValuablePulsePhase?,
+	valuablePhaseEndsAt: number?,
 	settled: boolean,
 	beaconOn: boolean,
+	beaconPermanent: boolean, -- HighlyValuable: CourierBeacon stays true for the whole run
 	beaconNextAt: number,
 	beaconOffAt: number?,
 }
@@ -166,6 +273,10 @@ type Run = {
 -- in this codebase uses (StatusService, MovementService, ...).
 
 local boards: { [Player]: Board } = {}
+-- M3: cached per player per destination key, surviving repeated
+-- MissionOpenBoard calls (the old CityMods) - cleared only when a run to
+-- that destination actually starts (clearCachedRoll).
+local boardRolls: { [Player]: { [string]: BoardDestination } } = {}
 local runs: { [Player]: Run } = {}
 local runByCharacter: { [Model]: Run } = {}
 local missionLogEnabled = false
@@ -178,9 +289,9 @@ local function vecToTable(v: Vector3): { x: number, y: number, z: number }
 	return { x = v.X, y = v.Y, z = v.Z }
 end
 
-local function hasModifier(modifiers: { ModifierRoll }, name: string): boolean
+local function hasModifier(modifiers: { ModifierRoll }, key: string): boolean
 	for _, mod in modifiers do
-		if mod.name == name then
+		if mod.key == key then
 			return true
 		end
 	end
@@ -225,6 +336,20 @@ local function closeBoard(player: Player)
 	Remotes.Server.Fire("MissionBoard", player, nil)
 end
 
+-- REVIEW-M5C-01 H1 (and Bryan's own follow-up naming the exact shape): every
+-- modifier sent to the client is `{ key, name, chance, text }` - `key` is
+-- the internal name (what a ModifierFailed update's own `key` matches), and
+-- `name` is the display name. Never the internal key under `name` - the
+-- client's Time Crunch/Courier Loop special-cases and every pop-out title
+-- match on it.
+local function wireModifiers(modifiers: { ModifierRoll }): { any }
+	local list = {}
+	for _, mod in modifiers do
+		table.insert(list, { key = mod.key, name = mod.displayName, chance = mod.chance, text = mod.text })
+	end
+	return list
+end
+
 local function sendBoard(player: Player, board: Board)
 	local destinationsPayload = {}
 	for _, destKey in Cities.Routes[board.city] do
@@ -238,44 +363,74 @@ local function sendBoard(player: Player, board: Board)
 				lore = if city then city.lore else "",
 				image = if city then city.image else "",
 				pay = dest.pay,
-				modifiers = dest.modifiers,
+				modifiers = wireModifiers(dest.modifiers),
 			})
 		end
 	end
 	Remotes.Server.Fire("MissionBoard", player, { city = board.city, destinations = destinationsPayload })
 end
 
--- Builds a fresh board (rolls every destination's modifiers/pay right now -
--- AUDIT L14: the preview includes modifiers, not just the base reward) and
--- sends it. Shared by the real MissionOpenBoard handler and the dev
--- `.mission start` shortcut.
+-- Rolls one destination fresh (never cached itself - GetOrRoll/
+-- getOrRollDestination below own the caching).
+local function rollDestination(player: Player, data: Data, destKey: string): BoardDestination
+	local rankIndex = select(1, RankService.GetRank(player))
+	local population = #Players:GetPlayers()
+	local streak = data.Progress.DeliveryStreak
+	local factors = MissionService.FactorsFor(data, destKey)
+	local modifiers = Cities.RollModifiers(factors, rollDie)
+	local baseAmount = MissionService.BaseAmount(rankIndex, population, streak)
+	local pay = math.floor(baseAmount * Cities.CombinedMultiplier(modifiers))
+	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount, pay = pay }
+end
+
+-- M3: reuses a player's existing roll for `destKey` if one is still cached
+-- (AUDIT-adjacent fix - REVIEW-M5C-01 M3: reopening the board used to
+-- re-roll every time, letting a player fish for VIP/HighlyValuable).
+local function getOrRollDestination(player: Player, data: Data, destKey: string): BoardDestination
+	local cache = boardRolls[player]
+	if cache == nil then
+		cache = {}
+		boardRolls[player] = cache
+	end
+	return MissionService.GetOrRoll(cache, destKey, function()
+		return rollDestination(player, data, destKey)
+	end)
+end
+
+-- The roll is "used up" the moment a run to it actually starts - the next
+-- board open rolls that destination fresh again.
+local function clearCachedRoll(player: Player, destKey: string)
+	local cache = boardRolls[player]
+	if cache then
+		cache[destKey] = nil
+	end
+end
+
+-- Builds a board from whatever's cached (or freshly rolled) for each
+-- destination on the route (AUDIT L14: the preview pay already includes
+-- modifiers). Shared by the real MissionOpenBoard handler; the dev
+-- `.mission start` shortcut rolls its own one-off instead (bypasses the
+-- board/cache entirely by design).
 local function buildBoard(player: Player, data: Data, cityKey: string, part: BasePart): Board?
 	local route = Cities.Routes[cityKey]
 	if route == nil then
 		return nil
 	end
 
-	local rankIndex = select(1, RankService.GetRank(player))
-	local population = #Players:GetPlayers()
-	local streak = data.Progress.DeliveryStreak
-
 	local destinations: { [string]: BoardDestination } = {}
 	for _, destKey in route do
-		local factors = MissionService.FactorsFor(data, destKey)
-		local modifiers = Cities.RollModifiers(factors, rollDie)
-		local pay = MissionService.ComputePay(rankIndex, population, streak, modifiers)
-		destinations[destKey] = { key = destKey, modifiers = modifiers, pay = pay }
+		destinations[destKey] = getOrRollDestination(player, data, destKey)
 	end
 
 	return { city = cityKey, part = part, destinations = destinations }
 end
 
--- ==================== package model ====================
+-- ==================== package model & modifier looks ====================
 -- Ported from the old MissionHandler:412-428 (the old `packagetypes`
--- table). ReplicatedFirst.Objects isn't synced by Rojo (Studio-only art,
--- same as RF.VFX/RF.SFX) - missing gracefully degrades to no visible
--- package instead of erroring, same defensive pattern CharacterService uses
--- for RF.Assets/RF.VFX/RF.SFX lookups.
+-- table). ReplicatedFirst.Objects/VFX aren't synced by Rojo (Studio-only
+-- art, same as RF.SFX) - missing gracefully degrades (no visible package,
+-- or no FragilePackage/HighlyValuable look) instead of erroring, same
+-- defensive pattern CharacterService uses for RF.Assets/RF.VFX/RF.SFX.
 
 local PACKAGE_TEMPLATE_NAMES = { "Package1", "Package2" }
 
@@ -324,15 +479,135 @@ local function attachPackage(character: Model): Instance?
 	return pack
 end
 
+-- REVIEW-M5C-01 M6: the old FragilePackage look (MissionHandler:276-286) -
+-- turns the pack to glass. Cosmetic only; never reverted even once the
+-- modifier fails (a landed hit), same as the old code.
+local FRAGILE_COLOR = Color3.fromRGB(168, 187, 208)
+
+local function applyFragileLook(pack: Instance?)
+	if pack == nil then
+		return
+	end
+	if pack:FindFirstChild("Pack1") then
+		for _, part in pack:GetDescendants() do
+			if part:IsA("MeshPart") then
+				part.Material = Enum.Material.Glass
+				part.Color = FRAGILE_COLOR
+			end
+		end
+	else
+		local main = pack:FindFirstChild("Main")
+		if main and main:IsA("BasePart") then
+			main.Material = Enum.Material.Glass
+			main.Color = FRAGILE_COLOR
+		end
+	end
+end
+
+-- REVIEW-M5C-01 M6: the old HighlyValuable look (MissionHandler:303-328) -
+-- trueSparkle/sparkle1/sparkle2 VFX plus a gold Highlight on the pack that
+-- pulses 1s in, 6s on, 1s out, 20s off. The old code drove this with its
+-- own per-pack `spawn(function() while pack do ... task.wait(...) end)`
+-- loop; here the Play() calls are triggered from the shared tick's phase
+-- machine instead (see tickOnce below) - never a per-frame/per-pack loop.
+local VALUABLE_HIGHLIGHT_COLOR = Color3.fromRGB(239, 187, 65)
+local VALUABLE_FADE_SECONDS = 1
+local VALUABLE_HOLD_SECONDS = 6
+local VALUABLE_OFF_SECONDS = 20
+
+local function applyHighlyValuableLook(run: Run)
+	local pack = run.pack
+	if pack == nil then
+		return
+	end
+	local main = pack:FindFirstChild("Main")
+	if main == nil or not main:IsA("BasePart") then
+		return
+	end
+
+	local vfx = ReplicatedFirst:FindFirstChild("VFX")
+	local miscEffects = vfx and vfx:FindFirstChild("MiscEffects")
+	if miscEffects == nil then
+		log:Warn("ReplicatedFirst.VFX.MiscEffects is missing - HighlyValuable has no sparkle/highlight")
+		return
+	end
+
+	local trueSparkle = miscEffects:FindFirstChild("trueSparkle")
+	if trueSparkle then
+		local s1 = trueSparkle:Clone()
+		s1.Parent = main
+	end
+	local backAttachment = main:FindFirstChild("BodyBackAttachment")
+	if backAttachment then
+		local sparkle1 = miscEffects:FindFirstChild("sparkle1")
+		if sparkle1 then
+			local s2 = sparkle1:Clone()
+			s2.Parent = backAttachment
+		end
+		local sparkle2 = miscEffects:FindFirstChild("sparkle2")
+		if sparkle2 then
+			local s3 = sparkle2:Clone()
+			s3.Parent = backAttachment
+		end
+	end
+
+	local cancelTemplate = miscEffects:FindFirstChild("Cancel")
+	if cancelTemplate and cancelTemplate:IsA("Highlight") then
+		local hl = cancelTemplate:Clone() :: Highlight
+		hl.FillTransparency = 1
+		hl.OutlineTransparency = 1
+		hl.FillColor = VALUABLE_HIGHLIGHT_COLOR
+		hl.OutlineColor = VALUABLE_HIGHLIGHT_COLOR
+		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		hl.Adornee = pack
+		hl.Parent = pack
+
+		run.valuableHighlight = hl
+		run.valuablePhase = "FadeIn"
+		run.valuablePhaseEndsAt = Workspace:GetServerTimeNow() + VALUABLE_FADE_SECONDS
+		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 0.75, OutlineTransparency = 0 }):Play()
+	end
+end
+
+-- Advances the HighlyValuable pulse's phase machine by exactly one step, if
+-- its current phase's timer has elapsed - called from the shared tick, not
+-- a per-pack loop.
+local function tickValuablePulse(run: Run, now: number)
+	local hl = run.valuableHighlight
+	if hl == nil or run.valuablePhaseEndsAt == nil or now < run.valuablePhaseEndsAt then
+		return
+	end
+
+	if run.valuablePhase == "FadeIn" then
+		run.valuablePhase = "Hold"
+		run.valuablePhaseEndsAt = now + VALUABLE_HOLD_SECONDS
+	elseif run.valuablePhase == "Hold" then
+		run.valuablePhase = "FadeOut"
+		run.valuablePhaseEndsAt = now + VALUABLE_FADE_SECONDS
+		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 1, OutlineTransparency = 1 }):Play()
+	elseif run.valuablePhase == "FadeOut" then
+		run.valuablePhase = "Off"
+		run.valuablePhaseEndsAt = now + VALUABLE_OFF_SECONDS
+	elseif run.valuablePhase == "Off" then
+		run.valuablePhase = "FadeIn"
+		run.valuablePhaseEndsAt = now + VALUABLE_FADE_SECONDS
+		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 0.75, OutlineTransparency = 0 }):Play()
+	end
+end
+
 -- ==================== run lifecycle ====================
+
+local function currentPay(run: Run): number
+	return MissionService.CurrentPay(run.baseAmount, run.modifiers, run.failedKeys)
+end
 
 local function sendUpdate(player: Player, run: Run, state: string)
 	local payload: { [string]: any } = {
 		state = state,
 		destination = run.destination,
 		destinationPosition = vecToTable(run.destinationPosition),
-		modifiers = run.modifiers,
-		pay = run.pay,
+		modifiers = wireModifiers(run.modifiers),
+		pay = currentPay(run),
 	}
 	if run.returnPosition then
 		payload.returnPosition = vecToTable(run.returnPosition :: Vector3)
@@ -343,6 +618,20 @@ local function sendUpdate(player: Player, run: Run, state: string)
 	Remotes.Server.Fire("MissionUpdate", player, payload)
 end
 
+-- Bryan's refinement: a failed modifier only ever drops its own share of
+-- the payout and tells the client which pop-out to grey - it never ends
+-- the run (that's still only leaving/dying/respawning/interception/
+-- `.mission fail` - see failRun/interceptRun below).
+local function failModifier(player: Player, run: Run, key: string)
+	if not MissionService.MarkFailed(run.failedKeys, key) then
+		return
+	end
+	Remotes.Server.Fire("MissionUpdate", player, { state = "ModifierFailed", key = key })
+	if missionLogEnabled then
+		log:Info(string.format("%s's %s modifier failed on their delivery to %s (pay now %d)", player.Name, key, run.destination, currentPay(run)))
+	end
+end
+
 local function startRun(
 	player: Player,
 	character: Model,
@@ -350,10 +639,11 @@ local function startRun(
 	destinationKey: string,
 	destinationPosition: Vector3,
 	modifiers: { ModifierRoll },
-	pay: number
+	baseAmount: number
 )
 	local now = Workspace:GetServerTimeNow()
 	local hasTimeCrunch = hasModifier(modifiers, "TimeCrunch")
+	local hasHighlyValuable = hasModifier(modifiers, "HighlyValuable")
 
 	local run: Run = {
 		player = player,
@@ -362,22 +652,41 @@ local function startRun(
 		destinationPosition = destinationPosition,
 		originPosition = originPosition,
 		modifiers = modifiers,
-		pay = pay,
+		baseAmount = baseAmount,
 		phase = "ToDestination",
 		returnPosition = nil,
 		hasCourierLoop = hasModifier(modifiers, "CourierLoop"),
 		heavyCargo = hasModifier(modifiers, "HeavyCargo"),
-		fragile = hasModifier(modifiers, "FragilePackage"),
+		hasFragilePackage = hasModifier(modifiers, "FragilePackage"),
+		hasVip = hasModifier(modifiers, "VIP"),
+		hasClearTheRoute = hasModifier(modifiers, "CleartheRoute"),
+		hasHighlyValuable = hasHighlyValuable,
+		clearedRoute = false,
+		failedKeys = {},
 		timerEndsAt = if hasTimeCrunch then now + Config.Missions.TimeCrunchSeconds else nil,
+		startedAt = now,
 		pack = attachPackage(character),
+		valuableHighlight = nil,
+		valuablePhase = nil,
+		valuablePhaseEndsAt = nil,
 		settled = false,
-		beaconOn = false,
+		-- Bryan's refinement: HighlyValuable's escort stays lit the whole
+		-- run - beaconPermanent short-circuits the shared 30s/3s cycle below.
+		beaconOn = hasHighlyValuable,
+		beaconPermanent = hasHighlyValuable,
 		beaconNextAt = now + Config.Missions.Beacon.everySeconds,
 		beaconOffAt = nil,
 	}
 
 	if run.heavyCargo then
 		MovementService.SetModifier(character, "HeavyCargo", Config.Missions.HeavyCargoSpeedMult)
+	end
+	if run.hasFragilePackage then
+		applyFragileLook(run.pack)
+	end
+	if hasHighlyValuable then
+		character:SetAttribute("CourierBeacon", true)
+		applyHighlyValuableLook(run)
 	end
 
 	runs[player] = run
@@ -390,6 +699,9 @@ local function startRun(
 end
 
 local function cleanupRun(player: Player, run: Run)
+	-- Destroys every clone parented under it too - the package, its glass
+	-- look, the HighlyValuable sparkles and the pulsing Highlight all live
+	-- under `pack` (M6), so nothing needs separate cleanup here.
 	if run.pack then
 		run.pack:Destroy()
 	end
@@ -416,7 +728,15 @@ local function finishRun(player: Player, run: Run)
 		return
 	end
 
-	EconomyService.GiveCopperValue(player, run.pay, string.format("Delivery: %s", run.destination))
+	-- M4: Clear the Route only resolves right here - a knockout could land
+	-- at any point up to arrival, so unlike the other three "can fail"
+	-- modifiers it can't be marked proactively mid-run.
+	if run.hasClearTheRoute and not run.clearedRoute then
+		failModifier(player, run, "CleartheRoute")
+	end
+
+	local payout = currentPay(run)
+	EconomyService.GiveCopperValue(player, payout, string.format("Delivery: %s", run.destination))
 	RankService.AddMagoi(player, Config.Missions.MagoiPerDelivery, "Delivery")
 	RankService.AddDeed(player, "Gold", 1)
 
@@ -430,10 +750,14 @@ local function finishRun(player: Player, run: Run)
 	cleanupRun(player, run)
 
 	if missionLogEnabled then
-		log:Info(string.format("%s delivered to %s for %d Copper", player.Name, run.destination, run.pay))
+		log:Info(string.format("%s delivered to %s for %d Copper", player.Name, run.destination, payout))
 	end
 end
 
+-- Ends the whole run early with no payout - only ever called for leaving,
+-- dying, respawning, an under-the-gate interception attempt, or the dev
+-- `.mission fail` command (Bryan's refinement: a failed MODIFIER never
+-- reaches here - see failModifier above).
 local function failRun(player: Player, run: Run, reason: string)
 	if not MissionService.TrySettle(run) then
 		return
@@ -456,17 +780,20 @@ end
 -- AUDIT H8: the attacker is paid the run's full reward INSTANTLY, exactly
 -- once (TrySettle), and the courier's own wallet is never touched at all
 -- (nothing to farm back and forth - see ApplyInterception's own comment).
+-- REVIEW-M5C-01 M2 already gated the CALL to this (CanIntercept) - by the
+-- time this runs, the courier was genuinely out on the route.
 local function interceptRun(courier: Player, run: Run, attacker: Player)
 	if not MissionService.TrySettle(run) then
 		return
 	end
 
-	EconomyService.GiveCopperValue(attacker, run.pay, string.format("Delivery interception: %s", run.destination))
+	local payout = currentPay(run)
+	EconomyService.GiveCopperValue(attacker, payout, string.format("Delivery interception: %s", run.destination))
 	RankService.AddDeed(attacker, "Black", 1)
 
 	local attackerData = DataService.Get(attacker)
 	if attackerData then
-		MissionService.ApplyInterception(attackerData, run.pay)
+		MissionService.ApplyInterception(attackerData, payout)
 		refreshAttributes(attacker, attackerData)
 	end
 
@@ -479,7 +806,7 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 	sendUpdate(courier, run, "Intercepted")
 	cleanupRun(courier, run)
 
-	log:Info(string.format("%s intercepted %s's delivery to %s for %d Copper", attacker.Name, courier.Name, run.destination, run.pay))
+	log:Info(string.format("%s intercepted %s's delivery to %s for %d Copper", attacker.Name, courier.Name, run.destination, payout))
 end
 
 -- ==================== remotes ====================
@@ -552,7 +879,8 @@ local function onMissionStart(player: Player, destinationKey: string)
 
 	local originPosition = board.part.Position
 	closeBoard(player)
-	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.pay)
+	clearCachedRoll(player, destinationKey) -- M3: used up - the next board open re-rolls this destination
+	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount)
 
 	if missionLogEnabled then
 		log:Info(string.format("%s started a delivery from %s to %s (%d Copper)", player.Name, board.city, destinationKey, dest.pay))
@@ -567,36 +895,72 @@ local function onMissionExit(player: Player)
 	closeBoard(player)
 end
 
--- ==================== interception / fragile package ====================
+-- ==================== interception / Clear the Route credit ====================
 
 local function onStatusChanged(character: Model, status: string, active: boolean)
-	if not active then
+	if not active or status ~= "Knocked" then
 		return
 	end
+
+	-- L3: resolved by UserId (CombatService's byUserId), never by name - an
+	-- NPC model sharing a name with a real player's username used to be
+	-- able to collect someone else's interception payout.
+	local info = StatusService.Get(character, "Knocked")
+	local byUserId = if info and type(info.data) == "table" then (info.data :: any).byUserId else nil
+	local attackerPlayer: Player? = if type(byUserId) == "number" then Players:GetPlayerByUserId(byUserId) else nil
+
+	-- M4: Clear the Route is earned the instant the courier knocks anyone
+	-- out, anywhere - independent of whatever's happening to the character
+	-- that just got knocked (which might not be on a mission at all).
+	if attackerPlayer then
+		local attackerRun = runs[attackerPlayer]
+		if attackerRun and attackerRun.hasClearTheRoute and not attackerRun.clearedRoute then
+			attackerRun.clearedRoute = true
+		end
+	end
+
 	local run = runByCharacter[character]
 	if run == nil then
 		return
 	end
 
-	if status == "Hit" then
-		if run.fragile then
-			failRun(run.player, run, "fragile")
-		end
-	elseif status == "Knocked" then
-		local info = StatusService.Get(character, "Knocked")
-		local by = if info and type(info.data) == "table" then (info.data :: any).by else nil
-		local attacker = if type(by) == "string" then Players:FindFirstChild(by) else nil
-		if attacker and attacker:IsA("Player") and (attacker :: Player) ~= run.player then
-			interceptRun(run.player, run, attacker :: Player)
+	if attackerPlayer and attackerPlayer ~= run.player then
+		local root = character:FindFirstChild("HumanoidRootPart")
+		local distance = if root and root:IsA("BasePart") then (root.Position - run.originPosition).Magnitude else math.huge
+		local elapsed = Workspace:GetServerTimeNow() - run.startedAt
+		if MissionService.CanIntercept(distance, elapsed) then
+			interceptRun(run.player, run, attackerPlayer :: Player)
 		else
-			failRun(run.player, run, "knocked")
+			failRun(run.player, run, "knocked too close to the start to count as an interception")
 		end
+	else
+		failRun(run.player, run, "knocked")
+	end
+end
+
+-- M5: FragilePackage/VIP fail on ANY landed hit (Light or Heavy) - the
+-- bridged `Hit` status only ever fires for a Heavy (Combat.Stagger's
+-- flinch/slow, M3-FIX4-S), which used to let a Light-hit courier through
+-- untouched. CombatService.HitLanded fires for every landed hit instead.
+local function onHitLanded(target: Model, _attacker: Model, _kind: string)
+	local run = runByCharacter[target]
+	if run == nil then
+		return
+	end
+	if run.hasFragilePackage then
+		failModifier(run.player, run, "FragilePackage")
+	end
+	if run.hasVip then
+		failModifier(run.player, run, "VIP")
 	end
 end
 
 -- ==================== shared loop (AUDIT H9: no per-frame/per-board loops) ====================
 
-local function tick()
+-- Typed as a variadic return (not `()`) so pcall(tickOnce) below
+-- type-checks as (boolean, ...any) instead of just (boolean) - same trick
+-- Main.server.luau's own ServiceModule type uses for Init/Start.
+local function tickOnce(): ...any
 	local now = Workspace:GetServerTimeNow()
 
 	for player, board in boards do
@@ -621,23 +985,32 @@ local function tick()
 			continue
 		end
 
+		-- Bryan's refinement: TimeCrunch expiring only fails ITSELF now -
+		-- the run keeps going with a smaller payout, not "Failed".
 		if run.timerEndsAt and now >= run.timerEndsAt then
-			failRun(player, run, "timer")
-			continue
+			failModifier(player, run, "TimeCrunch")
+			run.timerEndsAt = nil
 		end
 
-		if run.beaconOn then
-			if run.beaconOffAt and now >= run.beaconOffAt then
-				run.beaconOn = false
-				run.beaconOffAt = nil
-				character:SetAttribute("CourierBeacon", false)
-				run.beaconNextAt = now + Config.Missions.Beacon.everySeconds
+		-- HighlyValuable: CourierBeacon stays true for the whole run
+		-- (Bryan's refinement) - the shared 30s/3s cycle below never
+		-- applies to it at all.
+		if not run.beaconPermanent then
+			if run.beaconOn then
+				if run.beaconOffAt and now >= run.beaconOffAt then
+					run.beaconOn = false
+					run.beaconOffAt = nil
+					character:SetAttribute("CourierBeacon", false)
+					run.beaconNextAt = now + Config.Missions.Beacon.everySeconds
+				end
+			elseif now >= run.beaconNextAt then
+				run.beaconOn = true
+				run.beaconOffAt = now + Config.Missions.Beacon.forSeconds
+				character:SetAttribute("CourierBeacon", true)
 			end
-		elseif now >= run.beaconNextAt then
-			run.beaconOn = true
-			run.beaconOffAt = now + Config.Missions.Beacon.forSeconds
-			character:SetAttribute("CourierBeacon", true)
 		end
+
+		tickValuablePulse(run, now)
 
 		local root = character:FindFirstChild("HumanoidRootPart")
 		if root == nil or not root:IsA("BasePart") then
@@ -646,19 +1019,30 @@ local function tick()
 
 		local targetPosition = if run.phase == "ToDestination" then run.destinationPosition else run.originPosition
 		if ((root :: BasePart).Position - targetPosition).Magnitude <= Config.Missions.ArriveStuds then
-			if run.phase == "ToDestination" and run.hasCourierLoop then
-				-- "Cleared" (not "Finished" - the run isn't over, and not
-				-- another "Started" - the contract's 5 states don't have a
-				-- "leg 2" one): CourierLoop's first leg is done, now loop
-				-- back with returnPosition set. A judgment call on an
-				-- otherwise-unused state name; documented for M5C-02.
-				run.phase = "Returning"
+			-- Explicit annotations, not decoration: luau-lsp 1.54.0 widens a
+			-- required module's returned union type to plain `string` when
+			-- it's read back through a module boundary without one (same
+			-- reproduction as RankService.ApplyDeed's own comment).
+			local nextPhase: RunPhase?, state: string? = MissionService.OnArrival(run.phase, run.hasCourierLoop)
+			if nextPhase and state then
+				run.phase = nextPhase
 				run.returnPosition = run.originPosition
-				sendUpdate(player, run, "Cleared")
+				sendUpdate(player, run, state)
 			else
 				finishRun(player, run)
 			end
 		end
+	end
+end
+
+-- M1: one error (a destroyed character's SetAttribute, a bad economy call,
+-- ...) used to kill this loop for the rest of the server - no arrival,
+-- timer, beacon or board-close ever ran again for anyone. Now it's caught
+-- and logged, and the loop keeps going next tick.
+local function tick()
+	local ok, err = pcall(tickOnce)
+	if not ok then
+		log:Warn(string.format("shared tick errored (recovering next tick): %s", tostring(err)))
 	end
 end
 
@@ -693,7 +1077,7 @@ local function modNames(modifiers: { ModifierRoll }): string
 	end
 	local names: { string } = {}
 	for _, mod in modifiers do
-		table.insert(names, mod.name)
+		table.insert(names, mod.key)
 	end
 	return table.concat(names, ", ")
 end
@@ -726,16 +1110,15 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	local root = character:FindFirstChild("HumanoidRootPart")
 	local originPosition = if root and root:IsA("BasePart") then (root :: BasePart).Position else destPart.Position
 
-	local rankIndex = select(1, RankService.GetRank(target))
-	local population = #Players:GetPlayers()
-	local factors = MissionService.FactorsFor(data, cityKey)
-	local modifiers = Cities.RollModifiers(factors, rollDie)
-	local pay = MissionService.ComputePay(rankIndex, population, data.Progress.DeliveryStreak, modifiers)
+	-- A one-off roll, deliberately not routed through the board cache (M3) -
+	-- this bypasses the board/proximity check entirely already, same spirit
+	-- as every other dev shortcut in this codebase.
+	local dest = rollDestination(target, data, cityKey)
 
 	closeBoard(target)
-	startRun(target, character, originPosition, cityKey, destPart.Position, modifiers, pay)
+	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount)
 
-	return string.format("%s's delivery to %s started: %d Copper, modifiers: %s", target.Name, cityKey, pay, modNames(modifiers))
+	return string.format("%s's delivery to %s started: %d Copper, modifiers: %s", target.Name, cityKey, dest.pay, modNames(dest.modifiers))
 end
 
 local function missionFinishDevCommand(caller: Player, args: { string }): string
@@ -834,10 +1217,21 @@ function MissionService:Start()
 	Remotes.Server.On("MissionExit", onMissionExit)
 
 	StatusService.Changed:Connect(onStatusChanged)
+	CombatService.HitLanded:Connect(onHitLanded)
 
 	local function hookPlayer(player: Player)
 		player.CharacterRemoving:Connect(function()
 			onCharacterRemoving(player)
+		end)
+		-- L2: Gender resets to 0 on a new life/wipe (CharacterService sets it
+		-- non-zero once creation finishes) - the same signal RankService
+		-- already uses to know a life just turned over. Refresh whichever
+		-- Mission attributes the fresh save now holds either way.
+		player:GetAttributeChangedSignal("Gender"):Connect(function()
+			local data = DataService.Get(player)
+			if data then
+				refreshAttributes(player, data)
+			end
 		end)
 	end
 	Players.PlayerAdded:Connect(hookPlayer)
@@ -845,17 +1239,27 @@ function MissionService:Start()
 		hookPlayer(player)
 	end
 
-	-- A safety-net local cleanup only - CharacterRemoving (above) already
-	-- ran the real failRun (data mutation, EconomyService/RankService) while
-	-- the character still existed; this just drops any local state that
-	-- somehow survived it (e.g. a board with no character at all).
+	-- L1: DataService's own PlayerRemoving handler (connected during Init,
+	-- which always finishes for every service before any Start runs) calls
+	-- profile:EndSession() before this one fires - but that starts an
+	-- async release/save, it doesn't invalidate DataService.Get's table
+	-- synchronously, so failing the run here (before that async save ever
+	-- actually reads the data) still lands. Without this, leaving mid-run
+	-- kept the streak intact (CharacterRemoving usually already caught it,
+	-- but not for a charless player, e.g. mid-load).
 	Players.PlayerRemoving:Connect(function(player: Player)
-		boards[player] = nil
 		local run = runs[player]
 		if run then
+			failRun(player, run, "left")
+		end
+		boards[player] = nil
+		boardRolls[player] = nil
+		-- Safety net in case failRun somehow no-op'd (already settled).
+		local leftover = runs[player]
+		if leftover then
 			runs[player] = nil
-			if runByCharacter[run.character] == run then
-				runByCharacter[run.character] = nil
+			if runByCharacter[leftover.character] == leftover then
+				runByCharacter[leftover.character] = nil
 			end
 		end
 	end)
