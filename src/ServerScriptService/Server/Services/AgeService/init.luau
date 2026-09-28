@@ -25,13 +25,12 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
-local ItemHandler = require(ServerScriptService.Character.ItemHandler) :: any
+local ItemService = require(script.Parent.ItemService)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
@@ -120,7 +119,7 @@ local function rebuildAccessories(character: Model, data: Data)
 	end
 	for _, code in data.Gear.Hats do
 		if code ~= "" then
-			ItemHandler.equip(code, character)
+			ItemService.Equip(code, character)
 		end
 	end
 end

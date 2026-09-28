@@ -17,14 +17,13 @@ local Players = game:GetService("Players")
 local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
 local Log = require(ReplicatedStorage.Shared.Log)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local Assets = require(ReplicatedFirst.Assets) :: any
-local ItemHandler = require(ServerScriptService.Character.ItemHandler) :: any
+local ItemService = require(script.Parent.ItemService)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local LegacyBridge = require(script.Parent.LegacyBridge)
@@ -457,22 +456,22 @@ local function ensureStarterOutfit(data: Data)
 	end
 	local color = if math.random(1, 2) == 1 then Color3.fromRGB(35, 35, 35) else Color3.fromRGB(144, 90, 42)
 	local pantsName = if math.random(1, 2) == 1 then "Shoes and Rags" else "Barefooted and Rags"
-	data.Gear.Shirt = ItemHandler.encode("S", "Short Sleeve Rags", ItemHandler.colorToCode(color))
-	data.Gear.Pants = ItemHandler.encode("P", pantsName, ItemHandler.colorToCode(color))
+	data.Gear.Shirt = ItemService.Encode("S", "Short Sleeve Rags", ItemService.ColorToCode(color))
+	data.Gear.Pants = ItemService.Encode("P", pantsName, ItemService.ColorToCode(color))
 end
 
 local function equipGear(character: Model, data: Data)
 	ensureStarterOutfit(data)
 
 	if data.Gear.Shirt ~= "" then
-		ItemHandler.equip(data.Gear.Shirt, character)
+		ItemService.Equip(data.Gear.Shirt, character)
 	end
 	if data.Gear.Pants ~= "" then
-		ItemHandler.equip(data.Gear.Pants, character)
+		ItemService.Equip(data.Gear.Pants, character)
 	end
 	for _, code in data.Gear.Hats do
 		if code ~= "" then
-			ItemHandler.equip(code, character)
+			ItemService.Equip(code, character)
 		end
 	end
 end

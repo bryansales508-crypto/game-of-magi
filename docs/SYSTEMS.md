@@ -161,35 +161,41 @@ If `ReplicatedFirst.AfterLife` is missing entirely, the scene falls back to keep
 
 ---
 
-## 5. Items, clothing and hats
+## 5. Items, clothing and hats (rebuilt M5B-01)
 
 **What it does.** Every wearable is stored as a short **item code** string: `"type|name|r,g,b"`.
 - Types: `S` shirt, `P` pants, `H` hat, `C` cloak.
 - `name` matches an entry in `RF.Assets.outfits.desertBasic` (clothing) or a child of `RF.Assets` (hats and cloaks).
 - `r,g,b` is 0–255.
 
-`ItemHandler.equip(code, character)` puts the item on, recolors it, and resizes it to the character's current body.
+`ItemService` (`SSS/Server/Services/ItemService.luau`) replaces the old `Character/ItemHandler.luau`, ported to `--!strict` with the same code format and the same `Equip(code, character)` behaviour (puts the item on, recolors it, resizes it to the character's current body through `AgeService.HeightHandler`, same as before). Two things were added for the M5B-01 shop rewrite:
+- `Owns(data, code)` — **colour-aware** ownership (exact item **and** colour). **⚠ fixed bug:** the old `MarketHandler` compared shirts/pants by clothing id only, so owning a black shirt blocked buying an otherwise-identical white one; hats/cloaks were already colour-aware there (matched by the full code). `Owns` makes every item type consistent with the colour-aware rule.
+- `Wear(player, code)` — equips, then writes the code into `data.Gear.Shirt`/`Gear.Pants`, or the first empty `data.Gear.Hats` slot (hats and cloaks share the same 3 slots, same as before). `LegacyBridge.Refresh` mirrors the write onto `OnCharacter.Clothes`/`OnCharacter.Hats` for old readers.
 
-**Files:** `SSS/Character/ItemHandler.luau`.
-**Saved in:** `OnCharacter.Clothes.Clothing_Shirt/Clothing_Pants`, `OnCharacter.Hats.HatSpot1..3`.
-**Depends on:** `RF.Assets`, `HeightHandler`, `AgeHandler`.
-**Depended on by:** Appearance, AgeController, MarketHandler, the Qarzin clothes shop (section 6).
+**Files:** `SSS/Server/Services/ItemService.luau`.
+**Saved in:** `SaveSchema.Data.Gear.Shirt/Pants/Hats` (mirrored onto `OnCharacter.Clothes.Clothing_Shirt/Clothing_Pants`, `OnCharacter.Hats.HatSpot1..3` by `LegacyBridge`).
+**Depends on:** `RF.Assets`, `AgeService.HeightHandler`, `AgeService.AgeHandler`, `DataService`, `LegacyBridge`.
+**Depended on by:** `CharacterService` (starter rags + spawn equip), `AgeService` (rebuilds worn hats/cloaks on a birthday resize), `ShopService` (section 6).
 
 ---
 
-## 6. Currency (rebuilt M5A-01) and the market (still old, 5B)
+## 6. Currency (rebuilt M5A-01) and the Qarzin clothes shop (rebuilt M5B-01)
 
 **Currency — what it does now.** `EconomyService` (`SSS/Server/Services/EconomyService.luau`) owns the wallet: `data.Economy.Copper/Silver/Gold` (unchanged save shape - still three integers, never negative). `Get(player)` returns a snapshot; `CanAfford`/`Pay` are **exact-coin only** - a price in Silver can only be paid with Silver, never made up from Copper and Gold converted, even if the player is holding more than enough total wealth (120 Copper still can't pay a 1-Silver price). A failed `Pay` fires the new `CoinMessage` remote with one of the old `MarketHandler`/`ForcedChat` flavour lines (generalized to name whichever coin the price needed): "I need more money..." when the player's total wealth, converted to Copper, doesn't reach the price at all, or "This place only takes Silver, huh..." (a Bank-flavoured convert line) when it does, just not in that coin - exchanging coins is the Bank milestone's job; nothing in `EconomyService` converts. `Give`/`GiveCopperValue` add coins; `GiveCopperValue(player, copper, reason)` pays a reward as **Copper only** for now (Bryan's refinement, 2026-09-29) - it never rounds a reward up into Silver/Gold. `Copper`/`Silver`/`Gold` player attributes are kept current on every wallet change (the purse HUD and the client's `CoinReward` sound both read them); `LegacyBridge` no longer writes the purse text or plays that sound itself (both moved: text onto the attributes, the sound to the client's `CurrencyController`), but still mirrors the wallet onto the old `OnCharacter.Currency` Value folder in both directions for old readers (e.g. the mission script) until 5C.
 
 **The display/price rule** (`Shared/Data/Economy.luau`, pure, no Player/save/remotes): 1 Gold = 100 Silver = 10,000 Copper (`Economy.Copper/Silver/Gold` are exactly those three numbers). A price or reward shows in exactly one coin, never mixed or decimal - **bands, not rounding** (Bryan, 2026-09-29, replacing an earlier round-half-up rule): `Economy.toPrice(copper)` shows 1-100 Copper as that many Copper; every full 100 Copper past that is one more Silver (101-200 → 1 Silver, 201-300 → 2 Silver, ..., 10,000 → 99 Silver); the same banding then carries Silver into Gold once past 10,000 Copper (10,001-20,000 → 1 Gold, 20,001-30,000 → 2 Gold). Gold is checked first, so anything past 10,000 Copper always shows in Gold, never Silver. `Economy.format(coin, amount)` renders it ("3 Silver"). `Economy.roundReward` is the same rule under its own name, kept for the Bank milestone - **unused today**, since rewards pay Copper only (see `GiveCopperValue` above).
 
-**The Qarzin clothes shop** (still old code, unchanged until 5B) - `MarketHandler` (`SSS/MISC/MarketHandler.luau`) prices goods from a city's supply and demand and handles "can this player buy this?": money (now stale - see below), hat slots full, already wearing the item. `Workspace.Qarzin.ClothesStand.ClothingSpawn` (Studio-only) stocks the shop once, 5 seconds after server start, with no restocking: random hats (White/Gold/Black) on the hat table, random shirts+pants on the 9 mannequins, a cloak on every cloak stand. Each item has an "E" prompt priced by `MarketHandler.GetPrice("Qarzin", "Clothing", ...)`; on purchase it builds an item code and calls `GetPlayerEcon`, which still reads/writes `OnCharacter.Currency` directly (not `EconomyService`) and still fires the old `MiscRemotes.ForcedChat` remote, not `CoinMessage` - the shop moves onto `EconomyService.Pay` in 5B. **⚠** Pre-existing bugs, unchanged: the two halves of the module disagree on what a Gold coin is worth (pricing treats it as 100,000 Copper, the bank total as 10,000); the hover highlight changes what every player sees, not just the one hovering; every rack sells the same pants; a hat bought with all 3 slots full is paid for but not saved.
+**The Qarzin clothes shop.** `ShopService` (`SSS/Server/Services/ShopService.luau`) + `Shared/Data/Shop.luau` replace the old `MarketHandler` (`SSS/MISC/MarketHandler.luau`, deleted) and the Studio-only `Workspace.Qarzin.ClothesStand.ClothingSpawn` script (disabled at `ShopService:Init()`; kept in the place, Studio-only, until Bryan deletes it). `Shop.luau` is pure data ported from the old script (docs/reference/m5b-studio-dump.md): the same colour pools/weights (White/Tan/Black standard - "Gold" renamed "Tan", same RGB; a wider Variety pool for shirts only), the same hat/cloak name lists (read from `RF.Assets`, not a second copy), the same shirt/pants pools (`RF.Assets.outfits.desertBasic`, with the starter rags flagged `forSale = false` instead of a separate pool), the same display rotations/offsets, and the same prices (`Shop.PriceFor(itemType, color)` = the old `MarketHandler.GetPrice("Qarzin", "Clothing", ...)` formula, moved into data - see the file's own derivation comment) shown through the 5A band rule (`Economy.toPrice`) instead of the old module's own split.
 
-**Files:** `Shared/Data/Economy.luau`, `SSS/Server/Services/EconomyService.luau` (new); `SSS/MISC/MarketHandler.luau`, `Workspace.Qarzin.ClothesStand.ClothingSpawn` (old, Studio-only, until 5B).
-**Remotes:** `Net.CoinMessage` (server → client, one string, `EconomyService.Pay`'s flavour line - the client posts it to chat, same feel as the old `ForcedChat`). `MiscRemotes.ForcedChat` (old, still used by `MarketHandler` until 5B; the client posts it to chat in `InputHandler`).
-**Player attributes:** `Copper`, `Silver`, `Gold` (`EconomyService`, M5A-01) - the purse HUD's source of truth now, not a GUI label `LegacyBridge` writes.
-**Depends on:** `DataService` (`Economy.*`), `LegacyBridge.Refresh`, `DevService.Register`, `Shared/Data/Economy`, `Shared/Remotes`.
-**Depended on by:** `LegacyBridge` (mirrors the wallet onto `OnCharacter.Currency` for old readers); the mission script (reads that mirror until 5C); 5B's `ShopService` (purchases through `EconomyService.Pay`); 5C/5E/5F's payouts (through `GiveCopperValue`).
+`ShopService` stocks the stand once, `Shop.StockDelaySeconds` (5s) after server start - random hats on the hat table, random shirts+pants on the racks, a cloak on every cloak stand, same randomness rules as the old script. Every prompt is server-side (`ActionText` = the banded price, e.g. "1 Silver"); on `Triggered` it resolves the player, then runs every check **before any charge**, in order: `ItemService.HasFreeHatSlot` (hats and cloaks only - the shared 3-slot `Gear.Hats`), then `ItemService.Owns` (exact item **and** colour - **fixed bug**, see section 5), then `EconomyService.Pay` (exact coin; a failure fires its own flavour line through `CoinMessage`, same as any other purchase in the game). Only once `Pay` succeeds does `ItemService.Wear` equip the item and write the save. `ShopService.Decide(data, itemType, code)` is the pure `"ok" | "slotsFull" | "owned"` gate the Triggered handler runs first - self-tested directly, so "`Pay` is never called when slots are full/the item is already owned" doesn't depend on spinning up a real prompt. **⚠ fixed bugs (old `MarketHandler`, both gone with it):** the module's two halves used to disagree on what a Gold coin is worth (pricing treated it as 100,000 Copper, the bank total as 10,000) - there's only one Gold value anywhere now (`Shared/Data/Economy.luau`); a hat bought with all 3 slots full used to be paid for but not saved - `Decide` blocks it before `Pay` runs at all now. **The hover highlight is now client-only** (server-side, prompts just stay `Enabled` with `RequiresLineOfSight = false`; the server never touches the rig's `Highlight` or the `*HL` parts' transparency - a client controller decides locally whose highlight to show, a separate client-side task). **Still true by design, not a bug:** every rack sells the same pants - the pants pool has exactly one for-sale entry today (`Shop.Pants`, `forSale`-filtered), with room in the data for more.
+
+Dev commands: `.shop restock` (clears and re-stocks the stand, same rules as boot), `.shop list` (every currently-stocked item with its type, name, colour and price).
+
+**Files:** `Shared/Data/Economy.luau`, `SSS/Server/Services/EconomyService.luau` (M5A-01); `Shared/Data/Shop.luau`, `SSS/Server/Services/ItemService.luau`, `SSS/Server/Services/ShopService.luau` (M5B-01).
+**Remotes:** `Net.CoinMessage` (server → client, one string - every coin failure and every shop-specific failure, e.g. "I don't have enough room...", "Didn't I buy this?", fires through this one remote now; the client posts it to chat, same feel as the old `ForcedChat`).
+**Player attributes:** `Copper`, `Silver`, `Gold` (`EconomyService`, M5A-01) - the purse HUD's source of truth, not a GUI label `LegacyBridge` writes.
+**Depends on:** `DataService`, `LegacyBridge.Refresh`, `DevService.Register`, `Shared/Data/Economy`, `Shared/Data/Shop`, `ItemService`, `Shared/Remotes`, `RF.Assets`.
+**Depended on by:** `LegacyBridge` (mirrors the wallet onto `OnCharacter.Currency` for old readers); the mission script (reads that mirror until 5C); 5C/5E/5F's payouts (through `GiveCopperValue`).
 
 ---
 
@@ -463,6 +469,8 @@ Moved out of `Interactions/InteractionsHandler.server.luau` into its own `Footst
 | `.coins <copper> [silver] [gold] [player]`, `.coins+ ...` | set or add currency, through `EconomyService` (**M5A-01**: re-registered by `EconomyService`, replacing `DevService`'s own version, so the `Copper`/`Silver`/`Gold` attributes and the legacy `Currency` mirror both update immediately, same pattern as `RankService`'s `.magoi`/`.rukh`) |
 | `.price <copper>` | prints how a copper amount displays (`Economy.toPrice`/`.format`) - doesn't touch any wallet (**M5A-01**, `EconomyService`) |
 | `.pay <Copper\|Silver\|Gold> <amount>` | tests a purchase against the caller's own wallet through `EconomyService.Pay` (exact coin only; fires `CoinMessage` on failure) (**M5A-01**, `EconomyService`) |
+| `.shop restock` | clears and re-stocks the Qarzin clothes stand, same randomness rules as boot (**M5B-01**, `ShopService`) |
+| `.shop list` | lists everything currently on display at the Qarzin stand, with its type, name, colour and banded price (**M5B-01**, `ShopService`) |
 | `.age <years> [player]`, `.age+ <n>` | set or add to `Age.Years`, then runs every `DevService.OnAgeChanged` hook (**BUG-15**: resize + grey hair via `AgeService`, max health via `HealthService` — these used to only catch up on the next `.birthday`) |
 | `.magoi <n> [player]`, `.magoi+ <n>` | set or add to `Progress.Magoi`, through `RankService.AddMagoi` (**M4-01**: re-registered by `RankService`, replacing `DevService`'s own version, so a rank-up fires immediately instead of waiting on a poll) |
 | `.rukh <gold> <black> [player]` | sets both Rukh tallies, through `RankService.AddDeed` (**M4-01**, same reasoning as `.magoi`) |
@@ -573,7 +581,7 @@ Only scripts that actually run and do something are listed. Left off: empty scri
 
 | Path | Class | What it does |
 |---|---|---|
-| `Workspace.Qarzin.ClothesStand.ClothingSpawn` | Script | Clothing and hat shop in Qarzin. Requires MarketHandler, ItemHandler, HeightHandler, AgeHandler and Assets. |
+| `Workspace.Qarzin.ClothesStand.ClothingSpawn` | Script | Old clothing/hat shop stocker, superseded by `ShopService` (section 6, M5B-01). `ShopService:Init()` sets `Disabled = true` on it at server start; still physically in the place (Studio-only) until Bryan deletes it. |
 | `Workspace.NPC.DUMMY.NPCFetch` (×2) | Script | NPC AI. Uses NPController and DamageHandler. |
 | `Workspace.NPC.DUMMY.Health` (×2) | Script | Health regen for the NPC dummies (stock Roblox script) |
 | `Workspace.MAP.OCEAN.Folder.MovingPart.Waves` (×256) | Script | Ocean wave motion, one script per part |

@@ -30,6 +30,9 @@ local HealthService = require(script.Parent.HealthService)
 local RankService = require(script.Parent.RankService)
 local Economy = require(ReplicatedStorage.Shared.Data.Economy)
 local EconomyService = require(script.Parent.EconomyService)
+local Shop = require(ReplicatedStorage.Shared.Data.Shop)
+local ItemService = require(script.Parent.ItemService)
+local ShopService = require(script.Parent.ShopService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
@@ -1041,6 +1044,138 @@ local function testEconomy(results: { Check })
 			data.Economy.Copper == 5000 and data.Economy.Silver == 0 and data.Economy.Gold == 0
 		)
 	end
+end
+
+-- M5B-01: Shop's colour rolls/prices and ItemService/ShopService's pure
+-- decision core, all exercised with no Instance/Player/DataService involved.
+local function testShop(results: { Check })
+	-- Colour roll: StandardColors is White(80)/Tan(25)/Black(10), a
+	-- deterministic `roll` (1..115) picks a bucket without touching
+	-- math.random.
+	expect(results, "Shop: colour roll picks White at the bottom of its 80-wide band (roll 1)", Shop.RollColor(Shop.StandardColors, 1).name == "White")
+	expect(results, "Shop: colour roll picks White at the top of its band (roll 80)", Shop.RollColor(Shop.StandardColors, 80).name == "White")
+	expect(results, "Shop: colour roll picks Tan at the bottom of its band (roll 81)", Shop.RollColor(Shop.StandardColors, 81).name == "Tan")
+	expect(results, "Shop: colour roll picks Tan at the top of its band (roll 105)", Shop.RollColor(Shop.StandardColors, 105).name == "Tan")
+	expect(results, "Shop: colour roll picks Black at the bottom of its band (roll 106)", Shop.RollColor(Shop.StandardColors, 106).name == "Black")
+	expect(results, "Shop: colour roll picks Black at the top of the pool (roll 115)", Shop.RollColor(Shop.StandardColors, 115).name == "Black")
+
+	-- Prices: base 80 Copper (Qarzin's Clothing resource, ratio 1), *1.2 for
+	-- hats and *1.5 for cloaks (old MarketHandler numbers), then the rolled
+	-- colour's own multiplier (White x1, Tan x1.25, Black x1.5) - see
+	-- Shop.luau's own derivation comment. Shirts always roll from
+	-- VarietyColors, which never carries a multiplier.
+	local white, tan, black = Shop.StandardColors[1], Shop.StandardColors[2], Shop.StandardColors[3]
+	expect(results, "Shop: hat price, White = 96 Copper", Shop.PriceFor("H", white) == 96)
+	expect(results, "Shop: hat price, Tan = 120 Copper", Shop.PriceFor("H", tan) == 120)
+	expect(results, "Shop: hat price, Black = 144 Copper", Shop.PriceFor("H", black) == 144)
+	expect(results, "Shop: cloak price, White = 120 Copper", Shop.PriceFor("C", white) == 120)
+	expect(results, "Shop: cloak price, Tan = 150 Copper", Shop.PriceFor("C", tan) == 150)
+	expect(results, "Shop: cloak price, Black = 180 Copper", Shop.PriceFor("C", black) == 180)
+	expect(results, "Shop: pants price, White = 80 Copper", Shop.PriceFor("P", white) == 80)
+	expect(results, "Shop: pants price, Tan = 100 Copper", Shop.PriceFor("P", tan) == 100)
+	expect(results, "Shop: pants price, Black = 120 Copper", Shop.PriceFor("P", black) == 120)
+	expect(results, "Shop: shirt price never carries a colour multiplier (Variety pool)", Shop.PriceFor("S", Shop.VarietyColors[1]) == 80)
+
+	-- Every price above bands through Economy.toPrice the same as any other
+	-- price in the game (Bryan 2026-09-29: shown through the 5A band rule).
+	do
+		local coin: Economy.Coin, amount: number = Economy.toPrice(Shop.PriceFor("C", black))
+		expect(results, "Shop: a 180-Copper cloak bands to 1 Silver", coin == "Silver" and amount == 1)
+	end
+
+	-- Pools exclude the rags (docs/reference/m5b-studio-dump.md #4): the
+	-- starter shirt/pants stay out of the shop via forSale = false, not a
+	-- separate pool.
+	local shirtRagsExcluded, pantsRagsExcluded = true, true
+	for _, item in Shop.Shirts do
+		if item.name == "Short Sleeve Rags" and item.forSale then
+			shirtRagsExcluded = false
+		end
+	end
+	for _, item in Shop.Pants do
+		if (item.name == "Shoes and Rags" or item.name == "Barefooted and Rags") and item.forSale then
+			pantsRagsExcluded = false
+		end
+	end
+	expect(results, "Shop: the starter rag shirt is not for sale", shirtRagsExcluded)
+	expect(results, "Shop: the starter rag pants are not for sale", pantsRagsExcluded)
+	expect(results, "Shop: ForSale filters out exactly the one rag shirt", #Shop.ForSale(Shop.Shirts) == #Shop.Shirts - 1)
+	expect(
+		results,
+		"Shop: the pants pool has one for-sale entry today, with room for more (Bryan 2026-09-29)",
+		#Shop.ForSale(Shop.Pants) == 1 and #Shop.Pants > 1
+	)
+end
+
+local function fakeGearData(shirt: string, pants: string, hats: { string }): SaveSchema.Data
+	return ({
+		Gear = { Shirt = shirt, Pants = pants, Hats = hats, Inventory = {} },
+	} :: any) :: SaveSchema.Data
+end
+
+local function testItemService(results: { Check })
+	-- Encode/decode round-trips the "type|name|r,g,b" format unchanged from
+	-- the old ItemHandler.
+	local code = ItemService.Encode("S", "Vest", "255,0,0")
+	local itemType, name, colorCode = ItemService.Decode(code)
+	expect(results, "ItemService: encode/decode round-trips", itemType == "S" and name == "Vest" and colorCode == "255,0,0")
+	expect(results, "ItemService: ClothingId finds a real shirt id", ItemService.ClothingId("S", "Vest") ~= nil)
+	expect(results, "ItemService: ClothingId returns nil for an unknown name", ItemService.ClothingId("S", "Nonexistent") == nil)
+
+	-- Owns is colour-aware (REVIEW/AUDIT fix, M5-PLAN.md Phase 5B): owning a
+	-- Black Vest must not match a White Vest of the same item.
+	local worn = fakeGearData(ItemService.Encode("S", "Vest", "35,35,35"), "", { "", "", "" })
+	expect(results, "ItemService: Owns matches the exact item+colour worn", ItemService.Owns(worn, ItemService.Encode("S", "Vest", "35,35,35")))
+	expect(
+		results,
+		"ItemService: Owns does NOT match the same item in a different colour",
+		not ItemService.Owns(worn, ItemService.Encode("S", "Vest", "255,255,255"))
+	)
+	expect(results, "ItemService: Owns is false for an item never worn", not ItemService.Owns(worn, ItemService.Encode("P", "Standard", "35,35,35")))
+
+	-- HasFreeHatSlot - hats and cloaks share the same 3-slot Gear.Hats
+	-- array; ShopService checks this BEFORE EconomyService.Pay ever runs.
+	local emptySlots = fakeGearData("", "", { "", "", "" })
+	expect(results, "ItemService: HasFreeHatSlot is true with 3 empty slots", ItemService.HasFreeHatSlot(emptySlots))
+	local fullSlots = fakeGearData("", "", { "H|Cowl|1,1,1", "C|Torn Cloak|1,1,1", "H|Feather|1,1,1" })
+	expect(results, "ItemService: HasFreeHatSlot is false once all 3 slots are used", not ItemService.HasFreeHatSlot(fullSlots))
+	expect(results, "ItemService: Owns finds an exact match among the 3 Hats slots", ItemService.Owns(fullSlots, "H|Cowl|1,1,1"))
+end
+
+local function testShopService(results: { Check })
+	-- ShopService.Decide is the pure gate every purchase runs through
+	-- BEFORE EconomyService.Pay is ever called (M5-PLAN.md Phase 5B: "all
+	-- checks run BEFORE any charge"). Proving Decide returns "slotsFull"/
+	-- "owned" here, with no EconomyService involved at all, is exactly
+	-- "Pay is not called when slots are full/the item is already owned" -
+	-- the Triggered handler only reaches EconomyService.Pay once Decide
+	-- returns "ok".
+	local fullSlots = fakeGearData("", "", { "H|Cowl|1,1,1", "C|Torn Cloak|1,1,1", "H|Feather|1,1,1" })
+	expect(
+		results,
+		"ShopService: Decide blocks a hat purchase before Pay would run when all 3 slots are full",
+		ShopService.Decide(fullSlots, "H", "H|Fancy Turban|1,1,1") == "slotsFull"
+	)
+	expect(
+		results,
+		"ShopService: Decide blocks a cloak purchase too (hats and cloaks share the same slots)",
+		ShopService.Decide(fullSlots, "C", "C|Long Wrap|1,1,1") == "slotsFull"
+	)
+
+	local ownsWhiteVest = fakeGearData(ItemService.Encode("S", "Vest", "255,255,255"), "", { "", "", "" })
+	expect(
+		results,
+		"ShopService: Decide blocks buying the exact item+colour already owned",
+		ShopService.Decide(ownsWhiteVest, "S", ItemService.Encode("S", "Vest", "255,255,255")) == "owned"
+	)
+	expect(
+		results,
+		"ShopService: Decide allows the same item in a different colour (the old MarketHandler bug this fixes)",
+		ShopService.Decide(ownsWhiteVest, "S", ItemService.Encode("S", "Vest", "35,35,35")) == "ok"
+	)
+
+	local fresh = fakeGearData("", "", { "", "", "" })
+	expect(results, "ShopService: Decide allows a legitimate new purchase", ShopService.Decide(fresh, "P", "P|Standard|255,255,255") == "ok")
 end
 
 -- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
@@ -2634,6 +2769,9 @@ function SelfTestService:Start()
 		testHealthService(collected)
 		testRankService(collected)
 		testEconomy(collected)
+		testShop(collected)
+		testItemService(collected)
+		testShopService(collected)
 		testStatusService(collected)
 		testMovementService(collected)
 		testCombatService(collected)
