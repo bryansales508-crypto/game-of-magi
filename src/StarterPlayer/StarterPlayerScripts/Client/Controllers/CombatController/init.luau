@@ -112,6 +112,11 @@ type SwingState = {
 	firstWindupReached: boolean,
 	stopped: boolean,
 	connections: { RBXScriptConnection },
+	-- REVIEW-M3-FIX3-C: which hit indices have already fired AttackHit
+	-- for this swing, so a marker that reaches twice (a re-entrant
+	-- GetMarkerReachedSignal firing, a looped/seeked track, ...) never
+	-- reports the same punch twice.
+	hit: { [number]: boolean },
 }
 
 local currentSwing: SwingState? = nil
@@ -132,6 +137,11 @@ local function stopSwing(fadeTime: number?)
 		conn:Disconnect()
 	end
 	table.clear(swing.connections)
+	-- Restore full speed before stopping, so a wind-up slowdown never
+	-- bleeds into the fade-out or, since this track is reused next swing
+	-- (only overridden by the explicit speed on the next Play() call),
+	-- sits at WindupSpeed while idle in between.
+	swing.track:AdjustSpeed(1)
 	swing.track:Stop(fadeTime)
 end
 
@@ -311,6 +321,10 @@ local function tryAttackStart()
 		return
 	end
 
+	-- Always read fresh (no cached cooldown of our own): a cancelled
+	-- attack costs no recovery, so the server sets NextAttackAt to "now"
+	-- rather than a future time, and the very next click here already
+	-- sees that -- nothing else to do for that case.
 	local nextAttackAt = character:GetAttribute("NextAttackAt")
 	if typeof(nextAttackAt) == "number" and Workspace:GetServerTimeNow() < nextAttackAt then
 		return
@@ -454,6 +468,7 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 		firstWindupReached = false,
 		stopped = false,
 		connections = {},
+		hit = {},
 	}
 	currentSwing = swing
 
@@ -475,6 +490,10 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 			if windupIndex == 1 then
 				swing.firstWindupReached = true
 			end
+			-- Bryan (2026-09-28): slow the punch so it's readable -- and
+			-- so the loop below (cancel to bait, interrupt to punish)
+			-- actually has a window to react in.
+			track:AdjustSpeed(Config.Combat.WindupSpeed)
 			if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
 				-- The server reaches the same conclusion and sends its own
 				-- AttackCancelled; stopSwing is idempotent either way.
@@ -488,6 +507,11 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 			if Config.Combat.LogMarkers then
 				log:Info(string.format("marker: %s at %.3fs", name, track.TimePosition))
 			end
+			track:AdjustSpeed(1)
+			if swing.hit[hitIndex] then
+				return
+			end
+			swing.hit[hitIndex] = true
 			Remotes.Client.Fire("AttackHit", hitIndex)
 		end))
 	end
@@ -506,6 +530,18 @@ end
 -- animations from whichever client owns the character), so there is
 -- nothing for this controller to do about another character's Swing or
 -- Dash -- that plays on their own client instead.
+--
+-- This is also why the wind-up slowdown (onLocalSwing's AdjustSpeed
+-- calls, Bryan 2026-09-28) doesn't need its own "other characters" path:
+-- it's a runtime change to the SAME track that's already replicating, so
+-- everyone watching an attacker sees the same slowdown through that
+-- existing replication, the same way they already see the swing itself.
+-- Deliberately NOT loading and playing a second, independent copy of the
+-- track for every observer here -- that would double up with the
+-- replicated one and fight it (two tracks driving the same joints).
+-- FLAG FOR PLAYTEST: confirm the slowdown is visible to other players;
+-- if AdjustSpeed turns out not to replicate reliably, that's the fallback
+-- to build instead.
 local function onCombatEvent(kind: any, data: any)
 	if typeof(kind) ~= "string" or typeof(data) ~= "table" then
 		log:Warn("CombatEvent: unexpected payload")
@@ -530,6 +566,15 @@ local function onCombatEvent(kind: any, data: any)
 		pickDashTrack(x, z, tracks):Play()
 	end
 end
+
+-- The intended read-and-react loop this all serves (Bryan, 2026-09-28):
+-- you swing -> the enemy reads your wind-up and swings back to interrupt
+-- you -> next time, you cancel before your first wind-up to bait their
+-- interrupt-swing -> then swing for real and interrupt THEM mid wind-up.
+-- Every step of that is just these pieces: tryAttackStart, tryCancelAttack
+-- (only before firstWindupReached), and the server's own interrupt on a
+-- landed Hit -- nothing here plays a role beyond sending the right
+-- intention at the right moment.
 
 -- ==================== input wiring (bound once; nothing here depends on the character) ====================
 

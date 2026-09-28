@@ -163,6 +163,11 @@ Config.Combat = {
 	-- How long EffectsController flashes the "Cancel" Highlight for a
 	-- cancelled (not interrupted) attack.
 	CancelFlashSeconds = 0.25,
+	-- Bryan tunes: the fist track's playback speed while a wind-up plays,
+	-- so the punch is readable and interruptible/cancellable instead of
+	-- flashing by; back to 1 (full speed) the instant that punch's hit
+	-- marker is reached. 1 = no slowdown.
+	WindupSpeed = 0.5,
 }
 
 -- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
