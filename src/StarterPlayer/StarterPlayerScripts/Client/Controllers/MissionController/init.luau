@@ -15,7 +15,7 @@
 --   MissionUpdate (server -> client):
 --     { state = "Started"|"Finished"|"Failed"|"Intercepted"|"Cleared"
 --              |"ModifierFailed", destination, destinationPosition = {x,y,z},
---       modifiers, returnPosition?, timerEnds?, pay, key? }
+--       modifiers, returnPosition?, timerEnds?, pay, key?, failed? }
 --     ModifierFailed (Bryan, follow-up): failing a modifier never ends the
 --     run by itself -- `key` names which modifier failed (matched against
 --     that modifier's own `key`, falling back to its `name`); that one
@@ -23,6 +23,10 @@
 --     tracker, quest box) stays exactly as it is. TimeCrunch's own 0:00 is
 --     just a countdown reaching zero -- the server is the one that decides
 --     the timer failed and sends this same state for it.
+--     `failed` (Bryan, follow-up): the CourierLoop return leg's own
+--     "Started" carries `{ "TimeCrunch", ... }`, the modifier keys that
+--     already failed on the outbound leg -- rebuilt greyed out instead of
+--     showing as active again on the fresh return board.
 --   Player attributes: OnMission, MissionDestination, MissionStreak, Bounty
 --     (consumed elsewhere; nothing here needs them directly). Character
 --     attribute: CourierBeacon (true while the beacon is on).
@@ -637,6 +641,23 @@ local function updateRunDistances(run: RunState)
 	end
 end
 
+-- The same grey-out MissionUpdate "ModifierFailed" applies live, shared
+-- with startRun's own handling of the return leg's `failed` list (modifiers
+-- that already failed on the outbound leg, so a fresh CourierLoop return
+-- board doesn't show them as active again).
+local function applyModifierFailure(run: RunState, key: string): boolean
+	local entry = run.modifierUiByKey[key]
+	if not entry then
+		return false
+	end
+	entry.failed = true
+	entry.constraint.Text = MODIFIER_FAILED_TEXT
+	if entry.bonusButton then
+		entry.bonusButton.TextColor3 = MODIFIER_FAILED_COLOR
+	end
+	return true
+end
+
 local function startRun(update: any)
 	teardownRun() -- respawn-safe: a resent "Started" (rejoin, the return leg) always rebuilds clean
 
@@ -700,6 +721,21 @@ local function startRun(update: any)
 		end
 	end
 
+	-- CourierLoop's return leg (Bryan, follow-up): `failed` lists modifier
+	-- keys that already failed on the outbound leg, so they come back
+	-- greyed out instead of showing as active again on the fresh board.
+	if typeof(update.failed) == "table" then
+		for _, key in update.failed :: { any } do
+			if typeof(key) == "string" then
+				if not applyModifierFailure(run, key) then
+					log:Warn("MissionUpdate Started: unknown failed modifier key " .. key)
+				end
+			else
+				log:Warn("MissionUpdate Started: non-string entry in `failed`")
+			end
+		end
+	end
+
 	run.loopThread = task.spawn(function()
 		while true do
 			updateRunDistances(run)
@@ -723,15 +759,8 @@ local function handleModifierFailed(update: any)
 		log:Warn("MissionUpdate ModifierFailed: missing key")
 		return
 	end
-	local entry = run.modifierUiByKey[key]
-	if not entry then
+	if not applyModifierFailure(run, key) then
 		log:Warn("MissionUpdate ModifierFailed: unknown key " .. key)
-		return
-	end
-	entry.failed = true
-	entry.constraint.Text = MODIFIER_FAILED_TEXT
-	if entry.bonusButton then
-		entry.bonusButton.TextColor3 = MODIFIER_FAILED_COLOR
 	end
 end
 
