@@ -26,6 +26,10 @@ local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
+-- M3-FIX4-S: the bleed tick below reads StatusService's own Bleed status
+-- (stacks/config) - safe to require (StatusService only ever requires
+-- PlayerService, no cycle back here).
+local StatusService = require(script.Parent.StatusService)
 
 local log = Log.new("HealthService")
 
@@ -340,6 +344,23 @@ function HealthService:Start()
 					if regen > 0 and humanoid.Health > 0 and humanoid.Health < humanoid.MaxHealth then
 						humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + regen)
 					end
+
+					-- M3-FIX4-S: Bleed ticks once a second, `stacks` x the
+					-- causing style's own damagePerStackPerSecond - and never
+					-- knocks out on its own (floors at 1 HP, not 0, so
+					-- Humanoid.Died never fires from bleed alone; CombatService/
+					-- StatusService stay the only knockout authority).
+					local bleedInfo = character and StatusService.Get(character :: Model, "Bleed")
+					if bleedInfo and type(bleedInfo.data) == "table" and humanoid.Health > 1 then
+						local data = bleedInfo.data :: any
+						local bleedConfig = data.config
+						local stacks = data.stacks
+						if type(bleedConfig) == "table" and type(stacks) == "number" and stacks > 0 then
+							local bleedDamage = (bleedConfig.damagePerStackPerSecond :: number) * stacks * Config.Health.Tick
+							humanoid.Health = math.max(1, humanoid.Health - bleedDamage)
+						end
+					end
+
 					combatant:SetAttribute("Health", humanoid.Health)
 				end
 
