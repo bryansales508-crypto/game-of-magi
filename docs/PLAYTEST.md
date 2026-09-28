@@ -561,7 +561,7 @@ Dev commands: `.mission start <city>`, `.mission finish`, `.mission fail`, `.mis
 - Two clients (or spawn StraightSam near you with a run active and let him knock you out): the courier's run fails and pays nothing; the attacker is paid the run's reward on the spot, gets 1 Black Rukh and a bounty number in `.state`. Total coins across both never exceed one reward. **Pass.**
 
 ### M5C-D Each modifier once
-- Use `.mission start <city>` repeatedly (or the board) until you have seen: Time Crunch (timer; expiry fails the run), Courier Loop (a return point after arrival), Highly Valuable (higher pay), Heavy Cargo (slower; speed restored on ANY end: finish, fail, interception), VIP, Fragile Package (a hit taken fails it), Clear the Route (no error). **Pass:** each behaves and cleans up; no red lines.
+- Use `.mission start <city>` repeatedly (or the board) until you have seen: Time Crunch (timer; expiry only drops its bonus, the run continues and the pop-out says "Failed."), Courier Loop (a return point after arrival), Highly Valuable (higher pay; you are highlighted for everyone the whole run), Heavy Cargo (slower; speed restored on ANY end: finish, fail, interception), VIP, Fragile Package (a hit taken only drops its bonus), Clear the Route (no error). **Pass:** each behaves and cleans up; no red lines.
 
 ### M5C-E Bad city
 - With `execute_luau` or the board disabled, `.mission start NotACity` -> refused. From the board, only route cities are offered. **Pass.**
