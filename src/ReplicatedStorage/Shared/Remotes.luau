@@ -111,12 +111,13 @@ Remotes.Definitions = {
 		args = { Validate.string({ maxLen = 32 }) },
 		rate = { count = 1, per = 5 },
 	},
-	-- M3-FIX3-S: CombatService's animation-driven punch flow. AttackStart is
-	-- still just an intention (no args); AttackHit reports which punch's
-	-- hit marker just played (1-based, matching Combat.Swing.punches) - the
-	-- client never reports WHAT it hit (C2 stays fixed), only that a marker
-	-- played, and the server re-derives everything else (timing window,
-	-- target, geometry) itself. Replaces the old single Attack() remote.
+	-- M3-FIX3-S/M3-FIX4-S: CombatService's animation-driven fighting-style
+	-- flow. AttackStart is still just an intention (no args); AttackHit
+	-- reports which chain hit's hit marker just played (1-based, matching
+	-- the equipped style's Combat.Style.chain) - the client never reports
+	-- WHAT it hit (C2 stays fixed), only that a marker played, and the
+	-- server re-derives everything else (timing window, target, geometry)
+	-- itself. Replaces the old single Attack() remote.
 	AttackStart = {
 		kind = "Event",
 		args = {},
