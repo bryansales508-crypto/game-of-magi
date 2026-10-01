@@ -857,65 +857,103 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 		table.insert(swing.connections, conn)
 	end
 
-	if Config.Combat.LogMarkers then
-		addConn(track.KeyframeReached:Connect(function(keyframeName: string)
-			logMarker(swing, keyframeName)
-		end))
-	end
-
+	-- The configured names can be animation EVENTS (GetMarkerReachedSignal)
+	-- or plain KEYFRAME names (KeyframeReached) - Bryan's Fist animation
+	-- uses keyframe names (2026-09-30: the marker signals never fired, only
+	-- the keyframe logger saw WindUp1/Punch1/WindUp2/Punch2). Both paths
+	-- feed one dispatcher; each handler ignores a repeat of its own name,
+	-- so a name that is both an event and a keyframe still counts once.
+	local windupByName: { [string]: number } = {}
 	for windupIndex, name in markers.Windup do
-		addConn(track:GetMarkerReachedSignal(name):Connect(function()
-			if Config.Combat.LogMarkers then
-				logMarker(swing, name)
-			end
-			-- M3-FIX5: the wind-up marker of the hit AFTER the one that just
-			-- landed is the freeze point - the chain waits for a click here.
-			if windupIndex == swing.segment + 1 and windupIndex <= hitCount then
-				if swing.hit[swing.segment] then
-					swing.windupReached[windupIndex] = true
-					pauseForClick(swing, windupIndex)
-					return
-				end
-				-- Markers out of order (this wind-up came before the previous
-				-- hit's own marker): don't freeze, or hit `segment` could
-				-- never land. Keep playing and say so.
-				log:Warn(string.format("marker %s reached before hit %d landed - check Config.Combat.Markers.%s", name, swing.segment, styleName))
-			end
-			swing.windupReached[windupIndex] = true
-			-- Bryan (2026-09-28): slow the hit so it's readable -- and so
-			-- the loop below (cancel to bait, interrupt to punish)
-			-- actually has a window to react in. Prefers this hit's own
-			-- windupSpeed (Lights 1.0, Heavies slowed) once Combat.Styles
-			-- has it; Config.Combat.WindupSpeed is the fallback.
-			track:AdjustSpeed(windupSpeedFor(styleName, windupIndex))
-			if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
-				-- The server reaches the same conclusion and sends its own
-				-- AttackCancelled; stopSwing is idempotent either way.
-				stopSwing(0.1)
-			end
-		end))
+		windupByName[name] = windupIndex
+	end
+	local hitByName: { [string]: number } = {}
+	for hitIndex, name in markers.Hit do
+		hitByName[name] = hitIndex
 	end
 
-	for hitIndex, name in markers.Hit do
+	local function onWindup(windupIndex: number, name: string)
+		if swing.windupReached[windupIndex] then
+			return
+		end
+		swing.windupReached[windupIndex] = true
+		if Config.Combat.LogMarkers then
+			logMarker(swing, name)
+		end
+		-- M3-FIX5: the wind-up of the hit AFTER the one that just landed is
+		-- the freeze point - the chain waits for a click here.
+		if windupIndex == swing.segment + 1 and windupIndex <= hitCount then
+			if swing.hit[swing.segment] then
+				pauseForClick(swing, windupIndex)
+				return
+			end
+			-- Markers out of order (this wind-up came before the previous
+			-- hit's own marker): don't freeze, or hit `segment` could never
+			-- land. Keep playing and say so.
+			log:Warn(string.format("%s reached before hit %d landed - check Config.Combat.Markers.%s", name, swing.segment, styleName))
+		end
+		-- Bryan (2026-09-28): slow the hit so it's readable -- and so the
+		-- loop below (cancel to bait, interrupt to punish) actually has a
+		-- window to react in. Prefers this hit's own windupSpeed (Lights
+		-- 1.0, Heavies slowed) once Combat.Styles has it;
+		-- Config.Combat.WindupSpeed is the fallback.
+		track:AdjustSpeed(windupSpeedFor(styleName, windupIndex))
+		if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
+			-- The server reaches the same conclusion and sends its own
+			-- AttackCancelled; stopSwing is idempotent either way.
+			stopSwing(0.1)
+		end
+	end
+
+	local function onHit(hitIndex: number, name: string)
+		if swing.hit[hitIndex] then
+			return
+		end
+		if Config.Combat.LogMarkers then
+			logMarker(swing, name)
+		end
+		track:AdjustSpeed(comboSpeed)
+		if hitIndex ~= swing.segment then
+			-- A hit marker for a hit that hasn't been clicked into yet (or
+			-- one already past): the server would drop the report anyway,
+			-- and marking it landed here would wreck the chain state.
+			-- Markers or their names are wrong.
+			log:Warn(string.format("%s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.segment, styleName))
+			return
+		end
+		swing.hit[hitIndex] = true
+		swing.lastHitAt = os.clock()
+		Remotes.Client.Fire("AttackHit", hitIndex)
+	end
+
+	local function onNamedEvent(name: string)
+		if swing.stopped then
+			return
+		end
+		local windupIndex = windupByName[name]
+		if windupIndex then
+			onWindup(windupIndex, name)
+			return
+		end
+		local hitIndex = hitByName[name]
+		if hitIndex then
+			onHit(hitIndex, name)
+			return
+		end
+		if Config.Combat.LogMarkers then
+			logMarker(swing, name)
+		end
+	end
+
+	addConn(track.KeyframeReached:Connect(onNamedEvent))
+	for name in windupByName do
 		addConn(track:GetMarkerReachedSignal(name):Connect(function()
-			if Config.Combat.LogMarkers then
-				logMarker(swing, name)
-			end
-			track:AdjustSpeed(comboSpeed)
-			if swing.hit[hitIndex] then
-				return
-			end
-			if hitIndex ~= swing.segment then
-				-- A hit marker for a hit that hasn't been clicked into yet
-				-- (or one already past): the server would drop the report
-				-- anyway, and marking it landed here would wreck the chain
-				-- state. Markers or their names are wrong.
-				log:Warn(string.format("marker %s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.segment, styleName))
-				return
-			end
-			swing.hit[hitIndex] = true
-			swing.lastHitAt = os.clock()
-			Remotes.Client.Fire("AttackHit", hitIndex)
+			onNamedEvent(name)
+		end))
+	end
+	for name in hitByName do
+		addConn(track:GetMarkerReachedSignal(name):Connect(function()
+			onNamedEvent(name)
 		end))
 	end
 

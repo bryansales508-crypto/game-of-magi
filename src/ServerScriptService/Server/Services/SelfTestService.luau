@@ -222,7 +222,11 @@ end
 -- a temporary Folder stands in for a Player.
 local function testDataService(results: { Check })
 	do
-		local data = ({ Version = 0 } :: any) :: SaveSchema.Data
+		-- BUG-30: Migrations[3] writes Meta.Unlocks.Combat and
+		-- Character.LivesLeft, so the fake needs those tables (as Reconcile
+		-- would have backfilled them) or the whole self-test errors out
+		-- here, before any later check runs.
+		local data = ({ Version = 0, Meta = { Unlocks = {} }, Character = {} } :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
 		expect(results, "SaveSchema: Migrate bumps Version to the current schema version", data.Version == Config.Data.SchemaVersion)
 	end
