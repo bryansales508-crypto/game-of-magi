@@ -345,6 +345,11 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		return false
 	end
 
+	-- Bryan (2026-09-30): no dashing out of a swing - the chain commits you.
+	if character:GetAttribute("Attacking") == true then
+		return false
+	end
+
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if hrp == nil or not hrp:IsA("BasePart") then
 		return false
@@ -355,6 +360,24 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		return false
 	end
 	local worldDir = (hrp :: BasePart).CFrame:VectorToWorldSpace(localDir).Unit
+
+	-- Bryan (2026-09-30): no flinging off walls. The dash is a LinearVelocity
+	-- at unlimited force; against a wall that force used to shove the
+	-- character up and over it. Sweep a sphere along the path first and
+	-- shorten the dash to stop Combat.Dash.wallMargin short of whatever it
+	-- hits; nothing to dash into at all = no dash and no cooldown spent.
+	local distance = Combat.Dash.distance
+	local castParams = RaycastParams.new()
+	castParams.FilterType = Enum.RaycastFilterType.Exclude
+	castParams.FilterDescendantsInstances = { character }
+	castParams.RespectCanCollide = true
+	local sweep = Workspace:Spherecast((hrp :: BasePart).Position, Combat.Dash.castRadius, worldDir * distance, castParams)
+	if sweep then
+		distance = math.max(sweep.Distance - Combat.Dash.wallMargin, 0)
+	end
+	if distance < Combat.Dash.minDistance then
+		return false
+	end
 
 	entry.lastDashAt = now
 	pcall(function()
@@ -371,7 +394,7 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		velocity.Attachment0 = attachment
 		velocity.MaxForce = math.huge
 		velocity.RelativeTo = Enum.ActuatorRelativeTo.World
-		velocity.VectorVelocity = worldDir * (Combat.Dash.distance / Combat.Dash.duration)
+		velocity.VectorVelocity = worldDir * (distance / Combat.Dash.duration)
 		velocity.Parent = hrp
 
 		task.delay(Combat.Dash.duration, function()

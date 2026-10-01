@@ -177,10 +177,10 @@ local function buildTracks(character: Model): Tracks?
 		swing = swing,
 		block = loadTrack(animator, MOVE_ANIMATIONS.Block, Enum.AnimationPriority.Action3),
 		run = loadTrack(animator, MOVE_ANIMATIONS.Run, Enum.AnimationPriority.Action2),
-		dashForward = loadTrack(animator, MOVE_ANIMATIONS.DashForward, Enum.AnimationPriority.Action2),
-		dashLeft = loadTrack(animator, MOVE_ANIMATIONS.DashLeft, Enum.AnimationPriority.Action2),
-		dashBack = loadTrack(animator, MOVE_ANIMATIONS.DashBack, Enum.AnimationPriority.Action2),
-		dashRight = loadTrack(animator, MOVE_ANIMATIONS.DashRight, Enum.AnimationPriority.Action2),
+		dashForward = loadTrack(animator, MOVE_ANIMATIONS.DashForward, Enum.AnimationPriority.Action3),
+		dashLeft = loadTrack(animator, MOVE_ANIMATIONS.DashLeft, Enum.AnimationPriority.Action3),
+		dashBack = loadTrack(animator, MOVE_ANIMATIONS.DashBack, Enum.AnimationPriority.Action3),
+		dashRight = loadTrack(animator, MOVE_ANIMATIONS.DashRight, Enum.AnimationPriority.Action3),
 	}
 end
 
@@ -626,6 +626,11 @@ local function tryDash()
 		or character:GetAttribute("TrueStunned") == true
 		or character:GetAttribute("Recovering") == true
 	then
+		return
+	end
+	-- Bryan (2026-09-30): no dashing out of a swing (the server refuses it
+	-- too); this just saves the round trip.
+	if character:GetAttribute("Attacking") == true or (currentSwing ~= nil and not (currentSwing :: SwingTrack.Swing).stopped) then
 		return
 	end
 

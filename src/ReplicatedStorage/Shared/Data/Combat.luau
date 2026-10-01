@@ -285,6 +285,13 @@ Combat.Dash = {
 	cooldown = 1.2,
 	distance = 18,
 	duration = 0.25,
+	-- Bryan (2026-09-30), no wall flings: MovementService sweeps a sphere of
+	-- castRadius studs along the dash first and stops the dash wallMargin
+	-- studs short of whatever it hits; a dash that would move less than
+	-- minDistance doesn't happen (and costs no cooldown).
+	castRadius = 1.2,
+	wallMargin = 1.5,
+	minDistance = 1,
 }
 
 -- Old runspeed was 28 against a 16 base walk (SYSTEMS 8): 28/16 = 1.75.

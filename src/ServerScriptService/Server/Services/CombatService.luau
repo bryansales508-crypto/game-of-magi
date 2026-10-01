@@ -903,6 +903,13 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	local torso = character:FindFirstChild("HumanoidRootPart")
 	local swingPosition = if torso and torso:IsA("BasePart") then (torso :: BasePart).Position else Vector3.zero
 
+	-- Bryan (2026-09-30): a swing brings a run to an end (the player has to
+	-- double-tap W again afterwards; the client never re-sends Run(true)
+	-- on its own).
+	if character:GetAttribute("Running") == true then
+		MovementService.SetRunning(character, false)
+	end
+
 	entry.attackGeneration += 1
 	local attack: PendingAttack = {
 		style = style,
