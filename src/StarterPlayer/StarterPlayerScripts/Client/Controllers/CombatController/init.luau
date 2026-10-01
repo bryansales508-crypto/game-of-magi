@@ -571,14 +571,24 @@ end
 
 -- ==================== Dash ====================
 
--- Camera-relative WASD, decomposed onto the camera's own flattened
--- right/forward axes (not raw world XZ, so holding W dashes the way the
--- camera is looking, not a fixed world direction); falls back to the
--- humanoid's current MoveDirection, then to the character's facing, when
--- no directional key is held (Q + "last movement direction", point 1).
--- The server normalises the result (H10: no direction here is ever
--- required to already be unit length).
-local function cameraRelativeDashAxes(): (number, number)
+-- The dash direction in the CHARACTER'S OWN frame (x = right, z = back,
+-- so (0, -1) is straight ahead), which is what MovementService.Dash
+-- expects - it rotates (x, 0, z) by the HumanoidRootPart's CFrame.
+-- (Bryan, 2026-09-30: dashes went the wrong way because this used to send
+-- a world-space direction, which the server then rotated by the facing a
+-- second time.)
+--
+-- WASD is read camera-relative (holding W dashes the way the camera
+-- looks, as movement does), then converted into the character's frame;
+-- with no key held it's the humanoid's current MoveDirection, and standing
+-- still it's straight ahead, the way the character is facing (Q + "last
+-- movement direction", point 1). The server normalises the result (H10).
+local function characterRelativeDashAxes(): (number, number)
+	local rootPart = currentCharacter and currentCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not rootPart then
+		return 0, -1
+	end
+
 	local cf = camera.CFrame
 	local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
 	local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
@@ -588,19 +598,19 @@ local function cameraRelativeDashAxes(): (number, number)
 	local forwardAmount = (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0)
 	local rightAmount = (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0)
 
-	local direction = forward * forwardAmount + right * rightAmount
-	if direction.Magnitude < 1e-4 then
+	local worldDirection = forward * forwardAmount + right * rightAmount
+	if worldDirection.Magnitude < 1e-4 then
 		local humanoid = currentCharacter and currentCharacter:FindFirstChildOfClass("Humanoid")
 		local moveDirection = if humanoid then humanoid.MoveDirection else Vector3.zero
 		if moveDirection.Magnitude > 1e-4 then
-			direction = moveDirection
+			worldDirection = moveDirection
 		else
-			local rootPart = currentCharacter and currentCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
-			direction = if rootPart then rootPart.CFrame.LookVector else forward
+			return 0, -1
 		end
 	end
 
-	return direction.X, direction.Z
+	local localDirection = rootPart.CFrame:VectorToObjectSpace(worldDirection)
+	return localDirection.X, localDirection.Z
 end
 
 local function tryDash()
@@ -624,10 +634,12 @@ local function tryDash()
 		return
 	end
 
-	local x, z = cameraRelativeDashAxes()
+	local x, z = characterRelativeDashAxes()
 	Remotes.Client.Fire("Dash", x, z)
 end
 
+-- (x, z) are character-relative (the same numbers sent to the server and
+-- echoed back in the Dash event), so z < 0 is forward and x > 0 is right.
 local function pickDashTrack(x: number, z: number, tracks: Tracks): AnimationTrack
 	if math.abs(z) >= math.abs(x) then
 		return if z <= 0 then tracks.dashForward else tracks.dashBack
