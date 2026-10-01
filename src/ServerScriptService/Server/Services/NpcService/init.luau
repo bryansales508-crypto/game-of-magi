@@ -262,6 +262,10 @@ local function spawnTrainer(caller: Player, key: string, targetPlayer: Player): 
 	controller.blackboard.engageRadius = cfg.engageRadius or 12
 	controllers[model] = controller
 	trainers[model] = { key = key }
+	-- Tagged AFTER controllers[model] is set, so watchForNew's own tag
+	-- listener sees it as already registered. The client's
+	-- NpcAnimController animates every tagged NPC.
+	CollectionService:AddTag(model, NPC_TAG)
 
 	addTrainerNameTag(model, cfg.displayName or key)
 
@@ -328,6 +332,12 @@ setupNpc = function(model: Model)
 	if controller then
 		controllers[model] = controller
 	end
+	-- Every registered NPC carries the tag (the template clone above was
+	-- taken before this, so a re-clone starts untagged and gets it here
+	-- again). Set after controllers[model], so watchForNew's own tag
+	-- listener sees it as already registered. The client's
+	-- NpcAnimController animates every tagged NPC.
+	CollectionService:AddTag(model, NPC_TAG)
 
 	-- AUDIT M19's actual bug was giving up forever after one bad chase;
 	-- here, losing the model entirely just respawns a fresh one from its

@@ -174,15 +174,13 @@ Config.Combat = {
 	-- How long EffectsController flashes the "Cancel" Highlight for a
 	-- cancelled (not interrupted) attack.
 	CancelFlashSeconds = 0.25,
-	-- M3-FIX3-C (client): fallback wind-up slowdown (1 = normal speed, less
-	-- = slower) for a hit whose own windupSpeed isn't available from
-	-- Shared/Data/Combat.luau's Combat.Styles yet (M3-FIX4-S, in progress
-	-- in parallel) - once that lands, CombatController prefers each hit's
-	-- own windupSpeed (Lights 1.0, Heavies slowed) and only falls back to
-	-- this flat number if that data is missing. A pure client feel knob -
-	-- the server never reads this, it only ever validates hitWindow/
-	-- cancelUntil, so retuning this doesn't need to match any server timing.
-	WindupSpeed = 0.5,
+	-- M3-FIX3-C (client): fallback wind-up slowdown for a hit whose own
+	-- windupSpeed isn't in Shared/Data/Combat.luau. A MULTIPLIER on the
+	-- style's ComboSpeed (1 = no slowdown, 0.5 = half speed) - the per-hit
+	-- windupSpeed values in Combat.luau mean the same thing. A pure client
+	-- feel knob - the server never reads this, it only ever validates
+	-- hitWindow/cancelUntil, so retuning it means retuning those too.
+	WindupSpeed = 0.6,
 	-- M3B-01/M3B-03: the combat stance (docs/M3B-PLAN.md section 1). The
 	-- key toggles SetStance(not InCombat); clicks/Block/cancel only work
 	-- while InCombat (a click with a weapon Tool equipped is the one
@@ -235,6 +233,20 @@ Config.Combat = {
 	UnlockedByDefault = true,
 	-- How long the "you don't know how to fight yet" line stays up.
 	LockedMessageSeconds = 2,
+}
+
+-- The character's own locomotion animations (the old Animations.server.luau
+-- ids): CharacterService writes them into a player's Animate script, and
+-- NpcAnimController plays the same ones on every NPC (Bryan, 2026-09-30:
+-- dummies get every animation a player has).
+Config.Character = {
+	Animations = {
+		Idle = "rbxassetid://15422107398",
+		Walk = "rbxassetid://15421859266",
+		Run = "rbxassetid://15421855688",
+		Jump = "rbxassetid://15428492106",
+		Fall = "rbxassetid://15428818320",
+	},
 }
 
 -- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
@@ -443,6 +455,8 @@ table.freeze(Config.Combat.ComboAnimations)
 table.freeze(Config.Combat.ComboSpeed)
 table.freeze(Config.Combat.MoveAnimations)
 table.freeze(Config.Combat)
+table.freeze(Config.Character.Animations)
+table.freeze(Config.Character)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)

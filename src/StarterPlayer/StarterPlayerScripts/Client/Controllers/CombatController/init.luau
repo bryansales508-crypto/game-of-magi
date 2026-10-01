@@ -61,10 +61,9 @@ local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
 local Config = require(Shared:WaitForChild("Config"))
 
--- Typed `any`: Combat.Styles (M3-FIX4-S, built in parallel) isn't in this
--- module's exported type yet on every branch. Read defensively via
--- styleHitData below rather than assuming the shape.
-local CombatData: any = require(Shared:WaitForChild("Data"):WaitForChild("Combat"))
+-- M3-FIX5: the combo animation's keyframe/freeze/continue logic, shared
+-- with NpcAnimController so a dummy's chain looks exactly like a player's.
+local SwingTrack = require(script.SwingTrack)
 
 local log = Log.new("CombatController")
 
@@ -78,7 +77,6 @@ local CombatController = {}
 
 local MOVE_ANIMATIONS = Config.Combat.MoveAnimations
 local COMBO_ANIMATIONS: { [string]: string } = Config.Combat.ComboAnimations
-local COMBO_SPEEDS: { [string]: number } = Config.Combat.ComboSpeed
 
 local DOUBLE_TAP_WINDOW = 0.5 -- old `dp`
 local RUN_ZOOM_IN_SECONDS = 1 -- old WalkingTween
@@ -92,37 +90,6 @@ type Tracks = {
 	dashBack: AnimationTrack,
 	dashRight: AnimationTrack,
 }
-
--- ==================== per-hit style data (M3-FIX4, read defensively) ====================
-
--- Combat.Styles[styleName].chain[hitIndex] (kind/windupAt/cancelUntil/
--- windupSpeed/...), or nil if Combat.Styles isn't built yet (M3-FIX4-S, in
--- progress in parallel) or the style/index just isn't in it. Never errors
--- either way -- every caller below falls back to the old, style-agnostic
--- behaviour when this returns nil.
-local function styleHitData(styleName: string, hitIndex: number): any
-	local styles = CombatData.Styles
-	if typeof(styles) ~= "table" then
-		return nil
-	end
-	local style = styles[styleName]
-	if typeof(style) ~= "table" then
-		return nil
-	end
-	local hits = style.chain
-	if typeof(hits) ~= "table" then
-		return nil
-	end
-	return hits[hitIndex]
-end
-
-local function windupSpeedFor(styleName: string, hitIndex: number): number
-	local hitData = styleHitData(styleName, hitIndex)
-	if hitData and typeof(hitData.windupSpeed) == "number" then
-		return hitData.windupSpeed
-	end
-	return Config.Combat.WindupSpeed
-end
 
 -- ==================== per-character state ====================
 
@@ -153,72 +120,30 @@ local wireDaggerVisual: (character: Instance) -> ()
 local wireStanceAnimation: (character: Instance) -> ()
 local stopStanceAnimation: (character: Instance) -> ()
 
--- ==================== swing state (M3-FIX3: animation-driven punches) ====================
+-- ==================== swing state (M3-FIX3/M3-FIX5: animation-driven punches) ====================
 
-type SwingState = {
-	track: AnimationTrack,
-	styleName: string,
-	hitCount: number,
-	-- Config.Combat.ComboSpeed for this style: the track's speed outside a
-	-- wind-up (restored after every hit marker and on every unfreeze).
-	comboSpeed: number,
-	-- M3-FIX5: the hit whose segment is live - 1 from the Swing event, k
-	-- once the click for hit k has been sent.
-	segment: number,
-	-- os.clock() when that segment started (Swing arrived / the click was
-	-- sent): the clock cancelUntil is measured against (point 3), and what
-	-- the marker log prints next to each marker, since it's what the server
-	-- checks hitWindow against.
-	segmentStartedAt: number,
-	-- os.clock() when the latest hit marker fired; nil before hit 1.
-	lastHitAt: number?,
-	-- True while the track is frozen at the next hit's wind-up marker,
-	-- waiting for the click.
-	paused: boolean,
-	-- A click that arrived before the track froze or before Chain.HitGap
-	-- was over - fires the continue the moment both allow it.
-	continueQueued: boolean,
-	-- Which hit indices have had their own wind-up marker reached, so the
-	-- cancel rule can ask "has the NEXT unlanded hit's wind-up played yet"
-	-- for ANY hit in the chain, not just the first.
-	windupReached: { [number]: boolean },
-	stopped: boolean,
-	connections: { RBXScriptConnection },
-	-- REVIEW-M3-FIX3-C: which hit indices have already fired AttackHit
-	-- for this swing, so a marker that reaches twice (a re-entrant
-	-- GetMarkerReachedSignal firing, a looped/seeked track, ...) never
-	-- reports the same hit twice.
-	hit: { [number]: boolean },
-}
-
-local currentSwing: SwingState? = nil
+-- The local character's live combo animation (SwingTrack owns the
+-- keyframe/freeze/continue logic; this file adds the hit reports and the
+-- clicks on top).
+local currentSwing: SwingTrack.Swing? = nil
+-- A click that arrived before the track froze or before Chain.HitGap was
+-- over - fires the continue the moment both allow it. Reset per swing.
+local continueQueued = false
 
 -- M3-FIX5: the "next hit" click, defined in the Swing section below but
 -- called from tryAttackStart (Attack section) above it.
-local tryContinue: (swing: SwingState) -> ()
+local tryContinue: (swing: SwingTrack.Swing) -> ()
 
--- Idempotent: disconnects the marker connections and stops the track
--- (with an optional fade), whether called from a marker handler, the
--- track's own Stopped signal, AttackCancelled, or CharacterRemoving. Safe
--- to call more than once for the same swing (only the first call does
--- anything -- "both paths stop it once", point 2).
+-- Idempotent: stops the live swing (with an optional fade), whether called
+-- from AttackCancelled, a fresh Swing, or CharacterRemoving. The track's
+-- own end reaches the same place through SwingTrack's onStopped.
 local function stopSwing(fadeTime: number?)
 	local swing = currentSwing
-	if not swing or swing.stopped then
+	if not swing then
 		return
 	end
-	swing.stopped = true
 	currentSwing = nil
-	for _, conn in swing.connections do
-		conn:Disconnect()
-	end
-	table.clear(swing.connections)
-	-- Restore full speed before stopping, so a wind-up slowdown never
-	-- bleeds into the fade-out or, since this track is reused next swing
-	-- (only overridden by the explicit speed on the next Play() call),
-	-- sits at WindupSpeed while idle in between.
-	swing.track:AdjustSpeed(1)
-	swing.track:Stop(fadeTime)
+	swing.stop(fadeTime)
 end
 
 local function loadTrack(animator: Animator, id: string, priority: Enum.AnimationPriority): AnimationTrack
@@ -538,7 +463,7 @@ local function tryAttackStart()
 	local swing = currentSwing
 	if swing and not swing.stopped and swing.segment < swing.hitCount then
 		if swing.hit[swing.segment] then
-			swing.continueQueued = true
+			continueQueued = true
 			tryContinue(swing)
 		end
 		return
@@ -587,7 +512,7 @@ end
 
 -- The index of the earliest hit in this swing that hasn't landed yet, or
 -- nil if every hit already has (nothing left to cancel).
-local function nextUnlandedHitIndex(swing: SwingState): number?
+local function nextUnlandedHitIndex(swing: SwingTrack.Swing): number?
 	for index = 1, swing.hitCount do
 		if not swing.hit[index] then
 			return index
@@ -624,12 +549,12 @@ tryCancelAttack = function()
 	-- honoured: that pause is the decision point. Also forgets a queued
 	-- click, so the cancel can't race its own continue.
 	if swing.hit[swing.segment] and swing.segment < swing.hitCount then
-		swing.continueQueued = false
+		continueQueued = false
 		Remotes.Client.Fire("AttackCancel")
 		return
 	end
 
-	local hitData = styleHitData(swing.styleName, nextIndex)
+	local hitData = SwingTrack.StyleHitData(swing.styleName, nextIndex)
 	local kind = if hitData then hitData.kind else nil
 
 	if kind == "Heavy" then
@@ -730,29 +655,12 @@ local function stopRun()
 	Remotes.Client.Fire("Run", false)
 end
 
--- ==================== Swing (M3-FIX3/M3-FIX4: animation-driven hit chains) ====================
-
--- Starts the style's swing track and wires its markers: a configured
--- wind-up name per hit (interrupt check + marks that hit cancellable-until
--- for the fallback cancel rule) and a configured hit name per hit (reports
--- AttackHit(index)), plus KeyframeReached purely for the log -- see
--- Config.Combat's own comment on why both exist (markers need the right
--- name guessed already; named keyframes surface themselves for free).
--- One line per marker/keyframe, with the track time AND the seconds since
--- the live hit's own segment started - the number the server checks that
--- hit's hitWindow/cancelUntil against, so Bryan can copy it straight into
--- Combat.luau.
-local function logMarker(swing: SwingState, name: string)
-	log:Info(
-		string.format(
-			"marker: %s at %.3fs (hit %d, +%.3fs since its start)",
-			name,
-			swing.track.TimePosition,
-			swing.segment,
-			os.clock() - swing.segmentStartedAt
-		)
-	)
-end
+-- ==================== Swing (M3-FIX3/M3-FIX4/M3-FIX5: animation-driven hit chains) ====================
+-- The keyframe/marker logic (wind-up slowdown, hit markers, the freeze at
+-- the next hit's wind-up, continue) lives in SwingTrack, shared with
+-- NpcAnimController. This section is only what's specific to the LOCAL
+-- player: reporting each hit to the server, and turning clicks into
+-- continues.
 
 -- The click for hit `swing.segment + 1`: sends AttackContinue and unfreezes
 -- the track straight into that hit's own wind-up slowdown (its wind-up
@@ -761,26 +669,19 @@ end
 -- trip would add latency to every hit after the first. If the server
 -- disagrees (the chain already timed out, a status landed), its own
 -- AttackCancelled arrives and stopSwing fades the track out as usual.
-local function continueSwing(swing: SwingState)
-	local index = swing.segment + 1
-	swing.segment = index
-	swing.segmentStartedAt = os.clock()
-	swing.paused = false
-	swing.continueQueued = false
-	Remotes.Client.Fire("AttackContinue", index)
-	swing.track:AdjustSpeed(windupSpeedFor(swing.styleName, index))
-	if Config.Combat.LogMarkers then
-		log:Info(string.format("continue: hit %d", index))
-	end
+local function continueSwing(swing: SwingTrack.Swing)
+	continueQueued = false
+	Remotes.Client.Fire("AttackContinue", swing.segment + 1)
+	swing.continue()
 end
 
 -- Fires a queued click once BOTH hold: the track is frozen at the next
 -- hit's wind-up marker, and Chain.HitGap has passed since the last hit
 -- landed. Re-checks itself when only the gap is still running; a click
--- that arrives before the freeze is picked up by the wind-up marker
--- handler calling this again.
-tryContinue = function(swing: SwingState)
-	if swing.stopped or not swing.paused or not swing.continueQueued then
+-- that arrives before the freeze is picked up by onFrozen calling this
+-- again.
+tryContinue = function(swing: SwingTrack.Swing)
+	if swing.stopped or not swing.paused or not continueQueued then
 		return
 	end
 	local gapEndsAt = (swing.lastHitAt or 0) + Config.Combat.Chain.HitGap
@@ -798,16 +699,11 @@ tryContinue = function(swing: SwingState)
 	continueSwing(swing)
 end
 
--- Freezes the track at hit `index`'s wind-up marker until the click for it
--- (continueSwing) or a timeout: the server's own AttackCancelled "dropped"
--- normally gets here first, this local backstop only guarantees the frozen
--- pose never sticks if that event is lost.
-local function pauseForClick(swing: SwingState, index: number)
-	swing.paused = true
-	swing.track:AdjustSpeed(0)
-	if Config.Combat.LogMarkers then
-		log:Info(string.format("frozen before hit %d: click to throw it", index))
-	end
+-- The track just froze at hit `index`'s wind-up, waiting for the click:
+-- arm the local backstop (the server's own AttackCancelled "dropped"
+-- normally gets here first; this only guarantees the frozen pose never
+-- sticks if that event is lost) and fire any click that's already queued.
+local function onFrozen(swing: SwingTrack.Swing, index: number)
 	task.delay(Config.Combat.Chain.ClickTimeout + Config.Combat.HitTolerance, function()
 		if currentSwing == swing and swing.paused and not swing.stopped then
 			if Config.Combat.LogMarkers then
@@ -822,6 +718,7 @@ end
 local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 	-- A fresh Swing always supersedes whatever was still running.
 	stopSwing(nil)
+	continueQueued = false
 
 	-- A feint arrives as an ordinary Swing (the server starts it as a new
 	-- attack, point 5) -- nothing special-cased here, it just plays this
@@ -833,135 +730,28 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 		log:Warn("no combo animation for style " .. styleName .. " (Config.Combat.ComboAnimations)")
 		return
 	end
-	local markers = Config.Combat.Markers[styleName] or Config.Combat.Markers.Fist
-	local comboSpeed = COMBO_SPEEDS[styleName] or 1
 
-	local swing: SwingState = {
+	local swing: SwingTrack.Swing
+	swing = SwingTrack.new({
+		character = character,
 		track = track,
 		styleName = styleName,
 		hitCount = hitCount,
-		comboSpeed = comboSpeed,
-		segment = 1,
-		segmentStartedAt = os.clock(),
-		lastHitAt = nil,
-		paused = false,
-		continueQueued = false,
-		windupReached = {},
-		stopped = false,
-		connections = {},
-		hit = {},
-	}
-	currentSwing = swing
-
-	local function addConn(conn: RBXScriptConnection)
-		table.insert(swing.connections, conn)
-	end
-
-	-- The configured names can be animation EVENTS (GetMarkerReachedSignal)
-	-- or plain KEYFRAME names (KeyframeReached) - Bryan's Fist animation
-	-- uses keyframe names (2026-09-30: the marker signals never fired, only
-	-- the keyframe logger saw WindUp1/Punch1/WindUp2/Punch2). Both paths
-	-- feed one dispatcher; each handler ignores a repeat of its own name,
-	-- so a name that is both an event and a keyframe still counts once.
-	local windupByName: { [string]: number } = {}
-	for windupIndex, name in markers.Windup do
-		windupByName[name] = windupIndex
-	end
-	local hitByName: { [string]: number } = {}
-	for hitIndex, name in markers.Hit do
-		hitByName[name] = hitIndex
-	end
-
-	local function onWindup(windupIndex: number, name: string)
-		if swing.windupReached[windupIndex] then
-			return
-		end
-		swing.windupReached[windupIndex] = true
-		if Config.Combat.LogMarkers then
-			logMarker(swing, name)
-		end
-		-- M3-FIX5: the wind-up of the hit AFTER the one that just landed is
-		-- the freeze point - the chain waits for a click here.
-		if windupIndex == swing.segment + 1 and windupIndex <= hitCount then
-			if swing.hit[swing.segment] then
-				pauseForClick(swing, windupIndex)
-				return
+		log = log,
+		logMarkers = Config.Combat.LogMarkers,
+		onHit = function(index: number)
+			Remotes.Client.Fire("AttackHit", index)
+		end,
+		onFrozen = function(index: number)
+			onFrozen(swing, index)
+		end,
+		onStopped = function()
+			if currentSwing == swing then
+				currentSwing = nil
 			end
-			-- Markers out of order (this wind-up came before the previous
-			-- hit's own marker): don't freeze, or hit `segment` could never
-			-- land. Keep playing and say so.
-			log:Warn(string.format("%s reached before hit %d landed - check Config.Combat.Markers.%s", name, swing.segment, styleName))
-		end
-		-- Bryan (2026-09-28): slow the hit so it's readable -- and so the
-		-- loop below (cancel to bait, interrupt to punish) actually has a
-		-- window to react in. Prefers this hit's own windupSpeed (Lights
-		-- 1.0, Heavies slowed) once Combat.Styles has it;
-		-- Config.Combat.WindupSpeed is the fallback.
-		track:AdjustSpeed(windupSpeedFor(styleName, windupIndex))
-		if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
-			-- The server reaches the same conclusion and sends its own
-			-- AttackCancelled; stopSwing is idempotent either way.
-			stopSwing(0.1)
-		end
-	end
-
-	local function onHit(hitIndex: number, name: string)
-		if swing.hit[hitIndex] then
-			return
-		end
-		if Config.Combat.LogMarkers then
-			logMarker(swing, name)
-		end
-		track:AdjustSpeed(comboSpeed)
-		if hitIndex ~= swing.segment then
-			-- A hit marker for a hit that hasn't been clicked into yet (or
-			-- one already past): the server would drop the report anyway,
-			-- and marking it landed here would wreck the chain state.
-			-- Markers or their names are wrong.
-			log:Warn(string.format("%s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.segment, styleName))
-			return
-		end
-		swing.hit[hitIndex] = true
-		swing.lastHitAt = os.clock()
-		Remotes.Client.Fire("AttackHit", hitIndex)
-	end
-
-	local function onNamedEvent(name: string)
-		if swing.stopped then
-			return
-		end
-		local windupIndex = windupByName[name]
-		if windupIndex then
-			onWindup(windupIndex, name)
-			return
-		end
-		local hitIndex = hitByName[name]
-		if hitIndex then
-			onHit(hitIndex, name)
-			return
-		end
-		if Config.Combat.LogMarkers then
-			logMarker(swing, name)
-		end
-	end
-
-	addConn(track.KeyframeReached:Connect(onNamedEvent))
-	for name in windupByName do
-		addConn(track:GetMarkerReachedSignal(name):Connect(function()
-			onNamedEvent(name)
-		end))
-	end
-	for name in hitByName do
-		addConn(track:GetMarkerReachedSignal(name):Connect(function()
-			onNamedEvent(name)
-		end))
-	end
-
-	addConn(track.Stopped:Connect(function()
-		stopSwing(nil)
-	end))
-
-	track:Play(0.05, 1, comboSpeed)
+		end,
+	})
+	currentSwing = swing
 end
 
 -- ==================== CombatEvent (server -> client) ====================
@@ -1204,6 +994,14 @@ local function handleInputAction(_actionName: string, inputState: Enum.UserInput
 	return Enum.ContextActionResult.Pass
 end
 
+-- The look every combatant shares, player or NPC: the dagger prop while
+-- WeaponSet is "Dagger", and the stance idle while InCombat.
+-- NpcAnimController calls this for every NPC so the code path is one.
+function CombatController.WireCharacterLook(character: Instance)
+	wireDaggerVisual(character)
+	wireStanceAnimation(character)
+end
+
 function CombatController:Init() end
 
 function CombatController:Start()
@@ -1234,13 +1032,9 @@ function CombatController:Start()
 		if otherPlayer == player then
 			return
 		end
-		otherPlayer.CharacterAdded:Connect(function(character: Model)
-			wireDaggerVisual(character)
-			wireStanceAnimation(character)
-		end)
+		otherPlayer.CharacterAdded:Connect(CombatController.WireCharacterLook)
 		if otherPlayer.Character then
-			wireDaggerVisual(otherPlayer.Character)
-			wireStanceAnimation(otherPlayer.Character)
+			CombatController.WireCharacterLook(otherPlayer.Character)
 		end
 	end
 	for _, otherPlayer in Players:GetPlayers() do

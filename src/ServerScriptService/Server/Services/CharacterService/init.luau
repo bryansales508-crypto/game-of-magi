@@ -20,6 +20,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Log = require(ReplicatedStorage.Shared.Log)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local SaveSchema = require(ReplicatedStorage.Shared.SaveSchema)
 local Assets = require(ReplicatedFirst.Assets) :: any
@@ -493,11 +494,13 @@ local function applyAnimations(character: Model)
 		end
 	end
 
-	setAnimId("run", "RunAnim", "rbxassetid://15421855688")
-	setAnimId("walk", "WalkAnim", "rbxassetid://15421859266")
-	setAnimId("jump", "JumpAnim", "rbxassetid://15428492106")
-	setAnimId("idle", "Animation1", "rbxassetid://15422107398")
-	setAnimId("fall", "FallAnim", "rbxassetid://15428818320")
+	-- The ids live in Config.Character.Animations (shared with every NPC).
+	local ids = Config.Character.Animations
+	setAnimId("run", "RunAnim", ids.Run)
+	setAnimId("walk", "WalkAnim", ids.Walk)
+	setAnimId("jump", "JumpAnim", ids.Jump)
+	setAnimId("idle", "Animation1", ids.Idle)
+	setAnimId("fall", "FallAnim", ids.Fall)
 
 	-- F9: the old script stopped every playing track around the id swap so
 	-- a stale (old-id) track can't keep playing; stopped here, after the

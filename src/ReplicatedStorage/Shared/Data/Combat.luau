@@ -47,8 +47,13 @@
 --                      flat Combat.Block.drainPerHit.
 --     bleedStacks   - Bleed stacks a landed hit adds (0 = none); only
 --                      meaningful for a style with a `bleed` trait.
---     windupSpeed   - client-only: how much CombatController slows the
---                      animation during this hit's own wind-up.
+--     windupSpeed   - client-only: the animation's speed during this
+--                      hit's own wind-up, as a MULTIPLIER on the style's
+--                      Config.Combat.ComboSpeed (1 = no slowdown, 0.5 =
+--                      half speed). Bryan 2026-09-30: a Heavy's slow
+--                      should be barely noticeable but enough to punish.
+--                      Retune that hit's hitWindow whenever this changes
+--                      (slower wind-up = the hit marker arrives later).
 --   cancelInto       - what a successful AttackCancel turns into: "Any"
 --                      (free to block/attack/dash next, no extra cooldown)
 --                      or "Jab" (the server immediately starts chain[1] -
@@ -142,12 +147,14 @@ local Styles: { [string]: Style } = {
 		speedMult = 1.0,
 		dashCooldownMult = 1.0,
 		chain = {
+			-- Bryan's Fist animation at ComboSpeed 1.6 (read off the marker
+			-- log 2026-09-30): WindUp1 at +0.07s, Punch1 at +0.30s.
 			{
 				name = "Jab",
 				kind = "Light",
-				windupAt = 0.15,
-				cancelUntil = 0.15,
-				hitWindow = { min = 0.35, max = 0.60 },
+				windupAt = 0.07,
+				cancelUntil = 0.07,
+				hitWindow = { min = 0.20, max = 0.45 },
 				damage = 4,
 				range = 4.5,
 				radius = 1.6,
@@ -159,13 +166,14 @@ local Styles: { [string]: Style } = {
 			},
 			-- Segment 2: measured from the second click. The wind-up starts
 			-- at the click (windupAt 0), slowed by windupSpeed; cancel is
-			-- honoured a little way into it.
+			-- honoured a little way into it. WindUp2 -> Punch2 is 0.36s of
+			-- track time: at 1.6 x 0.6 that's Punch2 at +0.38s.
 			{
 				name = "Heavy",
 				kind = "Heavy",
 				windupAt = 0,
-				cancelUntil = 0.30,
-				hitWindow = { min = 0.70, max = 1.15 },
+				cancelUntil = 0.15,
+				hitWindow = { min = 0.25, max = 0.55 },
 				damage = 12,
 				range = 4.5,
 				radius = 1.6,
@@ -173,7 +181,7 @@ local Styles: { [string]: Style } = {
 				lightStun = 0,
 				blockDrain = 45,
 				bleedStacks = 0,
-				windupSpeed = 0.4,
+				windupSpeed = 0.6,
 			},
 		},
 	},
@@ -237,7 +245,7 @@ local Styles: { [string]: Style } = {
 				lightStun = 0,
 				blockDrain = 35,
 				bleedStacks = 2,
-				windupSpeed = 0.45,
+				windupSpeed = 0.6,
 			},
 		},
 	},

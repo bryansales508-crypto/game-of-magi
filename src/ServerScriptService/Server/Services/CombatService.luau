@@ -1152,6 +1152,10 @@ function CombatService.AttackContinue(character: Model, index: number): boolean
 	if combatLogEnabled then
 		log:Info(string.format("%s continues into hit %d (%s, %.2fs after the last hit)", character.Name, index, hit.kind, sinceHit))
 	end
+	-- The attacker's own client already unfroze its track when it clicked;
+	-- this is for everyone ELSE's copy of an NPC's combo animation
+	-- (NpcAnimController), which has no click of its own to go on.
+	Remotes.Server.FireAll("CombatEvent", "SwingContinue", { character = character, hit = index })
 	armSegmentWatchdog(character, entry, attack)
 	return true
 end
