@@ -204,7 +204,7 @@ local function onCombatEvent(kind: any, data: any)
 		if swing then
 			swing.continue()
 		end
-	elseif kind == "AttackCancelled" then
+	elseif kind == "AttackCancelled" or kind == "AttackEnded" then
 		stopSwing(rig, 0.1)
 	elseif kind == "Dash" then
 		local x = if typeof(data.x) == "number" then data.x else 0

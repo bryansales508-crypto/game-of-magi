@@ -103,18 +103,13 @@ local BlindTemplate = ReplicatedFirst:WaitForChild("GUI"):WaitForChild("MiscGUI"
 
 local EffectsController = {}
 
--- Shared/Data/Combat.luau (M3-01) isn't built yet, so the real per-move
--- hit time isn't available here. Until it lands, a flat grace period
--- (close to the old m1Recover) decides when a swing counts as a miss.
--- FLAG FOR THE LEAD: replace with the move's real hitTime + 0.1s once
--- M3-01 ships.
-local MISS_GRACE_SECONDS = 0.7
-
+-- M3-FIX6: a miss is the server's call (CombatEvent "Miss" fires where a
+-- hit's own target check finds nobody), so there's no local guess at the
+-- hit time any more - the old MISS_GRACE_SECONDS timers are gone.
 local HIT_SOUND_COUNT = 3 -- LightHitSound1-3
 local MISS_SOUND_COUNT = 3 -- MissSound1-3
 local BLOCK_SOUND_COUNT = 2 -- BlockSound1-2
 local PARRY_HITSTOP_SECONDS = 0.1
-local DASH_TRAIL_SECONDS = 0.3
 
 local STAGGER_IDS = {
 	"rbxassetid://15430342283",
@@ -147,11 +142,6 @@ local BLEED_DROPLET_NAMES = { "BleedDroplet1", "BleedDroplet2" }
 type BlockReactionTracks = { blockStagger: AnimationTrack, blockBreak: AnimationTrack }
 
 -- One swing's miss-sound bookkeeping: `generation` invalidates any still-
--- pending checks from a PREVIOUS swing on this character (so a fast
--- second attack can't play a miss sound for the first one after the
--- fact), `hit` marks which punch indices already landed for THIS swing.
-type SwingMissState = { generation: number, hit: { [number]: boolean } }
-
 -- One bleed particle, remembered alongside the Rate Bryan actually
 -- authored on it (`baseRate`), so intensity-by-stacks can scale it
 -- without compounding on repeated updates.
@@ -161,7 +151,6 @@ type BleedVisuals = { emitters: { BleedEmitter }, cutPart: BasePart? }
 local lastRandomIndex = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { [string]: number } }
 local staggerTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: { AnimationTrack } }
 local blockReactionTracksByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BlockReactionTracks }
-local swingMissState = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: SwingMissState }
 local stunnedWatcherRunning = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: boolean }
 local bleedVisualsByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: BleedVisuals }
 
@@ -619,39 +608,19 @@ end
 
 -- ==================== CombatEvent reactions ====================
 
--- M3-FIX3/M3-FIX4: a swing can carry several hits (`hitCount`), each with
--- its own Hit report (`hitIndex`); a hit that gets no Hit within its own
--- window plays its own miss sound, independent of the others. Staggers
--- each hit's check by MISS_GRACE_SECONDS * hitIndex, since the real
--- per-hit hitWindow (Shared/Data/Combat.luau, server-only) isn't
--- available here -- same flagged fallback as before, just applied per
--- hit instead of once per swing.
-local function onSwing(character: Instance, hitCount: number)
-	local previous = swingMissState[character]
-	local generation = (previous and previous.generation or 0) + 1
-	local state: SwingMissState = { generation = generation, hit = {} }
-	swingMissState[character] = state
-
-	for hitIndex = 1, hitCount do
-		task.delay(MISS_GRACE_SECONDS * hitIndex, function()
-			if swingMissState[character] == state and not state.hit[hitIndex] then
-				playSound(character, "MissSound" .. pickIndex(character, "miss", MISS_SOUND_COUNT))
-			end
-		end)
+-- M3-FIX6: the server says when a hit found nobody (CombatEvent "Miss"
+-- {attacker, hitIndex}, fired at the hit's own accepted AttackHit), so the
+-- whiff sound plays at the real moment of the punch instead of on a
+-- guessed timer.
+local function onMiss(data: any)
+	local attacker = data.attacker
+	if typeof(attacker) ~= "Instance" then
+		return
 	end
+	playSound(attacker, "MissSound" .. pickIndex(attacker, "miss", MISS_SOUND_COUNT))
 end
 
 local function onHit(data: any)
-	local attacker = data.attacker
-	if typeof(attacker) == "Instance" then
-		-- The hit landed; mark it so its own miss check is a no-op.
-		local state = swingMissState[attacker]
-		if state then
-			local hitIndex = if typeof(data.hitIndex) == "number" then data.hitIndex else 1
-			state.hit[hitIndex] = true
-		end
-	end
-
 	local target = data.target
 	if typeof(target) ~= "Instance" then
 		return
@@ -794,23 +763,42 @@ local function onDash(data: any)
 		return
 	end
 
-	local attachmentFront = Instance.new("Attachment")
-	attachmentFront.Position = Vector3.new(0, 0, -rootPart.Size.Z / 2)
-	attachmentFront.Parent = rootPart
+	-- M3-FIX6 (Bryan, 2026-10-01): dash LINES, not one ribbon. Several thin
+	-- copies of Bryan's DashTrail, each sprouting from its own random point
+	-- inside the torso (the HumanoidRootPart's own box, scaled by Spread),
+	-- each a random sliver wide (its two attachments a little above and
+	-- below the point), so the streaks fan out of the body like speed lines.
+	-- Numbers in Config.Combat.DashTrail; the trail's look (colour,
+	-- texture, lifetime) stays whatever Bryan authored on the template.
+	local lines = Config.Combat.DashTrail
+	local rng = Random.new()
+	local half = rootPart.Size / 2
+	for _ = 1, lines.Count do
+		local point = Vector3.new(
+			rng:NextNumber(-half.X, half.X) * lines.Spread,
+			rng:NextNumber(-half.Y, half.Y) * lines.Spread,
+			rng:NextNumber(-half.Z, half.Z)
+		)
+		local halfWidth = rng:NextNumber(lines.MinWidth, lines.MaxWidth) / 2
 
-	local attachmentBack = Instance.new("Attachment")
-	attachmentBack.Position = Vector3.new(0, 0, rootPart.Size.Z / 2)
-	attachmentBack.Parent = rootPart
+		local top = Instance.new("Attachment")
+		top.Position = point + Vector3.new(0, halfWidth, 0)
+		top.Parent = rootPart
 
-	local trail = (template :: Trail):Clone()
-	trail.Attachment0 = attachmentFront
-	trail.Attachment1 = attachmentBack
-	trail.Enabled = true
-	trail.Parent = rootPart
+		local bottom = Instance.new("Attachment")
+		bottom.Position = point - Vector3.new(0, halfWidth, 0)
+		bottom.Parent = rootPart
 
-	Debris:AddItem(attachmentFront, DASH_TRAIL_SECONDS)
-	Debris:AddItem(attachmentBack, DASH_TRAIL_SECONDS)
-	Debris:AddItem(trail, DASH_TRAIL_SECONDS)
+		local trail = (template :: Trail):Clone()
+		trail.Attachment0 = top
+		trail.Attachment1 = bottom
+		trail.Enabled = true
+		trail.Parent = rootPart
+
+		Debris:AddItem(top, lines.Seconds)
+		Debris:AddItem(bottom, lines.Seconds)
+		Debris:AddItem(trail, lines.Seconds)
+	end
 end
 
 -- Run's camera zoom is CombatController's job (driven by the `Running`
@@ -822,14 +810,10 @@ local function onCombatEvent(kind: any, data: any)
 		return
 	end
 
-	if kind == "Swing" then
-		local character = data.character
-		if typeof(character) == "Instance" then
-			local hitCount = if typeof(data.hitCount) == "number" then data.hitCount else 1
-			onSwing(character, hitCount)
-		end
-	elseif kind == "Hit" then
+	if kind == "Hit" then
 		onHit(data)
+	elseif kind == "Miss" then
+		onMiss(data)
 	elseif kind == "Blocked" then
 		onBlocked(data)
 	elseif kind == "Parried" then

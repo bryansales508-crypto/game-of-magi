@@ -132,11 +132,22 @@ local RUN_SPEED = 16 * Combat.Run.speedMult
 -- an earlier phase (a segment watchdog, the click timeout) can see it's
 -- stale and do nothing - `attackGeneration` alone can't tell segments of
 -- the SAME attack apart.
+--
+-- M3-FIX6 (Bryan, 2026-10-01): the chain LOOPS. Once the style's last hit
+-- lands, `nextHit` wraps to 1 and `pass` bumps; the attack keeps waiting
+-- for clicks until one doesn't come (dropped), a cancel, an interrupt, or
+-- AttackEnd (an NPC finishing its pass). Hit 1 on any pass after the first
+-- starts with the last hit's follow-through (the client's track resumes
+-- from the frozen punch and wraps), so its timings sit `style.loopOffset`
+-- later - see segmentOffset. `hitsLanded` counts the whole chain's landed
+-- hits (the cancel-cost rule).
 type PendingAttack = {
 	style: Combat.Style,
 	startedAt: number,
 	segmentStartedAt: number,
 	nextHit: number,
+	pass: number,
+	hitsLanded: number,
 	swingPosition: Vector3,
 	feint: boolean,
 	waitingForContinue: boolean,
@@ -812,6 +823,14 @@ local function attackStillInPhase(entry: Entry, attack: PendingAttack, phase: nu
 	return entry.attack == attack and attack.phase == phase
 end
 
+-- M3-FIX6: seconds added to the next hit's windupAt/cancelUntil/hitWindow
+-- for this segment - the style's loopOffset for hit 1 on any pass after
+-- the first (the last hit's follow-through plays before the animation
+-- wraps into hit 1's wind-up), 0 otherwise.
+local function segmentOffset(attack: PendingAttack): number
+	return if attack.nextHit == 1 and attack.pass > 1 then attack.style.loopOffset else 0
+end
+
 -- Watchdog for the segment that just started (hit `attack.nextHit`): if the
 -- client never reports that hit (desync, drop, a client that just stopped
 -- responding), don't leave the attacker stuck "Attacking" forever - end it
@@ -820,7 +839,7 @@ end
 local function armSegmentWatchdog(character: Model, entry: Entry, attack: PendingAttack)
 	local hit = attack.style.chain[attack.nextHit]
 	local phase = attack.phase
-	local delay = hit.hitWindow.max + Config.Combat.HitTolerance + Config.Combat.Chain.WatchdogMargin
+	local delay = segmentOffset(attack) + hit.hitWindow.max + Config.Combat.HitTolerance + Config.Combat.Chain.WatchdogMargin
 	task.delay(delay, function()
 		if attackStillInPhase(entry, attack, phase) then
 			if combatLogEnabled then
@@ -916,6 +935,8 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 		startedAt = now,
 		segmentStartedAt = now,
 		nextHit = 1,
+		pass = 1,
+		hitsLanded = 0,
 		swingPosition = swingPosition,
 		feint = feint,
 		waitingForContinue = false,
@@ -1001,7 +1022,9 @@ function CombatService.AttackHit(character: Model, index: number)
 	end
 
 	local now = Workspace:GetServerTimeNow()
-	local elapsed = now - attack.segmentStartedAt
+	-- M3-FIX6: minus the follow-through that precedes a looped hit 1, so the
+	-- window below reads the same as Combat.luau's numbers.
+	local elapsed = now - attack.segmentStartedAt - segmentOffset(attack)
 	local hit = attack.style.chain[index]
 	local tolerance = Config.Combat.HitTolerance
 
@@ -1037,7 +1060,7 @@ function CombatService.AttackHit(character: Model, index: number)
 	end
 
 	local torso = character:FindFirstChild("HumanoidRootPart")
-	if torso == nil or not torso:IsA("BasePart") or not didNotTeleport(attack.swingPosition, (torso :: BasePart).Position, elapsed) then
+	if torso == nil or not torso:IsA("BasePart") or not didNotTeleport(attack.swingPosition, (torso :: BasePart).Position, now - attack.segmentStartedAt) then
 		if combatLogEnabled then
 			log:Warn(string.format("%s's AttackHit(%d) dropped: moved too far since the swing", character.Name, index))
 		end
@@ -1050,10 +1073,15 @@ function CombatService.AttackHit(character: Model, index: number)
 
 	local target = CombatService.FindTarget(character, hit)
 	if target then
-		local isFeintHit = attack.feint and index == 1
+		local isFeintHit = attack.feint and index == 1 and attack.pass == 1
 		CombatService.ApplyHit(character, target, attack.style, hit, index, isFeintHit)
-	elseif combatLogEnabled then
-		log:Info(string.format("%s's %s (hit %d) whiffed", character.Name, attack.style.displayName, index))
+	else
+		-- M3-FIX6: the whiff sound is the server's call now (EffectsController
+		-- used to guess the hit time off a flat timer).
+		Remotes.Server.FireAll("CombatEvent", "Miss", { attacker = character, hitIndex = index, kind = hit.kind })
+		if combatLogEnabled then
+			log:Info(string.format("%s's %s (hit %d) whiffed", character.Name, attack.style.displayName, index))
+		end
 	end
 
 	-- CombatService.ApplyHit above may have interrupted the TARGET's own
@@ -1064,23 +1092,48 @@ function CombatService.AttackHit(character: Model, index: number)
 	-- still this attacker's live state either way, and the very next
 	-- AttackHit call (if the chain continues) is what the BLOCKS_ATTACK
 	-- check above actually catches Recovery/Stun with.
-	attack.nextHit = index + 1
+	-- M3-FIX6: the chain loops - after the style's last hit the next click
+	-- continues into hit 1 again. Nothing is being thrown until that click:
+	-- CurrentHit is "" meanwhile (the trainer dummies read it as
+	-- "mid-swing"), and the next hit's own kind comes back at
+	-- AttackContinue. No click in time and armContinueTimeout drops the
+	-- combo.
+	attack.hitsLanded += 1
 	attack.phase += 1
-	if attack.nextHit > #attack.style.chain then
-		clearAttack(character, entry, Config.Combat.Chain.Recovery)
-		if combatLogEnabled then
-			log:Info(string.format("%s's attack complete, recovery %.2fs", character.Name, Config.Combat.Chain.Recovery))
-		end
+	if index >= #attack.style.chain then
+		attack.nextHit = 1
+		attack.pass += 1
 	else
-		-- M3-FIX5: nothing is being thrown until the next click - CurrentHit
-		-- is "" meanwhile (the trainer dummies read it as "mid-swing"), and
-		-- the next hit's own kind comes back at AttackContinue.
-		attack.waitingForContinue = true
-		attack.lastHitAt = now
-		pcall(function()
-			character:SetAttribute("CurrentHit", "")
-		end)
-		armContinueTimeout(character, entry, attack)
+		attack.nextHit = index + 1
+	end
+	attack.waitingForContinue = true
+	attack.lastHitAt = now
+	pcall(function()
+		character:SetAttribute("CurrentHit", "")
+	end)
+	armContinueTimeout(character, entry, attack)
+end
+
+-- M3-FIX6: ends a chain cleanly between hits - the attacker chose not to
+-- throw the next one. Only meaningful while the chain waits for a click
+-- (mid-segment it's a no-op: cancel or interrupt are the ways out of a live
+-- hit). Chain.Recovery of cooldown, and CombatEvent AttackEnded so every
+-- client fades the frozen punch out. CombatService.Attack (NPCs) calls this
+-- after its single pass; a player's chain never ends this way today (their
+-- clicks run out and it drops instead).
+function CombatService.AttackEnd(character: Model)
+	local entry = registered[character]
+	if entry == nil or entry.attack == nil then
+		return
+	end
+	local attack = entry.attack :: PendingAttack
+	if not attack.waitingForContinue then
+		return
+	end
+	clearAttack(character, entry, Config.Combat.Chain.Recovery)
+	Remotes.Server.FireAll("CombatEvent", "AttackEnded", { character = character })
+	if combatLogEnabled then
+		log:Info(string.format("%s's attack complete (%d hits), recovery %.2fs", character.Name, attack.hitsLanded, Config.Combat.Chain.Recovery))
 	end
 end
 
@@ -1197,7 +1250,7 @@ function CombatService.AttackCancel(character: Model)
 	end
 
 	local now = Workspace:GetServerTimeNow()
-	local elapsed = now - attack.segmentStartedAt
+	local elapsed = now - attack.segmentStartedAt - segmentOffset(attack)
 	local tolerance = Config.Combat.HitTolerance
 	-- M3-FIX5: while the chain waits for the next click, nothing is being
 	-- thrown yet, so a cancel is always honoured (that pause IS the decision
@@ -1221,28 +1274,24 @@ function CombatService.AttackCancel(character: Model)
 	local cancelledAtHit = attack.nextHit
 
 	-- REVIEW-M3-FIX4-S H3: cancelling is free ONLY before any hit in this
-	-- chain has landed (cancelledAtHit == 1 still) - that's the intended
-	-- bait, a swing that never committed to anything. Cancelling once at
-	-- least one hit already landed is a different move (finish a Jab, then
-	-- bail on the rest of the chain) and must cost the same cooldown a full
-	-- chain would, or "land hit 1, cancel, restart" beats a full chain's
-	-- own DPS for free every time. NextAttackAt = startedAt + style.recovery
-	-- + chain[1].hitWindow.min: the earliest the NEXT swing's own first hit
-	-- could land is then startedAt + recovery + 2 x chain[1].hitWindow.min,
-	-- matching a full chain's own first-hit-to-first-hit cadence instead of
-	-- beating it. beginAttack (including the cancel-into-jab path just
+	-- chain has landed - that's the intended bait, a swing that never
+	-- committed to anything. Cancelling once at least one hit already
+	-- landed is a different move (finish a Jab, then bail on the rest) and
+	-- costs a chain's own Recovery, so "land hit 1, cancel, restart" never
+	-- beats simply continuing the chain. (M3-FIX6: counted by hitsLanded,
+	-- since the chain loops and nextHit alone can't tell a fresh hit 1 from
+	-- a looped one.) beginAttack (including the cancel-into-jab path just
 	-- below) already checks NextAttackAt, so setting it here is enough - a
 	-- feint that follows a landed hit simply waits for it; a feint after a
 	-- free cancel (no hit landed) stays free, which is the bait.
-	if cancelledAtHit > 1 then
-		local cooldownEndsAt = attack.startedAt + Config.Combat.Chain.Recovery + style.chain[1].hitWindow.min
-		clearAttack(character, entry, cooldownEndsAt - now)
+	if attack.hitsLanded > 0 then
+		clearAttack(character, entry, Config.Combat.Chain.Recovery)
 	else
 		clearAttack(character, entry, 0)
 	end
 	Remotes.Server.FireAll("CombatEvent", "AttackCancelled", { character = character, reason = "cancelled" })
 	if combatLogEnabled then
-		log:Info(string.format("%s's attack cancelled at hit %d (elapsed %.2fs)", character.Name, cancelledAtHit, elapsed))
+		log:Info(string.format("%s's attack cancelled at hit %d (elapsed %.2fs, %d landed)", character.Name, cancelledAtHit, elapsed, attack.hitsLanded))
 	end
 
 	if style.cancelInto == "Jab" then
@@ -1256,7 +1305,10 @@ end
 -- (M3-FIX5) the "next click" - AttackContinue - Config.Npc.ContinueDelay
 -- after each hit lands, so NPC hits go through the identical validation
 -- (and can be interrupted, or time out, the same way) a player's own
--- client-reported hits do.
+-- client-reported hits do. M3-FIX6: one pass of the chain, then AttackEnd
+-- (ContinueDelay after the last hit, so the punch holds a beat the way a
+-- player's does) - an NPC never loops, its tree decides when to swing
+-- again.
 function CombatService.Attack(character: Model)
 	local started, style = beginAttack(character, false)
 	if not started or style == nil then
@@ -1278,11 +1330,12 @@ function CombatService.Attack(character: Model)
 				return
 			end
 			CombatService.AttackHit(character, index)
-			if index >= #style.chain then
-				return
-			end
 			task.delay(Config.Npc.ContinueDelay, function()
 				if entry.attackGeneration ~= generation then
+					return
+				end
+				if index >= #style.chain then
+					CombatService.AttackEnd(character)
 					return
 				end
 				if CombatService.AttackContinue(character, index + 1) then

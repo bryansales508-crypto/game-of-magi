@@ -43,6 +43,13 @@
 -- out even if that event never arrives. Right-click while frozen is a
 -- cancel the server always honours.
 --
+-- M3-FIX6 (Bryan, 2026-10-01): the freeze moved onto the PUNCH itself
+-- (wind-up -> punch, pause, wind-up -> punch, pause, ...) and the chain
+-- loops: after the style's last hit the track wraps to hit 1 and the clicks
+-- can keep going. A chain now ends only by dropping (no click in time),
+-- cancel, interrupt, or the server's AttackEnded. All of the keyframe
+-- logic is SwingTrack's; this file only turns clicks into continues.
+--
 -- Every animation id lives in Config.Combat (StanceAnimations,
 -- ComboAnimations, ComboSpeed, MoveAnimations) - nothing is hardcoded here.
 -- The diagonal dash animations were commented out in the old script and
@@ -452,17 +459,15 @@ local function tryAttackStart()
 		return
 	end
 
-	-- M3-FIX5: a click mid-combo is the "next hit" click, once the current
-	-- hit has landed (before that it's nothing - mashing during a wind-up
-	-- never buffers). tryContinue (Swing section) waits for the track to
-	-- freeze and for Chain.HitGap before it actually sends anything.
-	-- Once the LAST hit has been clicked into, the swing no longer eats
-	-- clicks: the server clears Attacking the moment that hit lands, and a
-	-- click after Chain.Recovery starts the next combo (whose Swing event
-	-- stops this track's follow-through) exactly as before.
+	-- M3-FIX5/M3-FIX6: a click mid-combo is the "next hit" click, once the
+	-- current hit has landed (before that it's nothing - mashing during a
+	-- wind-up never buffers). tryContinue (Swing section) waits for
+	-- Chain.HitGap before it actually sends anything. The chain loops, so
+	-- every click while a swing is live is a continue; there is no "last
+	-- hit" after which clicks fall through to a new AttackStart.
 	local swing = currentSwing
-	if swing and not swing.stopped and swing.segment < swing.hitCount then
-		if swing.hit[swing.segment] then
+	if swing and not swing.stopped then
+		if swing.landed then
 			continueQueued = true
 			tryContinue(swing)
 		end
@@ -510,22 +515,11 @@ cancelBlock = function()
 	end
 end
 
--- The index of the earliest hit in this swing that hasn't landed yet, or
--- nil if every hit already has (nothing left to cancel).
-local function nextUnlandedHitIndex(swing: SwingTrack.Swing): number?
-	for index = 1, swing.hitCount do
-		if not swing.hit[index] then
-			return index
-		end
-	end
-	return nil
-end
-
 -- Right-click/jump ALSO tries to cancel an in-progress attack (point 3):
--- eligible while the NEXT unlanded hit hasn't passed its own cancel point
--- -- a Light before its own wind-up marker (the old M3-FIX3 rule, and the
+-- eligible while the live hit hasn't passed its own cancel point -- a
+-- Light before its own wind-up marker (the old M3-FIX3 rule, and the
 -- fallback when a hit's `kind` isn't available yet from Combat.Styles); a
--- Heavy until `cancelUntil` seconds after the swing started, by this
+-- Heavy until `cancelUntil` seconds after its segment started, by this
 -- client's own clock (the server enforces the real check). Never stops
 -- the track locally -- that only ever happens once the server's own
 -- AttackCancelled arrives, so client and server never disagree about
@@ -536,33 +530,37 @@ tryCancelAttack = function()
 		return
 	end
 	local swing = currentSwing
-	if not swing then
-		return
-	end
-	local nextIndex = nextUnlandedHitIndex(swing)
-	if not nextIndex then
+	if not swing or swing.stopped then
 		return
 	end
 
-	-- M3-FIX5: between hits (the current hit landed, the next click not
-	-- sent yet - frozen or still in the follow-through) a cancel is always
-	-- honoured: that pause is the decision point. Also forgets a queued
-	-- click, so the cancel can't race its own continue.
-	if swing.hit[swing.segment] and swing.segment < swing.hitCount then
+	-- M3-FIX5: between hits (frozen on the punch, the next click not sent
+	-- yet) a cancel is always honoured: that pause is the decision point.
+	-- Also forgets a queued click, so the cancel can't race its own
+	-- continue.
+	if swing.landed then
 		continueQueued = false
 		Remotes.Client.Fire("AttackCancel")
 		return
 	end
 
-	local hitData = SwingTrack.StyleHitData(swing.styleName, nextIndex)
+	local hitData = SwingTrack.StyleHitData(swing.styleName, swing.liveHit)
 	local kind = if hitData then hitData.kind else nil
 
 	if kind == "Heavy" then
 		local cancelUntil = if hitData and typeof(hitData.cancelUntil) == "number" then hitData.cancelUntil else nil
-		if not cancelUntil or os.clock() - swing.segmentStartedAt > cancelUntil then
+		if not cancelUntil then
 			return
 		end
-	elseif swing.windupReached[nextIndex] then
+		-- M3-FIX6: hit 1 on a later pass of the loop starts with the last
+		-- hit's follow-through, so its numbers sit loopOffset later.
+		if swing.liveHit == 1 and swing.segment > 1 then
+			cancelUntil += SwingTrack.LoopOffsetFor(swing.styleName)
+		end
+		if os.clock() - swing.segmentStartedAt > cancelUntil then
+			return
+		end
+	elseif swing.windupSeen then
 		return
 	end
 
@@ -672,33 +670,30 @@ local function stopRun()
 	Remotes.Client.Fire("Run", false)
 end
 
--- ==================== Swing (M3-FIX3/M3-FIX4/M3-FIX5: animation-driven hit chains) ====================
--- The keyframe/marker logic (wind-up slowdown, hit markers, the freeze at
--- the next hit's wind-up, continue) lives in SwingTrack, shared with
--- NpcAnimController. This section is only what's specific to the LOCAL
--- player: reporting each hit to the server, and turning clicks into
--- continues.
+-- ==================== Swing (M3-FIX3/M3-FIX4/M3-FIX5/M3-FIX6: animation-driven hit chains) ====================
+-- The keyframe/marker logic (wind-up slowdown, hit markers, the freeze on
+-- the punch, continue) lives in SwingTrack, shared with NpcAnimController.
+-- This section is only what's specific to the LOCAL player: reporting
+-- each hit to the server, and turning clicks into continues.
 
--- The click for hit `swing.segment + 1`: sends AttackContinue and unfreezes
--- the track straight into that hit's own wind-up slowdown (its wind-up
--- marker is where the track froze, so the wind-up starts here - windupAt
--- 0 in Combat.luau). Optimistic on purpose: waiting for a server round
--- trip would add latency to every hit after the first. If the server
--- disagrees (the chain already timed out, a status landed), its own
--- AttackCancelled arrives and stopSwing fades the track out as usual.
+-- The click for the next hit: sends AttackContinue(next chain index -
+-- wrapping to 1 after the last) and unfreezes the track into the
+-- follow-through and that hit's wind-up. Optimistic on purpose: waiting
+-- for a server round trip would add latency to every hit after the first.
+-- If the server disagrees (the chain already timed out, a status landed),
+-- its own AttackCancelled arrives and stopSwing fades the track out as
+-- usual.
 local function continueSwing(swing: SwingTrack.Swing)
 	continueQueued = false
-	Remotes.Client.Fire("AttackContinue", swing.segment + 1)
+	Remotes.Client.Fire("AttackContinue", swing.liveHit % swing.hitCount + 1)
 	swing.continue()
 end
 
--- Fires a queued click once BOTH hold: the track is frozen at the next
--- hit's wind-up marker, and Chain.HitGap has passed since the last hit
--- landed. Re-checks itself when only the gap is still running; a click
--- that arrives before the freeze is picked up by onFrozen calling this
--- again.
+-- Fires a queued click once BOTH hold: the track is frozen on the punch,
+-- and Chain.HitGap has passed since it landed. Re-checks itself when only
+-- the gap is still running.
 tryContinue = function(swing: SwingTrack.Swing)
-	if swing.stopped or not swing.paused or not continueQueued then
+	if swing.stopped or not swing.landed or not continueQueued then
 		return
 	end
 	local gapEndsAt = (swing.lastHitAt or 0) + Config.Combat.Chain.HitGap
@@ -716,15 +711,18 @@ tryContinue = function(swing: SwingTrack.Swing)
 	continueSwing(swing)
 end
 
--- The track just froze at hit `index`'s wind-up, waiting for the click:
--- arm the local backstop (the server's own AttackCancelled "dropped"
--- normally gets here first; this only guarantees the frozen pose never
--- sticks if that event is lost) and fire any click that's already queued.
-local function onFrozen(swing: SwingTrack.Swing, index: number)
+-- Hit `index`'s marker just played and the track froze on it, waiting for
+-- the click: report the hit, arm the local backstop (the server's own
+-- AttackCancelled "dropped" normally gets here first; this only
+-- guarantees the frozen pose never sticks if that event is lost) and fire
+-- any click that's already queued.
+local function onLocalHit(swing: SwingTrack.Swing, index: number)
+	Remotes.Client.Fire("AttackHit", index)
+	local segment = swing.segment
 	task.delay(Config.Combat.Chain.ClickTimeout + Config.Combat.HitTolerance, function()
-		if currentSwing == swing and swing.paused and not swing.stopped then
+		if currentSwing == swing and swing.landed and swing.segment == segment and not swing.stopped then
 			if Config.Combat.LogMarkers then
-				log:Info(string.format("combo dropped locally: no click for hit %d", index))
+				log:Info(string.format("combo dropped locally: no click after hit %d", index))
 			end
 			stopSwing(0.1)
 		end
@@ -757,10 +755,7 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 		log = log,
 		logMarkers = Config.Combat.LogMarkers,
 		onHit = function(index: number)
-			Remotes.Client.Fire("AttackHit", index)
-		end,
-		onFrozen = function(index: number)
-			onFrozen(swing, index)
+			onLocalHit(swing, index)
 		end,
 		onStopped = function()
 			if currentSwing == swing then
@@ -804,9 +799,10 @@ local function onCombatEvent(kind: any, data: any)
 
 	if kind == "Swing" then
 		onLocalSwing(character, tracks, data)
-	elseif kind == "AttackCancelled" then
-		-- Both "cancelled" and "interrupted" stop the local track the same
-		-- way; EffectsController handles the highlight/stagger visuals.
+	elseif kind == "AttackCancelled" or kind == "AttackEnded" then
+		-- "cancelled", "interrupted", "dropped" and a clean AttackEnded all
+		-- stop the local track the same way; EffectsController handles the
+		-- highlight/stagger visuals.
 		stopSwing(0.1)
 	elseif kind == "Dash" then
 		local x = if typeof(data.x) == "number" then data.x else 0

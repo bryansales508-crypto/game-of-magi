@@ -129,9 +129,13 @@ Config.Combat = {
 	-- network round-trip and animation-marker jitter between the client's
 	-- animation clock and the server's own.
 	HitTolerance = 0.15,
-	-- The pacing of a chain ("1, 2, recovery, 1, 2, recovery"), seconds. The
-	-- server enforces every one of these; the client mirrors them so a
-	-- click that can't count is never sent.
+	-- The pacing of a chain, seconds. The server enforces every one of
+	-- these; the client mirrors them so a click that can't count is never
+	-- sent. M3-FIX6 (Bryan, 2026-10-01): the chain LOOPS - "1, 2, 1, 2, ..."
+	-- for as long as every click arrives inside HitGap..ClickTimeout of the
+	-- punch before it; it ends by dropping (no click in time), a cancel, an
+	-- interrupt, or an NPC finishing its pass. The animation freezes ON each
+	-- punch while it waits for the click.
 	Chain = {
 		-- Earliest the NEXT hit's click counts after a hit lands. A click
 		-- before this is remembered and fires the moment the gap is over,
@@ -141,9 +145,10 @@ Config.Combat = {
 		-- the combo is dropped (the animation fades out, DropRecovery
 		-- applies).
 		ClickTimeout = 1.0,
-		-- Cooldown after the LAST hit of a chain lands before a new chain can
-		-- start (the "recovery" in "1, 2, recovery"). Longer than HitGap, so
-		-- a chain always has a beat at its end.
+		-- Cooldown before a new chain can start after one ends any way other
+		-- than a drop: an NPC finishing its pass (AttackEnded), a cancel after
+		-- at least one hit landed, or the server's watchdog giving up on a
+		-- hit report.
 		Recovery = 0.25,
 		-- Cooldown after a chain times out (no click in time) - from the
 		-- moment it's dropped, not from the last hit.
@@ -210,8 +215,22 @@ Config.Combat = {
 	-- Playback speed of each combo animation outside its wind-ups (1 = as
 	-- authored; the old PhysicalHandler's `aniSpeed` per weapon).
 	ComboSpeed = {
-		Fist = 1.6,
+		-- Bryan 2026-10-01: "slow the animation down a bit" (was 1.6). Retune
+		-- Combat.luau's Fist windows whenever this changes - its comments
+		-- show the arithmetic.
+		Fist = 1.3,
 		Dagger = 0.25,
+	},
+	-- M3-FIX6: the dash lines (EffectsController). `Count` thin copies of
+	-- ReplicatedFirst.VFX.MiscEffects.DashTrail sprout from random points in
+	-- the torso's box (scaled by `Spread`, 1 = the whole box), each between
+	-- MinWidth and MaxWidth studs tall, for `Seconds`.
+	DashTrail = {
+		Count = 7,
+		Seconds = 0.3,
+		Spread = 0.9,
+		MinWidth = 0.08,
+		MaxWidth = 0.3,
 	},
 	-- Block pose, run and the four cardinal dashes (ids kept from the old
 	-- SCS/Scripts/PhysicalHandler.client.luau so the feel is unchanged).

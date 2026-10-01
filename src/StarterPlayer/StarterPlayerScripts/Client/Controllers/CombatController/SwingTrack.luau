@@ -1,20 +1,31 @@
 --!strict
 -- One playing combo animation on one character: the keyframe/marker logic
--- of the two-click chain (M3-FIX5), shared by CombatController (the local
--- player - it sends the hit reports and the clicks) and NpcAnimController
--- (every NPC - it mirrors the server's own chain off CombatEvents, so a
--- dummy throws, freezes and continues with the exact same animation a
--- player does; Bryan, 2026-09-30).
+-- of the one-click-per-hit chain (M3-FIX5), shared by CombatController (the
+-- local player - it sends the hit reports and the clicks) and
+-- NpcAnimController (every NPC - it mirrors the server's own chain off
+-- CombatEvents, so a dummy throws, freezes and continues with the exact
+-- same animation a player does; Bryan, 2026-09-30).
 --
--- A chain is a run of SEGMENTS, one per hit. Segment 1 starts at Play();
--- once hit k's marker plays, the track keeps going until hit k+1's wind-up
--- marker, where it FREEZES (AdjustSpeed(0)) until `continue()` - the
--- player's next click, or the server's SwingContinue event for an NPC -
--- unfreezes it straight into that hit's own wind-up slowdown. The
--- configured names (Config.Combat.Markers[style]) can be animation EVENTS
+-- M3-FIX6 (Bryan, 2026-10-01): "wind-up -> punch (pause) -> wind-up ->
+-- punch (pause) -> ..." The track plays LOOPED and FREEZES ON THE PUNCH:
+-- the moment a hit's marker plays, the track stops dead (AdjustSpeed(0))
+-- in the impact pose and waits for `continue()` - the player's next click,
+-- or the server's SwingContinue event for an NPC. continue() resumes it
+-- into the follow-through and the next hit's wind-up (slowed by that hit's
+-- windupSpeed from its wind-up marker on) until that punch, where it
+-- freezes again. After the chain's LAST hit the track wraps back to its
+-- start, so hit 1 follows hit 2 follows hit 1 for as long as the clicks
+-- keep coming; a chain only ends when a click doesn't come in time (the
+-- server's "dropped" AttackCancelled fades the frozen pose out), or on a
+-- cancel/interrupt/AttackEnded.
+--
+-- A chain is a run of SEGMENTS, one per hit thrown: segment 1 starts at
+-- Play(), segment n at the (n-1)th continue(). `liveHit` is the chain
+-- index the live segment throws (1..hitCount, wrapping). The configured
+-- names (Config.Combat.Markers[style]) can be animation EVENTS
 -- (GetMarkerReachedSignal) or plain KEYFRAME names (KeyframeReached) -
 -- Bryan's Fist animation uses keyframe names; both feed one dispatcher and
--- each name counts once.
+-- each counts once per segment.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -34,28 +45,30 @@ export type Swing = {
 	styleName: string,
 	hitCount: number,
 	-- Config.Combat.ComboSpeed for this style: the track's speed outside a
-	-- wind-up (restored after every hit marker and on every unfreeze).
+	-- wind-up (restored after every unfreeze).
 	comboSpeed: number,
-	-- The hit whose segment is live - 1 from Play(), k once continue()
-	-- unfroze the track into hit k.
+	-- How many hits have been thrown (started) so far: 1 from Play(), +1
+	-- per continue(). Only ever grows.
 	segment: number,
-	-- os.clock() when that segment started: the clock cancelUntil is
-	-- measured against, and what the marker log prints next to each
-	-- marker, since it's what the server checks hitWindow against.
+	-- The chain index (1..hitCount) of the hit the live segment throws;
+	-- wraps back to 1 after the chain's last hit.
+	liveHit: number,
+	-- os.clock() when the live segment started: the clock windupAt /
+	-- cancelUntil / hitWindow are measured against (what the server checks),
+	-- and what the marker log prints next to each marker.
 	segmentStartedAt: number,
 	-- os.clock() when the latest hit marker fired; nil before hit 1.
 	lastHitAt: number?,
-	-- True while the track is frozen at the next hit's wind-up marker.
+	-- True once the live hit's wind-up marker has played (its cancel point
+	-- for a Light).
+	windupSeen: boolean,
+	-- True once the live hit's marker has played: the track is frozen in
+	-- the punch pose, waiting for continue().
+	landed: boolean,
+	-- Same as `landed` (kept as the plain English name callers read).
 	paused: boolean,
 	stopped: boolean,
-	-- Which hit indices have had their own wind-up marker reached, so the
-	-- cancel rule can ask "has the NEXT unlanded hit's wind-up played yet".
-	windupReached: { [number]: boolean },
-	-- Which hit indices have had their hit marker play (a marker that
-	-- reaches twice never counts twice).
-	hit: { [number]: boolean },
-	-- Unfreezes into hit `segment + 1`'s wind-up. A no-op once stopped or
-	-- past the last hit.
+	-- Unfreezes into the next hit's segment. A no-op unless frozen.
 	continue: () -> (),
 	-- Idempotent: disconnects everything and stops the track (optional
 	-- fade). Only the first call does anything.
@@ -70,10 +83,9 @@ export type Params = {
 	-- A Log instance; marker lines go through it when `logMarkers` is on.
 	log: any,
 	logMarkers: boolean,
-	-- Hit `index`'s marker just played while that hit was live.
+	-- Hit `index`'s marker just played while that hit was live; the track
+	-- is now frozen on it, waiting for continue().
 	onHit: ((index: number) -> ())?,
-	-- The track just froze at hit `index`'s wind-up, waiting for continue().
-	onFrozen: ((index: number) -> ())?,
 	-- The swing ended for any reason (stop(), or the track reaching its end).
 	onStopped: (() -> ())?,
 }
@@ -98,6 +110,18 @@ function SwingTrack.StyleHitData(styleName: string, hitIndex: number): any
 	return hits[hitIndex]
 end
 
+-- Combat.Styles[styleName].loopOffset: the seconds the last hit's
+-- follow-through takes before the track wraps into hit 1 again (added to
+-- hit 1's timings on every pass after the first). 0 if unknown.
+function SwingTrack.LoopOffsetFor(styleName: string): number
+	local styles = CombatData.Styles
+	local style = if typeof(styles) == "table" then styles[styleName] else nil
+	if typeof(style) == "table" and typeof(style.loopOffset) == "number" then
+		return style.loopOffset
+	end
+	return 0
+end
+
 -- The wind-up slowdown for a hit, as a MULTIPLIER on the style's
 -- ComboSpeed (1 = no slowdown; Bryan 2026-09-30: "barely noticeable, but
 -- sizable to punish"). Prefers the hit's own windupSpeed from Combat.luau;
@@ -115,7 +139,7 @@ end
 function SwingTrack.new(params: Params): Swing
 	local track = params.track
 	local styleName = params.styleName
-	local hitCount = params.hitCount
+	local hitCount = math.max(1, params.hitCount)
 	local character = params.character
 	local log = params.log
 	local markers = Config.Combat.Markers[styleName] or Config.Combat.Markers.Fist
@@ -129,12 +153,13 @@ function SwingTrack.new(params: Params): Swing
 		hitCount = hitCount,
 		comboSpeed = comboSpeed,
 		segment = 1,
+		liveHit = 1,
 		segmentStartedAt = os.clock(),
 		lastHitAt = nil,
+		windupSeen = false,
+		landed = false,
 		paused = false,
 		stopped = false,
-		windupReached = {},
-		hit = {},
 	} :: Swing
 
 	-- One line per marker/keyframe, with the track time AND the seconds
@@ -145,9 +170,10 @@ function SwingTrack.new(params: Params): Swing
 		if params.logMarkers then
 			log:Info(
 				string.format(
-					"marker: %s at %.3fs (hit %d, +%.3fs since its start)",
+					"marker: %s at %.3fs (hit %d, segment %d, +%.3fs since its start)",
 					name,
 					track.TimePosition,
+					swing.liveHit,
 					swing.segment,
 					os.clock() - swing.segmentStartedAt
 				)
@@ -175,16 +201,20 @@ function SwingTrack.new(params: Params): Swing
 	end
 
 	swing.continue = function()
-		local index = swing.segment + 1
-		if swing.stopped or index > hitCount then
+		if swing.stopped or not swing.landed then
 			return
 		end
-		swing.segment = index
+		swing.segment += 1
+		swing.liveHit = swing.liveHit % hitCount + 1
 		swing.segmentStartedAt = os.clock()
+		swing.landed = false
 		swing.paused = false
-		track:AdjustSpeed(comboSpeed * SwingTrack.WindupSpeedFor(styleName, index))
+		swing.windupSeen = false
+		-- Follow-through at full speed; the next hit's own wind-up marker
+		-- applies its slowdown when it arrives.
+		track:AdjustSpeed(comboSpeed)
 		if params.logMarkers then
-			log:Info(string.format("continue: hit %d", index))
+			log:Info(string.format("continue: hit %d (segment %d)", swing.liveHit, swing.segment))
 		end
 	end
 
@@ -198,30 +228,18 @@ function SwingTrack.new(params: Params): Swing
 	end
 
 	local function onWindup(windupIndex: number, name: string)
-		if swing.windupReached[windupIndex] then
+		logMarker(name)
+		if swing.landed or swing.windupSeen then
+			-- Frozen on a punch, or this segment's wind-up already played:
+			-- nothing to do (a wind-up for a later hit can't legitimately
+			-- arrive while the track is frozen).
 			return
 		end
-		swing.windupReached[windupIndex] = true
-		logMarker(name)
-		-- The wind-up of the hit AFTER the one that just landed is the
-		-- freeze point - the chain waits for continue() here.
-		if windupIndex == swing.segment + 1 and windupIndex <= hitCount then
-			if swing.hit[swing.segment] then
-				swing.paused = true
-				track:AdjustSpeed(0)
-				if params.logMarkers then
-					log:Info(string.format("frozen before hit %d", windupIndex))
-				end
-				if params.onFrozen then
-					params.onFrozen(windupIndex)
-				end
-				return
-			end
-			-- Markers out of order (this wind-up came before the previous
-			-- hit's own marker): don't freeze, or hit `segment` could never
-			-- land. Keep playing and say so.
-			log:Warn(string.format("%s reached before hit %d landed - check Config.Combat.Markers.%s", name, swing.segment, styleName))
+		if windupIndex ~= swing.liveHit then
+			log:Warn(string.format("%s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.liveHit, styleName))
+			return
 		end
+		swing.windupSeen = true
 		-- Bryan (2026-09-28): slow the hit so it's readable -- and so the
 		-- loop (cancel to bait, interrupt to punish) has a window to react
 		-- in.
@@ -234,20 +252,26 @@ function SwingTrack.new(params: Params): Swing
 	end
 
 	local function onHit(hitIndex: number, name: string)
-		if swing.hit[hitIndex] then
+		logMarker(name)
+		if swing.landed then
 			return
 		end
-		logMarker(name)
-		track:AdjustSpeed(comboSpeed)
-		if hitIndex ~= swing.segment then
+		if hitIndex ~= swing.liveHit then
 			-- A hit marker for a hit that hasn't been continued into yet (or
 			-- one already past): marking it landed would wreck the chain
 			-- state. Markers or their names are wrong.
-			log:Warn(string.format("%s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.segment, styleName))
+			log:Warn(string.format("%s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.liveHit, styleName))
 			return
 		end
-		swing.hit[hitIndex] = true
+		-- The punch: freeze right here, in the impact pose, until the next
+		-- click.
+		swing.landed = true
+		swing.paused = true
 		swing.lastHitAt = os.clock()
+		track:AdjustSpeed(0)
+		if params.logMarkers then
+			log:Info(string.format("frozen on hit %d, waiting for the next click", hitIndex))
+		end
 		if params.onHit then
 			params.onHit(hitIndex)
 		end
@@ -294,6 +318,11 @@ function SwingTrack.new(params: Params): Swing
 		end)
 	)
 
+	-- Looped so the chain can run "1, 2, 1, 2, ..." off one animation; the
+	-- asset itself isn't authored as a loop, so set it here (every time -
+	-- a track's Looped is its own property, but it costs nothing to be
+	-- sure).
+	track.Looped = true
 	track:Play(0.05, 1, comboSpeed)
 	return swing
 end

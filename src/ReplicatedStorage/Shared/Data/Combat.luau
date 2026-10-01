@@ -82,6 +82,18 @@
 -- pacing between hits (gap, timeout, recovery) is Config.Combat.Chain,
 -- shared by every style; the old per-style recovery/timeout are gone.
 --
+-- M3-FIX6 (Bryan, 2026-10-01): the animation freezes ON THE PUNCH (not at
+-- the next wind-up) and the chain LOOPS: hit 1, hit 2, hit 1, hit 2, ...
+-- for as long as the clicks keep coming. So every segment after the first
+-- starts with the PREVIOUS punch's follow-through (the track resumes from
+-- the frozen punch), then the live hit's wind-up, then its punch: a later
+-- hit's windupAt is that follow-through's length, not 0. Hit 1 is special:
+-- its first segment starts at the animation's very start (windupAt ~0),
+-- but every LATER pass of hit 1 starts with the LAST hit's follow-through
+-- before the track wraps - that length is the style's `loopOffset`, and the
+-- server adds it to hit 1's windupAt/cancelUntil/hitWindow on every pass
+-- after the first (the client's cancel check mirrors that).
+--
 -- Keep two things true whenever these numbers are retuned against a real
 -- animation: every hit's own cancelUntil should give a human enough time
 -- to actually read the swing and decide whether to bait or commit; and
@@ -135,6 +147,7 @@ export type Style = {
 	speedMult: number,
 	dashCooldownMult: number,
 	bleed: BleedTrait?,
+	loopOffset: number,
 	chain: { ChainHit },
 }
 
@@ -146,15 +159,24 @@ local Styles: { [string]: Style } = {
 		cancelInto = "Any",
 		speedMult = 1.0,
 		dashCooldownMult = 1.0,
+		-- Punch2's follow-through: track 1.5s -> 2.0s (the end), 0.5s of
+		-- track at ComboSpeed 1.3 = 0.38s before the loop wraps into WindUp1.
+		loopOffset = 0.38,
 		chain = {
-			-- Bryan's Fist animation at ComboSpeed 1.6 (read off the marker
-			-- log 2026-09-30): WindUp1 at +0.07s, Punch1 at +0.30s.
+			-- Bryan's Fist animation (rbxassetid://104341608277955), keyframes
+			-- read off the asset 2026-10-01: WindUp1 0.0s, Punch1 0.5s, WindUp2
+			-- 1.0s, Punch2 1.5s, end 2.0s (track time). Config.Combat.ComboSpeed
+			-- Fist = 1.3 -> every 0.5s of track is 0.38s at full speed, 0.64s
+			-- inside the Heavy's 0.6 wind-up slow.
+			--
+			-- Segment 1 (from Swing): WindUp1 on the first frame, Punch1 at
+			-- +0.38s.
 			{
 				name = "Jab",
 				kind = "Light",
-				windupAt = 0.07,
-				cancelUntil = 0.07,
-				hitWindow = { min = 0.20, max = 0.45 },
+				windupAt = 0.05,
+				cancelUntil = 0.05,
+				hitWindow = { min = 0.28, max = 0.50 },
 				damage = 4,
 				range = 4.5,
 				radius = 1.6,
@@ -164,16 +186,16 @@ local Styles: { [string]: Style } = {
 				bleedStacks = 0,
 				windupSpeed = 1.0,
 			},
-			-- Segment 2: measured from the second click. The wind-up starts
-			-- at the click (windupAt 0), slowed by windupSpeed; cancel is
-			-- honoured a little way into it. WindUp2 -> Punch2 is 0.36s of
-			-- track time: at 1.6 x 0.6 that's Punch2 at +0.38s.
+			-- Segment 2 (from the click, frozen on Punch1): Punch1's
+			-- follow-through 0.5s -> 1.0s at full speed = WindUp2 at +0.38s,
+			-- then WindUp2 -> Punch2 at 1.3 x 0.6 = +0.64s more: Punch2 at
+			-- +1.03s. Cancel is honoured a little way into the wind-up.
 			{
 				name = "Heavy",
 				kind = "Heavy",
-				windupAt = 0,
-				cancelUntil = 0.15,
-				hitWindow = { min = 0.25, max = 0.55 },
+				windupAt = 0.38,
+				cancelUntil = 0.55,
+				hitWindow = { min = 0.90, max = 1.15 },
 				damage = 12,
 				range = 4.5,
 				radius = 1.6,
@@ -200,6 +222,10 @@ local Styles: { [string]: Style } = {
 			seconds = 4,
 			maxStacks = 3,
 		},
+		-- Unknown until Bryan makes the Dagger combo animation; the old swing
+		-- it plays today has no measured follow-through. Placeholder numbers
+		-- below likewise (they predate the freeze-on-the-punch flow).
+		loopOffset = 0,
 		chain = {
 			{
 				name = "Stab",

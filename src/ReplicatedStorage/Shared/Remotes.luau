@@ -142,13 +142,15 @@ Remotes.Definitions = {
 		rate = { count = 8, per = 1 },
 	},
 	-- M3-FIX5: "throw the next hit of my chain" - the second (third, ...)
-	-- click of a combo, naming the chain hit it continues into (2-based: hit
-	-- 1 always comes from AttackStart). Honoured only while the server is
-	-- waiting for exactly that hit, inside Config.Combat.Chain's HitGap/
-	-- ClickTimeout since the previous hit landed.
+	-- click of a combo, naming the chain hit it continues into. M3-FIX6: the
+	-- chain loops, so after the style's last hit the next click continues
+	-- into hit 1 again (hence min 1; the FIRST hit 1 still comes from
+	-- AttackStart). Honoured only while the server is waiting for exactly
+	-- that hit, inside Config.Combat.Chain's HitGap/ClickTimeout since the
+	-- previous hit landed.
 	AttackContinue = {
 		kind = "Event",
-		args = { Validate.number({ min = 2, integer = true }) },
+		args = { Validate.number({ min = 1, integer = true }) },
 		rate = { count = 8, per = 1 },
 	},
 	AttackCancel = {
