@@ -111,28 +111,59 @@ Config.Health = {
 }
 
 -- M3-FIX3-S/M3-FIX3-C/M3-FIX4: the animation-driven, per-style hit chain
--- (Shared/Data/Combat.luau's Combat.Styles shape). Not weapon numbers -
--- those stay in Combat.luau. One click plays one swing animation for the
--- attacker's WeaponSet style, containing several hits; the client reports
--- each hit off the animation's own events.
+-- (Shared/Data/Combat.luau's Combat.Styles shape). Per-hit numbers (damage,
+-- hit windows, stun) stay in Combat.luau; everything about pacing, assets
+-- and feel is here.
+--
+-- M3-FIX5 (Bryan, 2026-09-30): a combo is ONE animation but takes one
+-- click per hit. Click 1 starts the swing; hit 1 winds up (slowed, as
+-- before) and lands; the animation then freezes at the next hit's wind-up
+-- marker until the player clicks again, which unfreezes it for hit 2, and
+-- so on through the chain. No click within Chain.ClickTimeout = the combo
+-- times out (the frozen pose fades out). After the last hit, Chain.Recovery
+-- is the cooldown before a new combo can start.
 Config.Combat = {
 	-- Seconds of slack added to BOTH ends of a hit's hitWindow when the
 	-- server checks an AttackHit report (and to AttackCancel's cancelWindow/
-	-- cancelUntil), absorbing network round-trip and animation-marker
-	-- jitter between the client's animation clock and the server's own.
+	-- cancelUntil, and to AttackContinue's HitGap/ClickTimeout), absorbing
+	-- network round-trip and animation-marker jitter between the client's
+	-- animation clock and the server's own.
 	HitTolerance = 0.15,
-	-- The real marker names can't be read from the .rbxm file, so this is a
-	-- starting guess - Bryan edits it to match each style's actual animation
-	-- event names, one Windup/Hit name per hit in the chain, in order. With
-	-- LogMarkers on (the default), CombatController logs every
-	-- KeyframeReached AND every configured marker that's actually reached
-	-- on whichever style's track is playing (`Log:Info("marker: <name> at
-	-- <t>s")`), so the real names and their timing show up in Output even
-	-- before the guess is right.
+	-- The pacing of a chain ("1, 2, recovery, 1, 2, recovery"), seconds. The
+	-- server enforces every one of these; the client mirrors them so a
+	-- click that can't count is never sent.
+	Chain = {
+		-- Earliest the NEXT hit's click counts after a hit lands. A click
+		-- before this is remembered and fires the moment the gap is over,
+		-- so mashing never drops a hit, it just can't speed it up.
+		HitGap = 0.2,
+		-- Latest the next hit's click counts after a hit lands; past this
+		-- the combo is dropped (the animation fades out, DropRecovery
+		-- applies).
+		ClickTimeout = 1.0,
+		-- Cooldown after the LAST hit of a chain lands before a new chain can
+		-- start (the "recovery" in "1, 2, recovery"). Longer than HitGap, so
+		-- a chain always has a beat at its end.
+		Recovery = 0.25,
+		-- Cooldown after a chain times out (no click in time) - from the
+		-- moment it's dropped, not from the last hit.
+		DropRecovery = 0.2,
+		-- Server watchdog margin: how long past a hit's own hitWindow.max (+
+		-- HitTolerance) the server waits for the client's report before
+		-- silently ending the attack with Recovery.
+		WatchdogMargin = 0.6,
+	},
+	-- The marker (animation event) names in each style's combo animation,
+	-- one Windup/Hit name per hit in the chain, in order. Fist: Bryan's own
+	-- names (2026-09-30). With LogMarkers on (the default), CombatController
+	-- logs every KeyframeReached AND every configured marker that's actually
+	-- reached, with the track time AND the seconds since that hit's own
+	-- segment started (what the server checks hitWindow against), so the
+	-- real names and timings show up in Output.
 	Markers = {
 		Fist = {
-			Windup = { "Windup1", "Windup2" },
-			Hit = { "Hit1", "Hit2" },
+			Windup = { "WindUp1", "WindUp2" },
+			Hit = { "Punch1", "Punch2" },
 		},
 		Dagger = {
 			Windup = { "Windup1", "Windup2", "Windup3" },
@@ -158,12 +189,41 @@ Config.Combat = {
 	-- exception -- it enters the stance first). Bryan can rebind the key
 	-- freely.
 	StanceKey = Enum.KeyCode.C,
+	-- Every combat animation asset lives here (Bryan, 2026-09-30: reference
+	-- as many assets as possible from Config). CombatController and
+	-- EffectsController read these; nothing hardcodes an id any more.
+	--
 	-- One looping idle animation id per style, played on any character
 	-- while InCombat (own and others) so everyone can see who's ready to
-	-- fight; empty = no animation for that style yet. Bryan fills these in.
+	-- fight; empty = no animation for that style yet.
 	StanceAnimations = {
-		Fist = "",
+		Fist = "rbxassetid://124480069742107",
 		Dagger = "",
+	},
+	-- Playback speed of the stance idle (1 = as authored).
+	StanceSpeed = 0.1,
+	-- One combo animation per style, containing the style's WHOLE chain in
+	-- order (Fist: WindUp1, Punch1, WindUp2, Punch2). Dagger still uses the
+	-- old Royal Dagger swing until Bryan makes its combo animation.
+	ComboAnimations = {
+		Fist = "rbxassetid://104341608277955",
+		Dagger = "rbxassetid://115894342135428",
+	},
+	-- Playback speed of each combo animation outside its wind-ups (1 = as
+	-- authored; the old PhysicalHandler's `aniSpeed` per weapon).
+	ComboSpeed = {
+		Fist = 1.6,
+		Dagger = 0.25,
+	},
+	-- Block pose, run and the four cardinal dashes (ids kept from the old
+	-- SCS/Scripts/PhysicalHandler.client.luau so the feel is unchanged).
+	MoveAnimations = {
+		Block = "rbxassetid://15429144750",
+		Run = "rbxassetid://15421855688",
+		DashForward = "rbxassetid://18100686685",
+		DashLeft = "rbxassetid://18101513350",
+		DashBack = "rbxassetid://18101228314",
+		DashRight = "rbxassetid://18101385205",
 	},
 	-- Matches the server's default (docs/M3B-PLAN.md section 2) only in
 	-- spirit -- the server's CombatUnlocked attribute is the real source
@@ -220,6 +280,11 @@ Config.Npc = {
 	GiveUpRadius = 40,
 	AttackRange = 4,
 	AttackCooldown = 1.4,
+	-- M3-FIX5: an NPC's "next click" - seconds after one of its chain hits
+	-- lands before it throws the next hit (must be at least
+	-- Config.Combat.Chain.HitGap, and under ClickTimeout, or its own combos
+	-- get dropped like a player's would).
+	ContinueDelay = 0.35,
 	WanderRadius = 12,
 	MaxHealth = { Dummy = 100, Target = 100 },
 	-- REVIEW-M3-04 L2: optional asset ids Bryan can fill in for the walk/
@@ -372,7 +437,11 @@ table.freeze(Config.Combat.Markers.Dagger.Windup)
 table.freeze(Config.Combat.Markers.Dagger.Hit)
 table.freeze(Config.Combat.Markers.Dagger)
 table.freeze(Config.Combat.Markers)
+table.freeze(Config.Combat.Chain)
 table.freeze(Config.Combat.StanceAnimations)
+table.freeze(Config.Combat.ComboAnimations)
+table.freeze(Config.Combat.ComboSpeed)
+table.freeze(Config.Combat.MoveAnimations)
 table.freeze(Config.Combat)
 table.freeze(Config.Sfx)
 table.freeze(Config.Scene)

@@ -5,7 +5,7 @@ Everything agreed today, in one place. This is what is being built right now (st
 ## 1. A fight, step by step (Fist vs Fist)
 
 1. **Enter the stance.** Press `C`. Your stance idle animation plays so everyone can see you're ready. Outside the stance, clicks do nothing at all (the server refuses attacks too). Knockout drops you out of the stance.
-2. **Click = one swing.** One click starts one animation with your style's whole chain in it. For Fist: a **Light** (the jab) then a **Heavy**. The server confirms the swing before anything plays.
+2. **Click = one hit (changed 2026-09-30).** Your style's whole chain is one animation, but each hit takes its own click. For Fist: click, the **Light** (the jab) winds up and lands, and the animation freezes at the Heavy's wind-up; click again and the **Heavy** winds up and lands. Click too soon after a hit and the click is remembered and fires when the short gap is over; don't click at all and the combo times out and fades. After the last hit there's a recovery beat before a new combo can start: "1, 2, recovery". The server confirms the swing and every continue before anything counts.
 3. **The Light.** Fast, can't be interrupted, no knockback, small damage. If it lands, the target is **light-stunned**: they cannot block or parry for a moment, but they can still jab or dash.
 4. **The Heavy.** Its wind-up plays slowed so it's readable. If any hit lands on you during that wind-up, your swing is **interrupted** and stops. If it lands, big damage and a big chunk of the target's block meter.
 5. **Cancel.** Right-click before the next hit's cancel point (a Light before its wind-up marker; the Heavy until partway into its wind-up). The swing stops, a highlight flashes on you so the enemy knows, and you can act at once: block, jab, or dash (Fist can cancel into anything). Cancelling after you already landed a hit isn't free: your next swing waits the time the full chain would have taken, so jab-cancel-jab can't out-damage a real chain.
@@ -58,8 +58,9 @@ Reaction delays and weights per dummy in `Config.Npc.Trainers`.
 
 ## 6. What Bryan supplies
 
-- **Marker names and times per style** in `Config.Combat.Markers` (`Fist`, `Dagger`): with `LogMarkers` on, one swing prints every event name and time to Output. Then set each hit's `windupAt`, `cancelUntil` and `hitWindow` in `Combat.luau` to match.
-- **Stance idle animation ids** in `Config.Combat.StanceAnimations`.
+- **Marker names and times per style** in `Config.Combat.Markers` (`Fist`, `Dagger`): with `LogMarkers` on, one swing prints every event name and time to Output, plus the seconds since that hit's own start (hit 1: the swing; hit 2: your second click). Then set each hit's `windupAt`, `cancelUntil` and `hitWindow` in `Combat.luau` to match those "since its start" numbers.
+- **Chain pacing** in `Config.Combat.Chain`: `HitGap`, `ClickTimeout`, `Recovery`, `DropRecovery`. `Config.Npc.ContinueDelay` is how fast a dummy throws its own next hit.
+- **Animation ids** in `Config.Combat`: `StanceAnimations` (+ `StanceSpeed`), `ComboAnimations` (+ `ComboSpeed`), `MoveAnimations` (block, run, dashes).
 - Feel tuning: damage, stun lengths, block drain, parry window and cooldown, knockback count, bleed numbers, dummy reactions.
 - Later: the alley teacher, dialogue and the tutorial (M7).
 

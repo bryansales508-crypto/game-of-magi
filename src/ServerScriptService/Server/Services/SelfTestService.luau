@@ -1719,13 +1719,37 @@ local function testCombatService(results: { Check })
 		end
 
 		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
-		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2
+		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2; the chain now waits for a click
 
-		-- Just past hit 2's window (elapsed target: max + tolerance + 0.1),
-		-- but well short of the watchdog (max + tolerance + style.timeout =
-		-- 1.5s later still) - late enough to be rejected, not so late the
-		-- watchdog has already ended the attack out from under this check.
-		waitUntilElapsed(fist.chain[2].hitWindow.max + tolerance + 0.1)
+		-- M3-FIX5: the second click. Too soon (inside Chain.HitGap) is
+		-- dropped; an AttackHit(2) while waiting is dropped too; after the
+		-- gap the continue is accepted and hit 2's own segment starts.
+		local continuedTooSoon = CombatService.AttackContinue(attacker, 2)
+		expect(results, "CombatService: AttackContinue inside Chain.HitGap is dropped (too soon)", continuedTooSoon == false)
+		CombatService.AttackHit(attacker, 2)
+		expect(
+			results,
+			"CombatService: an AttackHit for a hit the chain is still waiting on is dropped",
+			attacker:GetAttribute("Attacking") == true and attacker:GetAttribute("CurrentHit") == ""
+		)
+		task.wait(Config.Combat.Chain.HitGap + tolerance)
+		local continuedAt = Workspace:GetServerTimeNow()
+		local continued = CombatService.AttackContinue(attacker, 2)
+		expect(
+			results,
+			"CombatService: AttackContinue after Chain.HitGap is accepted and starts hit 2's segment",
+			continued == true and attacker:GetAttribute("CurrentHit") == "Heavy"
+		)
+
+		-- Just past hit 2's window (measured from the continue: max +
+		-- tolerance + 0.1), but well short of that segment's watchdog (max +
+		-- tolerance + Chain.WatchdogMargin) - late enough to be rejected, not
+		-- so late the watchdog has already ended the attack out from under
+		-- this check.
+		local remaining = (fist.chain[2].hitWindow.max + tolerance + 0.1) - (Workspace:GetServerTimeNow() - continuedAt)
+		if remaining > 0 then
+			task.wait(remaining)
+		end
 		CombatService.AttackHit(attacker, 2)
 		expect(
 			results,
@@ -1785,7 +1809,7 @@ local function testCombatService(results: { Check })
 	-- REVIEW-M3-FIX4-S H3: cancelling is free only before any hit in the
 	-- chain has landed (the block right above this one). Cancelling AFTER a
 	-- hit already landed costs the same cooldown a full chain would
-	-- (NextAttackAt = startedAt + style.recovery + chain[1].hitWindow.min),
+	-- (NextAttackAt = startedAt + Chain.Recovery + chain[1].hitWindow.min),
 	-- so "land hit 1, cancel, restart" can't out-DPS a full chain.
 	do
 		local attacker = buildFakeCombatant("SelfTestCancelAfterHitAttacker", Vector3.new(980, 5, 0), Vector3.new(980, 5, 1))
@@ -1815,7 +1839,7 @@ local function testCombatService(results: { Check })
 			restartedTooSoon == false
 		)
 
-		waitUntilElapsed(fist.recovery + fist.chain[1].hitWindow.min + Config.Combat.HitTolerance + 0.1)
+		waitUntilElapsed(Config.Combat.Chain.Recovery + fist.chain[1].hitWindow.min + Config.Combat.HitTolerance + 0.1)
 		local restartedAfterCooldown = CombatService.AttackStart(attacker)
 		expect(results, "CombatService: once that cooldown passes, the attacker can restart normally", restartedAfterCooldown == true)
 

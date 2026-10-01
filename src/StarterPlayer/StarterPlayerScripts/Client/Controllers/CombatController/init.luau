@@ -31,16 +31,20 @@
 -- TrueStunned; and a purely cosmetic Royal Dagger prop shown on ANY
 -- character (not just the local one) whose WeaponSet is "Dagger".
 --
--- Animation ids kept from the old SCS/Scripts/PhysicalHandler.client.luau
--- (785 lines) so the feel is unchanged:
---   Fist swing          rbxassetid://125726557974534  (Action2, speed 1.6)
---   Royal Dagger swing  rbxassetid://115894342135428  (Action2, speed 0.25; kept for M5 weapon sets)
---   Block / parry pose  rbxassetid://15429144750      (Action3)
---   Run                 rbxassetid://15421855688      (Action2)
---   Dash forward (W)    rbxassetid://18100686685
---   Dash left    (A)    rbxassetid://18101513350
---   Dash back    (S)    rbxassetid://18101228314
---   Dash right   (D)    rbxassetid://18101385205
+-- M3-FIX5 (Bryan, 2026-09-30): one click per hit. The combo is still ONE
+-- animation per style (Config.Combat.ComboAnimations), but after hit k
+-- lands the track freezes at hit k+1's wind-up marker (AdjustSpeed(0))
+-- until the player clicks again; that click sends AttackContinue(k+1) and
+-- unfreezes the track straight into the wind-up slowdown. A click that
+-- lands early (during hit k's follow-through, or inside Chain.HitGap) is
+-- remembered and fires as soon as it's allowed; no click within
+-- Chain.ClickTimeout and the server drops the combo (AttackCancelled
+-- {reason = "dropped"}), with a local backstop that fades the frozen pose
+-- out even if that event never arrives. Right-click while frozen is a
+-- cancel the server always honours.
+--
+-- Every animation id lives in Config.Combat (StanceAnimations,
+-- ComboAnimations, ComboSpeed, MoveAnimations) - nothing is hardcoded here.
 -- The diagonal dash animations were commented out in the old script and
 -- never existed (AUDIT H10); cardinal-only is the approved feel for now.
 
@@ -70,24 +74,11 @@ local defaultFieldOfView = camera.FieldOfView
 
 local CombatController = {}
 
--- ==================== animation ids ====================
+-- ==================== animation ids (Config.Combat) ====================
 
-local ANIMATION_IDS = {
-	Fist = "rbxassetid://125726557974534",
-	Dagger = "rbxassetid://115894342135428",
-	Block = "rbxassetid://15429144750",
-	Run = "rbxassetid://15421855688",
-	DashForward = "rbxassetid://18100686685",
-	DashLeft = "rbxassetid://18101513350",
-	DashBack = "rbxassetid://18101228314",
-	DashRight = "rbxassetid://18101385205",
-}
-
--- Old per-weapon animation playback speed (PhysicalHandler's `aniSpeed`).
-local SWING_SPEEDS: { [string]: number } = {
-	Fist = 1.6,
-	Dagger = 0.25,
-}
+local MOVE_ANIMATIONS = Config.Combat.MoveAnimations
+local COMBO_ANIMATIONS: { [string]: string } = Config.Combat.ComboAnimations
+local COMBO_SPEEDS: { [string]: number } = Config.Combat.ComboSpeed
 
 local DOUBLE_TAP_WINDOW = 0.5 -- old `dp`
 local RUN_ZOOM_IN_SECONDS = 1 -- old WalkingTween
@@ -168,9 +159,25 @@ type SwingState = {
 	track: AnimationTrack,
 	styleName: string,
 	hitCount: number,
-	-- os.clock() when this swing started (the Swing event arrived); the
-	-- client clock a Heavy hit's cancelUntil is measured against (point 3).
-	startedAt: number,
+	-- Config.Combat.ComboSpeed for this style: the track's speed outside a
+	-- wind-up (restored after every hit marker and on every unfreeze).
+	comboSpeed: number,
+	-- M3-FIX5: the hit whose segment is live - 1 from the Swing event, k
+	-- once the click for hit k has been sent.
+	segment: number,
+	-- os.clock() when that segment started (Swing arrived / the click was
+	-- sent): the clock cancelUntil is measured against (point 3), and what
+	-- the marker log prints next to each marker, since it's what the server
+	-- checks hitWindow against.
+	segmentStartedAt: number,
+	-- os.clock() when the latest hit marker fired; nil before hit 1.
+	lastHitAt: number?,
+	-- True while the track is frozen at the next hit's wind-up marker,
+	-- waiting for the click.
+	paused: boolean,
+	-- A click that arrived before the track froze or before Chain.HitGap
+	-- was over - fires the continue the moment both allow it.
+	continueQueued: boolean,
 	-- Which hit indices have had their own wind-up marker reached, so the
 	-- cancel rule can ask "has the NEXT unlanded hit's wind-up played yet"
 	-- for ANY hit in the chain, not just the first.
@@ -185,6 +192,10 @@ type SwingState = {
 }
 
 local currentSwing: SwingState? = nil
+
+-- M3-FIX5: the "next hit" click, defined in the Swing section below but
+-- called from tryAttackStart (Attack section) above it.
+local tryContinue: (swing: SwingState) -> ()
 
 -- Idempotent: disconnects the marker connections and stops the track
 -- (with an optional fade), whether called from a marker handler, the
@@ -230,17 +241,21 @@ local function buildTracks(character: Model): Tracks?
 		return nil
 	end
 
+	local swing: { [string]: AnimationTrack } = {}
+	for styleName, id in COMBO_ANIMATIONS do
+		if id ~= "" then
+			swing[styleName] = loadTrack(animator, id, Enum.AnimationPriority.Action2)
+		end
+	end
+
 	return {
-		swing = {
-			Fist = loadTrack(animator, ANIMATION_IDS.Fist, Enum.AnimationPriority.Action2),
-			Dagger = loadTrack(animator, ANIMATION_IDS.Dagger, Enum.AnimationPriority.Action2),
-		},
-		block = loadTrack(animator, ANIMATION_IDS.Block, Enum.AnimationPriority.Action3),
-		run = loadTrack(animator, ANIMATION_IDS.Run, Enum.AnimationPriority.Action2),
-		dashForward = loadTrack(animator, ANIMATION_IDS.DashForward, Enum.AnimationPriority.Action2),
-		dashLeft = loadTrack(animator, ANIMATION_IDS.DashLeft, Enum.AnimationPriority.Action2),
-		dashBack = loadTrack(animator, ANIMATION_IDS.DashBack, Enum.AnimationPriority.Action2),
-		dashRight = loadTrack(animator, ANIMATION_IDS.DashRight, Enum.AnimationPriority.Action2),
+		swing = swing,
+		block = loadTrack(animator, MOVE_ANIMATIONS.Block, Enum.AnimationPriority.Action3),
+		run = loadTrack(animator, MOVE_ANIMATIONS.Run, Enum.AnimationPriority.Action2),
+		dashForward = loadTrack(animator, MOVE_ANIMATIONS.DashForward, Enum.AnimationPriority.Action2),
+		dashLeft = loadTrack(animator, MOVE_ANIMATIONS.DashLeft, Enum.AnimationPriority.Action2),
+		dashBack = loadTrack(animator, MOVE_ANIMATIONS.DashBack, Enum.AnimationPriority.Action2),
+		dashRight = loadTrack(animator, MOVE_ANIMATIONS.DashRight, Enum.AnimationPriority.Action2),
 	}
 end
 
@@ -508,11 +523,27 @@ local function tryAttackStart()
 	if not character then
 		return
 	end
-	if
-		isIncapacitated(character)
-		or character:GetAttribute("Blocking") == true
-		or character:GetAttribute("Attacking") == true
-	then
+	if isIncapacitated(character) or character:GetAttribute("Blocking") == true then
+		return
+	end
+
+	-- M3-FIX5: a click mid-combo is the "next hit" click, once the current
+	-- hit has landed (before that it's nothing - mashing during a wind-up
+	-- never buffers). tryContinue (Swing section) waits for the track to
+	-- freeze and for Chain.HitGap before it actually sends anything.
+	-- Once the LAST hit has been clicked into, the swing no longer eats
+	-- clicks: the server clears Attacking the moment that hit lands, and a
+	-- click after Chain.Recovery starts the next combo (whose Swing event
+	-- stops this track's follow-through) exactly as before.
+	local swing = currentSwing
+	if swing and not swing.stopped and swing.segment < swing.hitCount then
+		if swing.hit[swing.segment] then
+			swing.continueQueued = true
+			tryContinue(swing)
+		end
+		return
+	end
+	if character:GetAttribute("Attacking") == true then
 		return
 	end
 
@@ -588,12 +619,22 @@ tryCancelAttack = function()
 		return
 	end
 
+	-- M3-FIX5: between hits (the current hit landed, the next click not
+	-- sent yet - frozen or still in the follow-through) a cancel is always
+	-- honoured: that pause is the decision point. Also forgets a queued
+	-- click, so the cancel can't race its own continue.
+	if swing.hit[swing.segment] and swing.segment < swing.hitCount then
+		swing.continueQueued = false
+		Remotes.Client.Fire("AttackCancel")
+		return
+	end
+
 	local hitData = styleHitData(swing.styleName, nextIndex)
 	local kind = if hitData then hitData.kind else nil
 
 	if kind == "Heavy" then
 		local cancelUntil = if hitData and typeof(hitData.cancelUntil) == "number" then hitData.cancelUntil else nil
-		if not cancelUntil or os.clock() - swing.startedAt > cancelUntil then
+		if not cancelUntil or os.clock() - swing.segmentStartedAt > cancelUntil then
 			return
 		end
 	elseif swing.windupReached[nextIndex] then
@@ -697,6 +738,87 @@ end
 -- AttackHit(index)), plus KeyframeReached purely for the log -- see
 -- Config.Combat's own comment on why both exist (markers need the right
 -- name guessed already; named keyframes surface themselves for free).
+-- One line per marker/keyframe, with the track time AND the seconds since
+-- the live hit's own segment started - the number the server checks that
+-- hit's hitWindow/cancelUntil against, so Bryan can copy it straight into
+-- Combat.luau.
+local function logMarker(swing: SwingState, name: string)
+	log:Info(
+		string.format(
+			"marker: %s at %.3fs (hit %d, +%.3fs since its start)",
+			name,
+			swing.track.TimePosition,
+			swing.segment,
+			os.clock() - swing.segmentStartedAt
+		)
+	)
+end
+
+-- The click for hit `swing.segment + 1`: sends AttackContinue and unfreezes
+-- the track straight into that hit's own wind-up slowdown (its wind-up
+-- marker is where the track froze, so the wind-up starts here - windupAt
+-- 0 in Combat.luau). Optimistic on purpose: waiting for a server round
+-- trip would add latency to every hit after the first. If the server
+-- disagrees (the chain already timed out, a status landed), its own
+-- AttackCancelled arrives and stopSwing fades the track out as usual.
+local function continueSwing(swing: SwingState)
+	local index = swing.segment + 1
+	swing.segment = index
+	swing.segmentStartedAt = os.clock()
+	swing.paused = false
+	swing.continueQueued = false
+	Remotes.Client.Fire("AttackContinue", index)
+	swing.track:AdjustSpeed(windupSpeedFor(swing.styleName, index))
+	if Config.Combat.LogMarkers then
+		log:Info(string.format("continue: hit %d", index))
+	end
+end
+
+-- Fires a queued click once BOTH hold: the track is frozen at the next
+-- hit's wind-up marker, and Chain.HitGap has passed since the last hit
+-- landed. Re-checks itself when only the gap is still running; a click
+-- that arrives before the freeze is picked up by the wind-up marker
+-- handler calling this again.
+tryContinue = function(swing: SwingState)
+	if swing.stopped or not swing.paused or not swing.continueQueued then
+		return
+	end
+	local gapEndsAt = (swing.lastHitAt or 0) + Config.Combat.Chain.HitGap
+	local wait = gapEndsAt - os.clock()
+	if wait > 0 then
+		task.delay(wait, function()
+			tryContinue(swing)
+		end)
+		return
+	end
+	local character = currentCharacter
+	if not character or isIncapacitated(character) then
+		return
+	end
+	continueSwing(swing)
+end
+
+-- Freezes the track at hit `index`'s wind-up marker until the click for it
+-- (continueSwing) or a timeout: the server's own AttackCancelled "dropped"
+-- normally gets here first, this local backstop only guarantees the frozen
+-- pose never sticks if that event is lost.
+local function pauseForClick(swing: SwingState, index: number)
+	swing.paused = true
+	swing.track:AdjustSpeed(0)
+	if Config.Combat.LogMarkers then
+		log:Info(string.format("frozen before hit %d: click to throw it", index))
+	end
+	task.delay(Config.Combat.Chain.ClickTimeout + Config.Combat.HitTolerance, function()
+		if currentSwing == swing and swing.paused and not swing.stopped then
+			if Config.Combat.LogMarkers then
+				log:Info(string.format("combo dropped locally: no click for hit %d", index))
+			end
+			stopSwing(0.1)
+		end
+	end)
+	tryContinue(swing)
+end
+
 local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 	-- A fresh Swing always supersedes whatever was still running.
 	stopSwing(nil)
@@ -707,13 +829,23 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 	local styleName = typeof(data.style) == "string" and data.style or "Fist"
 	local hitCount = if typeof(data.hitCount) == "number" then data.hitCount else 1
 	local track = tracks.swing[styleName] or tracks.swing.Fist
+	if not track then
+		log:Warn("no combo animation for style " .. styleName .. " (Config.Combat.ComboAnimations)")
+		return
+	end
 	local markers = Config.Combat.Markers[styleName] or Config.Combat.Markers.Fist
+	local comboSpeed = COMBO_SPEEDS[styleName] or 1
 
 	local swing: SwingState = {
 		track = track,
 		styleName = styleName,
 		hitCount = hitCount,
-		startedAt = os.clock(),
+		comboSpeed = comboSpeed,
+		segment = 1,
+		segmentStartedAt = os.clock(),
+		lastHitAt = nil,
+		paused = false,
+		continueQueued = false,
 		windupReached = {},
 		stopped = false,
 		connections = {},
@@ -727,14 +859,27 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 
 	if Config.Combat.LogMarkers then
 		addConn(track.KeyframeReached:Connect(function(keyframeName: string)
-			log:Info(string.format("marker: %s at %.3fs", keyframeName, track.TimePosition))
+			logMarker(swing, keyframeName)
 		end))
 	end
 
 	for windupIndex, name in markers.Windup do
 		addConn(track:GetMarkerReachedSignal(name):Connect(function()
 			if Config.Combat.LogMarkers then
-				log:Info(string.format("marker: %s at %.3fs", name, track.TimePosition))
+				logMarker(swing, name)
+			end
+			-- M3-FIX5: the wind-up marker of the hit AFTER the one that just
+			-- landed is the freeze point - the chain waits for a click here.
+			if windupIndex == swing.segment + 1 and windupIndex <= hitCount then
+				if swing.hit[swing.segment] then
+					swing.windupReached[windupIndex] = true
+					pauseForClick(swing, windupIndex)
+					return
+				end
+				-- Markers out of order (this wind-up came before the previous
+				-- hit's own marker): don't freeze, or hit `segment` could
+				-- never land. Keep playing and say so.
+				log:Warn(string.format("marker %s reached before hit %d landed - check Config.Combat.Markers.%s", name, swing.segment, styleName))
 			end
 			swing.windupReached[windupIndex] = true
 			-- Bryan (2026-09-28): slow the hit so it's readable -- and so
@@ -754,13 +899,22 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 	for hitIndex, name in markers.Hit do
 		addConn(track:GetMarkerReachedSignal(name):Connect(function()
 			if Config.Combat.LogMarkers then
-				log:Info(string.format("marker: %s at %.3fs", name, track.TimePosition))
+				logMarker(swing, name)
 			end
-			track:AdjustSpeed(1)
+			track:AdjustSpeed(comboSpeed)
 			if swing.hit[hitIndex] then
 				return
 			end
+			if hitIndex ~= swing.segment then
+				-- A hit marker for a hit that hasn't been clicked into yet
+				-- (or one already past): the server would drop the report
+				-- anyway, and marking it landed here would wreck the chain
+				-- state. Markers or their names are wrong.
+				log:Warn(string.format("marker %s reached while hit %d is the live one - check Config.Combat.Markers.%s", name, swing.segment, styleName))
+				return
+			end
 			swing.hit[hitIndex] = true
+			swing.lastHitAt = os.clock()
 			Remotes.Client.Fire("AttackHit", hitIndex)
 		end))
 	end
@@ -769,7 +923,7 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 		stopSwing(nil)
 	end))
 
-	track:Play(0.05, 1, SWING_SPEEDS[styleName] or SWING_SPEEDS.Fist)
+	track:Play(0.05, 1, comboSpeed)
 end
 
 -- ==================== CombatEvent (server -> client) ====================
@@ -951,6 +1105,7 @@ local function updateStanceAnimation(character: Instance)
 	track.Priority = Enum.AnimationPriority.Movement
 	track.Looped = true
 	track:Play()
+	track:AdjustSpeed(Config.Combat.StanceSpeed)
 	stanceTrackByCharacter[character] = track
 end
 

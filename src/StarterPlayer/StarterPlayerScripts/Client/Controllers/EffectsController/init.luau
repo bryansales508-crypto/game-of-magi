@@ -126,15 +126,17 @@ local BLOCK_STAGGER_ID = "rbxassetid://15430386843"
 local BLOCK_BREAK_ID = "rbxassetid://86794346470329"
 local STUNNED_POLL_SECONDS = 0.15
 
--- Same ids as CombatController's ANIMATION_IDS.Fist/Dagger. Duplicated
--- (not required from there) because CombatController's swing track is
--- private, per-local-character state; this only needs the id to find
--- WHICHEVER client's copy is actually playing on a given Animator, not a
--- reference to it.
-local SWING_ANIMATION_IDS = {
-	["rbxassetid://125726557974534"] = true,
-	["rbxassetid://115894342135428"] = true,
-}
+-- The combo animation ids (Config.Combat.ComboAnimations, M3-FIX5), keyed
+-- by id. Not a reference to CombatController's own track: that's private,
+-- per-local-character state; this only needs the ids to find WHICHEVER
+-- client's copy is actually playing on a given Animator.
+local SWING_ANIMATION_IDS: { [string]: boolean } = {}
+local comboAnimations: { [string]: string } = Config.Combat.ComboAnimations
+for _, id in comboAnimations do
+	if id ~= "" then
+		SWING_ANIMATION_IDS[id] = true
+	end
+end
 
 -- ReplicatedFirst.VFX.StatusEffects (docs/reference/m2-studio-dump.md #3):
 -- BleedDroplet1-2 are ParticleEmitters, BleedCut a Part with a Decal.

@@ -64,11 +64,18 @@
 --                      ticks it once a second; never knocks out on its own
 --                      (floors at 1 HP). Refreshed (duration reset, not
 --                      extended) on every new stack.
---   recovery/timeout - as before: `recovery` is added to the cooldown once
---                      the LAST hit in the chain lands; `timeout` is
---                      CombatService's own watchdog margin
---                      (chain[#chain].hitWindow.max + HitTolerance +
---                      timeout) if the client never reports the final hit.
+--
+-- M3-FIX5 (Bryan, 2026-09-30): one click per hit. Every hit's windupAt,
+-- cancelUntil and hitWindow are measured from the start of THAT HIT'S OWN
+-- SEGMENT, not from the first click: hit 1's segment starts at Swing
+-- (AttackStart accepted); hit 2's starts when the player's second click
+-- (AttackContinue) is accepted, and so on. The client freezes the combo
+-- animation at each later hit's wind-up marker until that click, so a
+-- later hit's windupAt is 0 (its wind-up begins the instant the click
+-- lands) and a later Light's cancelUntil is 0 too (the pause before the
+-- click is the decision point - a cancel there is always honoured). The
+-- pacing between hits (gap, timeout, recovery) is Config.Combat.Chain,
+-- shared by every style; the old per-style recovery/timeout are gone.
 --
 -- Keep two things true whenever these numbers are retuned against a real
 -- animation: every hit's own cancelUntil should give a human enough time
@@ -124,8 +131,6 @@ export type Style = {
 	dashCooldownMult: number,
 	bleed: BleedTrait?,
 	chain: { ChainHit },
-	recovery: number,
-	timeout: number,
 }
 
 local Combat = {}
@@ -152,12 +157,15 @@ local Styles: { [string]: Style } = {
 				bleedStacks = 0,
 				windupSpeed = 1.0,
 			},
+			-- Segment 2: measured from the second click. The wind-up starts
+			-- at the click (windupAt 0), slowed by windupSpeed; cancel is
+			-- honoured a little way into it.
 			{
 				name = "Heavy",
 				kind = "Heavy",
-				windupAt = 0.75,
-				cancelUntil = 1.05,
-				hitWindow = { min = 1.45, max = 1.90 },
+				windupAt = 0,
+				cancelUntil = 0.30,
+				hitWindow = { min = 0.70, max = 1.15 },
 				damage = 12,
 				range = 4.5,
 				radius = 1.6,
@@ -168,8 +176,6 @@ local Styles: { [string]: Style } = {
 				windupSpeed = 0.4,
 			},
 		},
-		recovery = 0.30,
-		timeout = 0.6,
 	},
 
 	-- M5: the Royal Dagger's style. Present now so the data shape is
@@ -202,12 +208,13 @@ local Styles: { [string]: Style } = {
 				bleedStacks = 1,
 				windupSpeed = 1.0,
 			},
+			-- Segments 2 and 3: measured from their own click.
 			{
 				name = "Slash",
 				kind = "Light",
-				windupAt = 0.55,
-				cancelUntil = 0.55,
-				hitWindow = { min = 0.70, max = 0.90 },
+				windupAt = 0,
+				cancelUntil = 0,
+				hitWindow = { min = 0.15, max = 0.35 },
 				damage = 3,
 				range = 5,
 				radius = 1.5,
@@ -220,9 +227,9 @@ local Styles: { [string]: Style } = {
 			{
 				name = "Lunge",
 				kind = "Heavy",
-				windupAt = 1.05,
-				cancelUntil = 1.30,
-				hitWindow = { min = 1.65, max = 2.00 },
+				windupAt = 0,
+				cancelUntil = 0.25,
+				hitWindow = { min = 0.60, max = 0.95 },
 				damage = 8,
 				range = 5,
 				radius = 1.7,
@@ -233,8 +240,6 @@ local Styles: { [string]: Style } = {
 				windupSpeed = 0.45,
 			},
 		},
-		recovery = 0.30,
-		timeout = 0.6,
 	},
 }
 Combat.Styles = Styles

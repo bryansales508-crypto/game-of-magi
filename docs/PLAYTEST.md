@@ -407,8 +407,10 @@ Setup as before. Numbers you can tune live: `Shared/Data/Combat.luau` (Rojo sync
 
 **Bryan runs (feel):**
 
-### M3-A Fist combo
-- Click three times in rhythm at a dummy: jab, cross, finisher (bigger knockback). Wait past the combo window and click: it restarts at the jab. Fast clicking gives no extra hits. **Pass:** 3 distinct hits with your swing animation each, the finisher throws the dummy, `.combat log on` shows one decision per swing.
+### M3-A Fist combo (updated 2026-09-30, M3-FIX5: one click per hit)
+- `C` into the stance, `.combat log on`. Click once at a dummy: the jab winds up and lands, then your character freezes at the start of the heavy's wind-up. Click again: the heavy winds up (slowed) and lands. Wait, then click: a new combo starts at the jab. **Pass:** two distinct hits per combo, one click each; Output shows `AttackHit(1) accepted`, `continues into hit 2`, `AttackHit(2) accepted`, `attack complete`.
+- Click once and do nothing: after about a second the frozen pose fades out and Output says `combo dropped`. Click once, then mash immediately: the heavy still comes exactly once, after the short gap (Output: `AttackContinue(2) dropped: too soon` at most once, then `continues into hit 2`). Click once, then right-click: the combo cancels and the cancel highlight flashes.
+- Marker tuning: each `marker:` line prints the seconds since that hit's own start; those are the numbers for `windupAt`/`cancelUntil`/`hitWindow` in `Combat.luau` (hit 2 is measured from your second click). If `AttackHit(2) dropped: too early/late` shows up, retune hit 2's window.
 
 ### M3-B Block, parry, block break
 - Hold F while a Target dummy punches: block sound and pose, no damage. Tap F just as a punch lands: parry effect, the dummy staggers. Keep blocking through many hits: the block bar drains, breaks, TrueStun, then refills. **Pass:** immune while the block holds; break feels right; a second parry within 1.5 s is a normal block.
