@@ -467,7 +467,9 @@ local function openBoard(board: any)
 	local frame = outsideFrame and outsideFrame:FindFirstChild("Frame")
 	local descriptionFrame = frame and frame:FindFirstChild("DescriptionFrame")
 	local textContainer = descriptionFrame and descriptionFrame:FindFirstChild("TextContainer")
-	local scrollingFrame = outsideFrame and outsideFrame:FindFirstChild("ScrollingFrame")
+	-- BUG-32: the ScrollingFrame sits under OutsideFrame.Frame (next to
+	-- DescriptionFrame), not directly under OutsideFrame.
+	local scrollingFrame = frame and frame:FindFirstChild("ScrollingFrame")
 	local xButtonFrame = outsideFrame and outsideFrame:FindFirstChild("XButtonFrame")
 
 	if not (textContainer and scrollingFrame and xButtonFrame) then
