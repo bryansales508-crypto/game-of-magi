@@ -1,45 +1,25 @@
 --!strict
--- The server-authoritative combat core (M3-03, TRIAGE #10, fixes AUDIT
--- C2/H5/H6/M1/M2/M3-P2). Keyed by the combatant's character Model, never
--- by Player: NPCs attack and block through the exact same
--- CombatService.Attack/SetBlocking entry points a Player's remote calls use.
+-- Server-authoritative combat core, keyed by the combatant's character Model
+-- (never Player): NPCs attack and block through the same
+-- CombatService.Attack/SetBlocking entry points a Player's remotes use.
 --
--- M3-FIX3-S (Bryan, 2026-09-28) replaced the old single server-timed swing
--- with an animation-driven hit sequence: AttackStart begins a swing and
--- broadcasts it; the client plays the animation and fires one AttackHit
--- report per hit marker, in order; the server validates every report's
--- timing window, order and the attacker's own position (anti-teleport)
--- before it counts for anything. The client STILL never reports what it
--- hit (C2 stays fixed) - only that a marker played - the server re-derives
--- the target with its own hit-check.
+-- AttackStart begins a swing and broadcasts it; the client plays the animation
+-- and fires one AttackHit per hit marker, in order. The server validates each
+-- report's timing window, order and the attacker's position (anti-teleport).
+-- The client never reports what it hit; the server re-derives the target.
 --
--- M3-FIX4-S (Bryan, 2026-09-28) built the fighting-style framework on top
--- of that: every weapon is a Combat.Style - a chain of hits plus traits
--- (Shared/Data/Combat.luau has the full writeup). M3-FIX7-S (Bryan,
--- 2026-10-02) removed the Light/Heavy split: every hit is a Light - it
--- applies LightStun (blocks Block/parry only) on a landed hit and has no
--- knockback of its own. Any landed hit interrupts the target's own
--- in-progress attack (a hit still unlanded, or the chain waiting for its
--- next click), so a chain only keeps going while nobody blocks, parries,
--- dashes away or hits first; Stun/TrueStun/Knocked turning on interrupts
--- too (block break, parry, knockout). Cancel is per-hit (each hit's own
--- cancelUntil) and, depending on the style's cancelInto trait, either
--- returns the attacker to neutral ("Any") or
--- immediately throws a feint jab ("Jab") that punishes them with Recovery
--- if it gets blocked. Knockback is no longer per-hit: a shared HitCount
--- attribute triggers one impulse every `Combat.Knockback.everyHits` landed
--- hits, from any source, then resets. Bleed stacks on hits that carry it;
--- HealthService ticks it, floored at 1 HP so it never knocks out alone.
+-- Every weapon is a Combat.Style (see Shared/Data/Combat.luau): a chain of hits
+-- plus traits. Every hit applies LightStun and has no knockback of its own;
+-- every `Combat.Knockback.everyHits` landed hits on a target fire one impulse.
+-- Any landed hit interrupts the target's own attack, as do Stun/TrueStun/
+-- Knocked. Cancel is per-hit and, per the style's cancelInto, returns to
+-- neutral ("Any") or throws a feint jab ("Jab") that costs Recovery if blocked.
+-- Bleed is applied here and ticked by HealthService.
 --
--- M3B-01 (Bryan, 2026-09-28) added the combat stance: combat is earned, not
--- automatic. SetStance(true) is the ONLY way AttackStart/AttackCancel/Block
--- ever become reachable (Dash/Run stay available regardless) - it needs
--- CombatUnlocked (Meta.Unlocks.Combat, or the blanket
--- Config.Combat.UnlockedByDefault until the tutorial ships) and a few
--- "can't fight right now" statuses to be clear. The equipped style now
--- comes from a weapon Tool in the character (a string `Weapon` attribute
--- naming the style), not just Register's own default - see
--- onToolEquipped/onToolUnequipped.
+-- Combat is gated by a stance: SetStance(true) is the only way AttackStart/
+-- AttackCancel/Block become reachable (Dash/Run stay available). It needs
+-- CombatUnlocked and no "can't fight" status. The equipped style comes from a
+-- weapon Tool's `Weapon` attribute.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -55,18 +35,14 @@ local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local HealthService = require(script.Parent.HealthService)
 local DevService = require(script.Parent.DevService)
--- M3B-01: CombatUnlocked (Meta.Unlocks.Combat). Safe to require - the
--- reverse would be the cycle (DataService never requires CombatService).
+-- Safe to require: DataService never requires CombatService.
 local DataService = require(script.Parent.DataService)
 
 local log = Log.new("CombatService")
 
--- Statuses that gate an AttackStart/AttackHit entirely (dead is checked
--- separately, via Humanoid.Health). M3-FIX4-S: Recovery (a punished feint)
--- joins the three that already blocked an attack outright.
+-- Statuses that block AttackStart/AttackHit (death is checked via Humanoid.Health).
 local BLOCKS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true, Recovery = true }
--- M3-FIX4-S: LightStun ("can't block or parry") and Recovery ("can't...
--- block") both forbid STARTING a block, same as the original three.
+-- Statuses that forbid starting a block.
 local BLOCKS_BLOCK_START: { [string]: boolean } = {
 	Stun = true,
 	TrueStun = true,
@@ -75,27 +51,16 @@ local BLOCKS_BLOCK_START: { [string]: boolean } = {
 	LightStun = true,
 	Recovery = true,
 }
--- Statuses that force Block off outright the instant they turn on
--- (REVIEW-M3-03 M3) - onStatusChanged below reacts to all of these.
--- M3-FIX4-S: LightStun ends an active block/parry too ("blocks Block and
--- parry" - rule 1).
+-- Statuses that force Block off the instant they turn on.
 local ENDS_BLOCK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, LightStun = true }
--- Statuses that also interrupt an in-progress attack the instant they turn
--- on, regardless of what caused them (a real hit, a dev command, anything)
--- - onStatusChanged below reacts to all three. This covers a block break's
--- TrueStun, a parry's Stun, a knockout, a dev command. A landed
--- hit's own interrupt is the unconditional check in ApplyHit below, not this
--- table. NOT LightStun or Recovery here: LightStun doesn't gate an attack at
--- all, and Recovery only ever turns on once a feint's own AttackHit has
--- already resolved and ended that chain itself (see applyBlockedHit, H2).
+-- Statuses that interrupt an in-progress attack the instant they turn on,
+-- whatever caused them. A landed hit's own interrupt is in ApplyHit. Not
+-- LightStun (doesn't gate attacks) or Recovery (starts only after the feint's
+-- chain has already ended).
 local INTERRUPTS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true }
 
--- Statuses that also freeze/slow movement while active - a single named
--- MovementService modifier per status, set/cleared alongside StatusService
--- (M3-02's own modifier-name list already reserves these names). Kept
--- here, not in MovementService, so CombatService stays the one place that
--- decides when a status starts or ends (M3-01's own design note). No entry
--- for LightStun/Recovery (M3-FIX4-S): neither slows movement.
+-- One named MovementService modifier per status, set/cleared alongside
+-- StatusService. LightStun and Recovery don't slow movement.
 local MOVEMENT_MULT_FOR: { [string]: number } = {
 	Stun = 0,
 	TrueStun = 0,
@@ -103,41 +68,20 @@ local MOVEMENT_MULT_FOR: { [string]: number } = {
 	Hit = 0.5,
 }
 
--- A short knockback impulse, same duration the old DamageHandler used
--- (`Debris:AddItem(force, .25)`).
 local KNOCKBACK_DURATION = 0.25
--- REVIEW-M3-03 L3: the same run-speed MovementService itself uses, for the
--- attacker-teleport sanity check below (kept as a local constant rather
--- than importing MovementService's own private one - both are just this
--- same formula).
+-- Same run speed MovementService uses, for the attacker-teleport check.
 local RUN_SPEED = 16 * Combat.Run.speedMult
 
--- One in-progress swing: which chain hit is still owed, when it started,
--- and where the attacker's HRP was then (the anti-teleport baseline).
--- M3-FIX4-S: `style` replaces the old flat `swing`; `feint` marks an attack
--- the server itself started (a cancel-into-jab), used to tag hit 1's own
--- Hit event and to punish a blocked hit 1 with Recovery.
---
--- M3-FIX5 (Bryan, 2026-09-30): one click per hit. A chain is a run of
--- SEGMENTS, one per hit: segment 1 starts at AttackStart; once hit k lands
--- (k < #chain) the attack sits in `waitingForContinue` until the client's
--- AttackContinue(k + 1) is accepted, which starts segment k + 1. Every
--- per-hit timing in Combat.luau (windupAt/cancelUntil/hitWindow) is
--- measured from `segmentStartedAt`, and the anti-teleport baseline
--- (`swingPosition`) is re-taken at each segment start. `phase` bumps on
--- every state change (hit landed, continue accepted) so a timer armed for
--- an earlier phase (a segment watchdog, the click timeout) can see it's
--- stale and do nothing - `attackGeneration` alone can't tell segments of
--- the SAME attack apart.
---
--- M3-FIX6 (Bryan, 2026-10-01): the chain LOOPS. Once the style's last hit
--- lands, `nextHit` wraps to 1 and `pass` bumps; the attack keeps waiting
--- for clicks until one doesn't come (dropped), a cancel, an interrupt, or
--- AttackEnd (an NPC finishing its pass). Hit 1 on any pass after the first
--- starts with the last hit's follow-through (the client's track resumes
--- from the frozen punch and wraps), so its timings sit `style.loopOffset`
--- later - see segmentOffset. `hitsLanded` counts the whole chain's landed
--- hits (the cancel-cost rule).
+-- One in-progress swing. A chain is a run of segments, one per hit: segment 1
+-- starts at AttackStart; once hit k lands the attack sits in
+-- `waitingForContinue` until AttackContinue(k + 1) is accepted. Per-hit timings
+-- are measured from `segmentStartedAt`, and the anti-teleport baseline
+-- (`swingPosition`) is re-taken at each segment start. `phase` bumps on every
+-- state change so a timer armed for an earlier phase can tell it is stale.
+-- The chain loops: after the last hit `nextHit` wraps to 1 and `pass` bumps;
+-- hit 1 on later passes sits `style.loopOffset` later (see segmentOffset).
+-- `feint` marks an attack the server started itself (cancel-into-jab).
+-- `hitsLanded` counts landed hits across the whole chain.
 type PendingAttack = {
 	style: Combat.Style,
 	startedAt: number,
@@ -158,23 +102,14 @@ type Entry = {
 	lastCombatAt: number?,
 	parryCooldownUntil: number?,
 	attack: PendingAttack?,
-	-- Bumped on every AttackStart (including a feint's own internal one); a
-	-- watchdog closure captures its own value and checks it still matches
-	-- before acting, so a stale watchdog from an attack that already ended
-	-- (landed, cancelled, interrupted) can never reach into a LATER
-	-- attack's state.
+	-- Bumped on every AttackStart; timers capture it so a stale one can't touch a
+	-- later attack.
 	attackGeneration: number,
-	-- M3-FIX4-S: the count-based knockback (Combat.Knockback). +1 per
-	-- landed hit taken from any source; resets on a knockback impulse, on
-	-- knockout, or on its own after Combat.Knockback.resetAfterSeconds of
-	-- no further hits.
+	-- Count-based knockback state (Combat.Knockback).
 	hitCount: number,
 	lastHitCountAt: number?,
 	ancestryConn: RBXScriptConnection?,
 	diedConn: RBXScriptConnection?,
-	-- M3B-01: watches the character for an equipped/unequipped weapon Tool
-	-- (a string `Weapon` attribute naming a style) - see onToolEquipped/
-	-- onToolUnequipped.
 	toolAddedConn: RBXScriptConnection?,
 	toolRemovedConn: RBXScriptConnection?,
 }
@@ -184,18 +119,14 @@ local combatLogEnabled = false
 
 local CombatService = {}
 
--- M5C-01 (REVIEW-M5C-01 M5): fires on EVERY landed hit (target, attacker,
--- hitName). Nothing in combat applies the "Hit" status any more
--- (M3-FIX7-S); this signal is how Missions' FragilePackage sees any hit.
+-- Fires on every landed hit (target, attacker, hitName).
 local hitLandedBindable = Instance.new("BindableEvent")
 CombatService.HitLanded = hitLandedBindable.Event :: RBXScriptSignal
 
 -- ==================== pure helpers (self-tested directly) ====================
 
--- The target is only protected while Blocking AND facing the attacker
--- (old code's own convention: the direction from attacker to target,
--- dotted with the target's own look vector, is negative when the target
--- is turned toward the attacker).
+-- The target is only protected while blocking AND facing the attacker (their
+-- look vector dotted with the attacker-to-target direction is negative).
 function CombatService.IsFacingAttacker(targetLook: Vector3, targetPos: Vector3, attackerPos: Vector3): boolean
 	local towardTarget = (targetPos - attackerPos)
 	if towardTarget.Magnitude < 1e-4 then
@@ -204,9 +135,7 @@ function CombatService.IsFacingAttacker(targetLook: Vector3, targetPos: Vector3,
 	return targetLook:Dot(towardTarget.Unit) < 0
 end
 
--- Pure parry/block decision, pulled out of applyBlockedHit so it's
--- self-testable without a real Player (HealthService's block meter needs
--- one, which a fake self-test Model can't provide - AUDIT H5/M2).
+-- Pure parry/block decision.
 function CombatService.ResolveBlock(parrying: boolean, cooldownActive: boolean, meterHeld: boolean): "Parried" | "Blocked" | "BlockBroken"
 	if parrying and not cooldownActive then
 		return "Parried"
@@ -217,10 +146,7 @@ function CombatService.ResolveBlock(parrying: boolean, cooldownActive: boolean, 
 	return "BlockBroken"
 end
 
--- Walks up from a hit BasePart to the nearest ancestor Model that owns a
--- Humanoid, so hitting a weapon, backpack or delivery pack still resolves
--- to the character wearing it (AUDIT M3/P2), not a stuck wait on that
--- prop's own (nonexistent) Effects folder.
+-- Resolves a hit part to the character Model wearing it, so hitting a held prop still counts.
 local function resolveCombatant(part: BasePart): Model?
 	local model = part:FindFirstAncestorOfClass("Model")
 	while model do
@@ -233,38 +159,28 @@ local function resolveCombatant(part: BasePart): Model?
 	return nil
 end
 
--- REVIEW-M3-04 H1/L1: HealthService now accepts a Player OR a character
--- Model (an NPC registered via HealthService.Register) - this just picks
--- whichever identity is the real one for `character`, so the two are
--- never mixed for the same combatant.
+-- HealthService accepts a Player or a character Model (NPC); pick the real identity.
 local function healthCombatant(character: Model): HealthService.Combatant
 	return Players:GetPlayerFromCharacter(character) or character
 end
 
 -- ==================== attack-state helpers ====================
 
--- Ends whatever attack `entry` has in progress (if any) and sets the next
--- allowed AttackStart time. Never broadcasts anything itself - callers
--- decide whether an AttackCancelled event (or nothing, for a normal
--- completion/timeout) goes out.
+-- Ends any in-progress attack and sets the next allowed AttackStart time.
+-- Broadcasts nothing; callers decide whether to fire AttackCancelled.
 local function clearAttack(character: Model, entry: Entry, nextAttackDelay: number)
 	entry.attack = nil
 	pcall(function()
 		character:SetAttribute("Attacking", false)
-		-- M3B-02: the trainer dummies read this to know which hit (1-based)
-		-- is currently being thrown - nil once nothing is.
+		-- Trainer dummies read this: the 1-based hit being thrown, nil when none.
 		character:SetAttribute("CurrentHitIndex", nil)
 		character:SetAttribute("NextAttackAt", Workspace:GetServerTimeNow() + nextAttackDelay)
 	end)
 end
 
--- Ends an in-progress attack because the combatant got interrupted: a hit
--- landing on them (ApplyHit), or Stun/TrueStun/Knocked turning on for any
--- reason at all (a dev command, a broken block's TrueStun, a parry,
--- anything - via onStatusChanged).
--- A no-op if there's no attack in progress (safe to call speculatively).
--- Pays the shared Chain.Recovery as the next cooldown (a clean cancel is
--- always free, see AttackCancel below).
+-- Ends an attack because the combatant was interrupted (a landed hit, or
+-- Stun/TrueStun/Knocked turning on). No-op without an attack. Pays
+-- Chain.Recovery as the next cooldown.
 local function interruptAttack(character: Model)
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -279,13 +195,8 @@ local function interruptAttack(character: Model)
 	end
 end
 
--- M3-FIX4-S: resets the count-based knockback tracker (Combat.Knockback -
--- see registerHitCount below). Defined up here, ahead of onStatusChanged,
--- which is the ONE place that calls it (REVIEW-M3-FIX4-S L1: a knockout
--- resets HitCount no matter what caused it - a landed hit, `.knock`, or
--- any other StatusService.Apply(..., "Knocked") - matching this file's own
--- "one place owns what happens when a status turns on" rule, the same one
--- onStatusChanged itself already follows for everything else).
+-- Resets the count-based knockback tracker. Called from onStatusChanged so
+-- every knockout resets it.
 local function resetHitCount(target: Model)
 	local entry = registered[target]
 	if entry == nil then
@@ -300,11 +211,9 @@ end
 
 -- ==================== movement/status/health coupling ====================
 
--- REVIEW-M3-03 M2: HealthService.SetTier(player, "Combat") on any hit
--- dealt or taken, falling back to "Idle" after Config.Health.
--- CombatTierSeconds of no further combat activity - "Knocked" always wins
--- while it's active (see reconcileTier). Only meaningful for a real
--- Player; HealthService's tiers don't exist for an NPC.
+-- Sets the HealthService tier: Combat on any hit dealt or taken until
+-- Config.Health.CombatTierSeconds passes, Knocked while knocked. Meaningful
+-- only for real Players.
 local function reconcileTier(character: Model)
 	local combatant = healthCombatant(character)
 	if StatusService.Has(character, "Knocked") then
@@ -332,11 +241,8 @@ local function markCombatActivity(character: Model)
 	end)
 end
 
--- REVIEW-M3-03 M3: one place owns what happens when a status turns on or
--- off, regardless of which code path caused it (a direct StatusService
--- call, a dev command, the shared expiry loop...). Also the one place that
--- interrupts an in-progress attack when Stun/TrueStun/Knocked turns on,
--- however it turned on.
+-- The one place that reacts to a status turning on or off, whatever caused
+-- it; also interrupts an attack when Stun/TrueStun/Knocked turns on.
 local function onStatusChanged(character: Model, status: string, active: boolean)
 	local mult = MOVEMENT_MULT_FOR[status]
 	if mult ~= nil then
@@ -355,9 +261,8 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 		end
 		HealthService.SetBlocking(healthCombatant(character), active)
 	elseif active and ENDS_BLOCK[status] then
-		-- Re-fires this same function with ("Block", false), which is what
-		-- actually clears the speed modifier/HealthService flag above -
-		-- one place owns that cleanup no matter which status ended it.
+		-- Re-fires with ("Block", false), which clears the speed modifier and the
+		-- HealthService flag.
 		StatusService.Remove(character, "Block")
 	end
 
@@ -367,13 +272,8 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 
 	if status == "Knocked" then
 		if active then
-			-- REVIEW-M3-FIX4-S L1: every knockout resets the count-based
-			-- knockback tracker, not just the ones ApplyHit itself causes.
 			resetHitCount(character)
-			-- REVIEW-M3B-01 H1: knockout drops a PLAYER out of the combat
-			-- stance ("knockout, death and the death scene clear it") -
-			-- never an NPC, which is always InCombat by design (NpcService
-			-- sets it once at registration and never toggles it).
+			-- A knockout drops a player (never an NPC, always InCombat) out of the stance.
 			local entry = registered[character]
 			if entry and entry.owner ~= nil then
 				pcall(function()
@@ -383,10 +283,7 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 		end
 		reconcileTier(character)
 		if not active then
-			-- Recovered, whether by the getUpSeconds timer or an early
-			-- Remove (a dev command, say): come back up at the fixed
-			-- floor, never however much health TakeDamage would otherwise
-			-- have left.
+			-- Come back up at the fixed health floor.
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			if humanoid and humanoid.Health > 0 then
 				humanoid.Health = math.max(humanoid.Health, Combat.Knockout.healthOnGetUp * humanoid.MaxHealth)
@@ -408,8 +305,7 @@ local function knockback(attacker: Model, target: Model, speed: number)
 	local away = ((targetHrp :: BasePart).Position - (attackerHrp :: BasePart).Position)
 	away = Vector3.new(away.X, 0, away.Z)
 	if away.Magnitude < 1e-3 then
-		-- A self-overlapping hit (AUDIT C2's NaN velocity bug): just skip
-		-- the impulse instead of pushing in an undefined direction.
+		-- Self-overlapping hit: skip the impulse rather than push in an undefined direction.
 		return
 	end
 	local direction = away.Unit
@@ -442,20 +338,15 @@ local function attackerLabel(attacker: Model): string
 	return if player then player.Name else attacker.Name
 end
 
--- REVIEW-M5C-01 L3: the interceptor should be resolved by UserId, never by
--- name (an NPC model could share a name with a real player's username).
--- nil for an NPC attacker - there's no UserId to carry.
+-- Resolved by UserId, never by name; nil for an NPC attacker.
 local function attackerUserId(attacker: Model): number?
 	local player = Players:GetPlayerFromCharacter(attacker)
 	return if player then player.UserId else nil
 end
 
--- M3-FIX4-S: the count-based knockback (Combat.Knockback) - +1 per landed
--- hit taken, from any source; every `everyHits`th hit fires one impulse
--- (away from whoever landed THIS hit) and resets to 0. Also reschedules
--- its own idle-reset check (Combat.Knockback.resetAfterSeconds without a
--- further hit) - `entry.lastHitCountAt` is captured so a stale check from
--- an earlier hit can't reset a count a NEWER hit has since moved on from.
+-- Count-based knockback: every `everyHits`th hit fires one impulse away from
+-- the attacker and resets the count; an idle timer resets it too.
+-- `lastHitCountAt` stops a stale timer resetting a newer count.
 local function registerHitCount(attacker: Model, target: Model)
 	local entry = registered[target]
 	if entry == nil then
@@ -491,11 +382,9 @@ local function registerHitCount(attacker: Model, target: Model)
 	end)
 end
 
--- M3-FIX4-S: stacks a hit's own bleedStacks onto the target's Bleed status,
--- capped at the causing style's own maxStacks, refreshing (not extending)
--- the duration on every new stack - the config (tick rate/duration/cap)
--- rides along in the status data itself so HealthService's tick doesn't
--- need to know which style caused it.
+-- Stacks bleed up to the style's maxStacks and refreshes (not extends) the
+-- duration. The config rides in the status data so HealthService needn't know
+-- the style.
 local function applyBleed(target: Model, style: Combat.Style, stacks: number)
 	local bleed = style.bleed
 	if bleed == nil then
@@ -511,11 +400,8 @@ local function applyBleed(target: Model, style: Combat.Style, stacks: number)
 	end
 end
 
--- AUDIT M1: blocking makes you immune to the hit's damage/stun/knockback
--- entirely while the block holds. Only a broken block, a back hit or no
--- block at all lets any of that through. M3-FIX4-S: `hit.blockDrain`
--- replaces the old flat Combat.Block.drainPerHit; a blocked FEINT (not
--- parried) punishes the attacker with Recovery (rule 4).
+-- A facing block makes the hit harmless; a broken block, back hit or no block
+-- lets it through. A blocked (not parried) feint punishes the attacker.
 local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Style, hit: Combat.ChainHit, isFeint: boolean)
 	local blockInfo = StatusService.Get(target, "Block")
 	local parrying = blockInfo ~= nil and type(blockInfo.data) == "table" and (blockInfo.data :: any).value == 1
@@ -523,11 +409,7 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 	local cooldownActive = entry ~= nil and entry.parryCooldownUntil ~= nil and Workspace:GetServerTimeNow() < entry.parryCooldownUntil
 	local wouldParry = parrying and not cooldownActive
 
-	-- REVIEW-M3-03 M1: a parry is resolved BEFORE the block meter is ever
-	-- touched - it costs no block HP at all, not even a refunded drain.
-	-- REVIEW-M3-04 L1: HealthService owns the meter for a real Player AND
-	-- an NPC now (its own MaxBlock cap too - AUDIT M2: nothing here ever
-	-- adds block back on a parry, so there's no cap to overshoot any more).
+	-- A parry is resolved before the block meter is touched and costs no block HP.
 	local meterHeld = if wouldParry then true else HealthService.SpendBlock(healthCombatant(target), hit.blockDrain)
 
 	local outcome = CombatService.ResolveBlock(parrying, cooldownActive, meterHeld)
@@ -536,10 +418,8 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 		if entry then
 			entry.parryCooldownUntil = Workspace:GetServerTimeNow() + Combat.Block.parryCooldown
 		end
-		-- The parried attacker's own swing is punished twice over: stunned,
-		-- AND (below, via onStatusChanged reacting to that Stun) their own
-		-- in-progress attack is interrupted if they hadn't finished it yet.
-		-- Parry beats any hit (rule 5) - unconditional.
+		-- The parried attacker is stunned, which also interrupts their own attack via
+		-- onStatusChanged.
 		StatusService.Apply(attacker, "Stun", Combat.Block.breakStun / 2)
 		Remotes.Server.FireAll("CombatEvent", "Parried", { attacker = attacker, target = target })
 		if combatLogEnabled then
@@ -552,14 +432,8 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 			if recoverySeconds > 0 then
 				StatusService.Apply(attacker, "Recovery", recoverySeconds)
 			end
-			-- REVIEW-M3-FIX4-S H2: a blocked (not parried) feint ends the
-			-- feinter's WHOLE chain outright, not just this one hit -
-			-- Recovery alone isn't enough, since it's short (feintRecovery-
-			-- Seconds) and entry.attack would otherwise still be "in
-			-- progress": once Recovery's own duration ran out, a later
-			-- chain hit still inside its own hitWindow (+tolerance) could
-			-- land anyway, letting the feinter's combo continue right past
-			-- the punish it was supposed to eat.
+			-- A blocked (not parried) feint ends the feinter's whole chain; Recovery alone
+			-- could expire while a later hit's window is still open.
 			local attackerEntry = registered[attacker]
 			if attackerEntry and attackerEntry.attack then
 				clearAttack(attacker, attackerEntry, 0)
@@ -573,9 +447,7 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 			log:Info(string.format("%s blocked %s's hit", target.Name, attacker.Name))
 		end
 	else
-		-- Just Remove: onStatusChanged (above) clears the speed modifier
-		-- and HealthService's blocking flag on ANY path that ends Block
-		-- (REVIEW-M3-03 M3), so there's nothing else to do here for that.
+		-- onStatusChanged clears the speed modifier and blocking flag.
 		StatusService.Remove(target, "Block")
 		StatusService.Apply(target, "TrueStun", Combat.Block.breakStun)
 		StatusService.Apply(target, "BlockBroken", Combat.Block.breakStun)
@@ -586,10 +458,8 @@ local function applyBlockedHit(attacker: Model, target: Model, style: Combat.Sty
 	end
 end
 
--- Exported (not just local) so the self-test can drive it directly with
--- fake models, without going through the full AttackStart/AttackHit
--- pipeline. `feint` (default false) marks hit 1 of an attack the server
--- itself started via a cancel-into-jab (Combat.Style.cancelInto == "Jab").
+-- Exported for the self-test. `feint` marks hit 1 of a server-started
+-- cancel-into-jab attack.
 function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.Style, hit: Combat.ChainHit, hitIndex: number, feint: boolean?)
 	local isFeint = feint == true
 	local targetHumanoid = target:FindFirstChildOfClass("Humanoid")
@@ -601,8 +471,7 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 	if targetHumanoid.Health <= 0 then
 		return
 	end
-	-- REVIEW-M3-03 H1: a target already down doesn't take another hit or
-	-- get re-knocked - wait for Recovered first.
+	-- A downed target takes no further hits.
 	if StatusService.Has(target, "Knocked") then
 		return
 	end
@@ -620,37 +489,26 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 			applyBlockedHit(attacker, target, style, hit, isFeint)
 			return
 		end
-		-- A back hit bypasses (and ends) the block entirely; onStatusChanged
-		-- clears the speed modifier/HealthService flag (REVIEW-M3-03 M3).
+		-- A back hit ends the block.
 		StatusService.Remove(target, "Block")
 	end
 
-	-- M3-FIX7-S (Bryan, 2026-10-02): ANY hit that connects interrupts the
-	-- target's own in-progress attack - a hit still unlanded OR the chain
-	-- frozen on a punch waiting for its next click (entry.attack is set for
-	-- both). So an infinite chain only ends when the defender blocks,
-	-- parries, dashes out, or lands a hit of their own first. A parry/block
-	-- returned above already, so this only runs for a hit that connects.
+	-- Any connecting hit interrupts the target's own attack, including a chain
+	-- frozen between clicks. Parry and block returned above.
 	interruptAttack(target)
 
 	local by = attackerLabel(attacker)
 	local byUserId = attackerUserId(attacker)
 
-	-- REVIEW-M5C-01 M5: fired for every landed hit before the knockout
-	-- early-return below - a hit that knocks someone out is still a landed
-	-- hit.
+	-- Fired for every landed hit, including one that knocks out.
 	hitLandedBindable:Fire(target, attacker, hit.name)
 
-	-- AUDIT C2's "knock them out instead of dying" path must never let
-	-- Humanoid.Health actually reach 0: Roblox fires Humanoid.Died itself
-	-- the instant Health hits 0, which would kill the character before
-	-- any of this code could set it back to 1. So the would-be result is
-	-- computed BEFORE touching Health at all.
+	-- Health must never reach 0 (Roblox fires Died immediately), so compute the
+	-- result before touching Health.
 	local wouldBeHealth = targetHumanoid.Health - hit.damage
 	if wouldBeHealth <= 0 then
 		targetHumanoid.Health = 1
-		-- Resets HitCount too, via onStatusChanged's own Knocked handler
-		-- (REVIEW-M3-FIX4-S L1) - one place, regardless of what caused it.
+		-- onStatusChanged's Knocked handler also resets HitCount.
 		StatusService.Apply(target, "Knocked", Combat.Knockout.getUpSeconds, { by = by, byUserId = byUserId })
 		Remotes.Server.FireAll("CombatEvent", "Knocked", { target = target, by = by })
 		if combatLogEnabled then
@@ -659,14 +517,9 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 		return
 	end
 
-	-- REVIEW-M3-04 H1: routes through HealthService.TakeDamage either way
-	-- now - a registered NPC has its own HealthService state (NpcService
-	-- calls HealthService.Register), the identical path a player's own
-	-- damage takes.
 	HealthService.TakeDamage(healthCombatant(target), hit.damage, by)
 
-	-- M3-FIX7-S: every landed hit applies LightStun and nothing else (no
-	-- "Hit" flinch, no full Stun).
+	-- Every landed hit applies LightStun and nothing else.
 	if hit.lightStun > 0 then
 		StatusService.Apply(target, "LightStun", hit.lightStun)
 	end
@@ -674,8 +527,6 @@ function CombatService.ApplyHit(attacker: Model, target: Model, style: Combat.St
 		applyBleed(target, style, hit.bleedStacks)
 	end
 
-	-- M3-FIX4-S: no more per-hit knockback impulse - only the count-based
-	-- one (Combat.Knockback), which fires (or doesn't) from inside here.
 	registerHitCount(attacker, target)
 
 	Remotes.Server.FireAll("CombatEvent", "Hit", { attacker = attacker, target = target, hitIndex = hitIndex, hitName = hit.name, feint = isFeint })
@@ -686,10 +537,8 @@ end
 
 -- ==================== hit-check ====================
 
--- Clear line of sight from the attacker's HRP to the target's HRP (REVIEW-
--- M3-03 L1): excludes every registered combatant (so a crowd doesn't block
--- its own members) rather than just the two involved, since a shapecast
--- from a torso can otherwise clip a third character standing in between.
+-- Clear line of sight; excludes every registered combatant so a crowd doesn't
+-- block its own members.
 local function hasLineOfSight(attackerPos: Vector3, targetPos: Vector3, attacker: Model, target: Model): boolean
 	local exclude: { Instance } = { attacker, target }
 	for character in registered do
@@ -707,19 +556,9 @@ local function hasLineOfSight(attackerPos: Vector3, targetPos: Vector3, attacker
 	return result == nil
 end
 
--- A single generous sphere covering the hit's reach, centred half its
--- range in front of the attacker's torso: a simple, well-supported
--- approximation of a forward capsule swing that doesn't depend on the
--- third-party ShapecastHitbox module's (unverified) server-side behavior.
--- Exported (not just local) so the self-test can exercise the geometry
--- directly with fake models - in range, out of range, and behind the
--- attacker. REVIEW-M3-03 M5: only a registered combatant can be hit at
--- all, and among every candidate the sphere finds, the CLOSEST one to the
--- attacker's own HRP wins (not just whichever GetPartBoundsInRadius
--- happened to list first). L2: also requires the candidate be roughly in
--- front of the attacker's own facing, not just within the sphere's reach
--- (the sphere's back edge can bulge slightly behind the attacker for a
--- wide-radius/short-range hit).
+-- A single sphere covering the hit's reach, centred half the range ahead of
+-- the torso. Exported for the self-test. Only registered combatants qualify;
+-- the closest one in front of the attacker with line of sight wins.
 function CombatService.FindTarget(attacker: Model, hit: Combat.ChainHit): Model?
 	local torso = attacker:FindFirstChild("HumanoidRootPart")
 	if torso == nil or not torso:IsA("BasePart") then
@@ -769,19 +608,13 @@ function CombatService.FindTarget(attacker: Model, hit: Combat.ChainHit): Model?
 	end
 	local closestHrp = (closest :: Model):FindFirstChild("HumanoidRootPart")
 	if closestHrp and closestHrp:IsA("BasePart") and not hasLineOfSight(attackerPos, (closestHrp :: BasePart).Position, attacker, closest :: Model) then
-		-- Blocked by a wall (L1): not a hit, even though it's the closest
-		-- candidate geometrically.
 		return nil
 	end
 	return closest
 end
 
--- REVIEW-M3-03 L3: rejects a hit if the attacker moved further than a
--- legitimate combatant could have in `elapsed` seconds (a dash mid-swing,
--- plus ordinary run speed for the rest) - catches a speed-hacked/teleported
--- attacker landing a hit its swing position could never actually have
--- reached. `elapsed` is however long it's actually been since Swing, not a
--- fixed per-hit number, since chain hits now land at client-reported times.
+-- Rejects a hit if the attacker moved further than a dash plus run speed
+-- allows over `elapsed` seconds since the segment start.
 local function didNotTeleport(swingPosition: Vector3, currentPosition: Vector3, elapsed: number): boolean
 	local maxMoved = RUN_SPEED * elapsed + Combat.Dash.distance
 	return (currentPosition - swingPosition).Magnitude <= maxMoved
@@ -789,26 +622,20 @@ end
 
 -- ==================== attack flow ====================
 
--- True while `attack` is still the live attack on `entry` AND nothing has
--- happened to it since `phase` (no hit landed, no continue accepted) - the
--- check every timer below runs before acting, so a stale one is a no-op.
+-- True while `attack` is still live and `phase` is unchanged; every timer
+-- checks it so a stale one is a no-op.
 local function attackStillInPhase(entry: Entry, attack: PendingAttack, phase: number): boolean
 	return entry.attack == attack and attack.phase == phase
 end
 
--- M3-FIX6: seconds added to the next hit's windupAt/cancelUntil/hitWindow
--- for this segment - the style's loopOffset for hit 1 on any pass after
--- the first (the last hit's follow-through plays before the animation
--- wraps into hit 1's wind-up), 0 otherwise.
+-- Seconds added to the next hit's timings: loopOffset for hit 1 on any pass
+-- after the first, else 0.
 local function segmentOffset(attack: PendingAttack): number
 	return if attack.nextHit == 1 and attack.pass > 1 then attack.style.loopOffset else 0
 end
 
--- Watchdog for the segment that just started (hit `attack.nextHit`): if the
--- client never reports that hit (desync, drop, a client that just stopped
--- responding), don't leave the attacker stuck "Attacking" forever - end it
--- silently, no CombatEvent, and start the normal cooldown as if it had
--- landed. Armed at AttackStart and again at every accepted AttackContinue.
+-- If the client never reports the hit, end the attack silently with the
+-- normal cooldown. Armed at AttackStart and at every accepted AttackContinue.
 local function armSegmentWatchdog(character: Model, entry: Entry, attack: PendingAttack)
 	local hit = attack.style.chain[attack.nextHit]
 	local phase = attack.phase
@@ -823,11 +650,9 @@ local function armSegmentWatchdog(character: Model, entry: Entry, attack: Pendin
 	end)
 end
 
--- M3-FIX5: the pause between hits. Once hit k lands with more chain to go,
--- the attack waits for AttackContinue(k + 1); if it doesn't come within
--- Chain.ClickTimeout (+ tolerance) of the hit landing, the combo is
--- dropped: AttackCancelled {reason = "dropped"} (so every client fades the
--- frozen pose out) and Chain.DropRecovery of cooldown.
+-- After a hit lands with more chain to go, drop the combo (AttackCancelled
+-- reason "dropped", Chain.DropRecovery) if no AttackContinue comes within
+-- ClickTimeout.
 local function armContinueTimeout(character: Model, entry: Entry, attack: PendingAttack)
 	local phase = attack.phase
 	local delay = Config.Combat.Chain.ClickTimeout + Config.Combat.HitTolerance
@@ -842,21 +667,14 @@ local function armContinueTimeout(character: Model, entry: Entry, attack: Pendin
 	end)
 end
 
--- Shared by AttackStart, AttackCancel's cancel-into-jab follow-up, and
--- CombatService.Attack (NPCs). Returns whether an attack was actually
--- started, and the style it started if so (so a caller that needs to know
--- the chain timings - NpcService - doesn't have to look it back up).
--- `feint` (from AttackCancel's cancelInto == "Jab" path) is carried onto
--- the new PendingAttack untouched; every other gating rule is identical
--- either way.
+-- Shared by AttackStart, the cancel-into-jab follow-up and
+-- CombatService.Attack (NPCs). Returns whether an attack started and its style.
 local function beginAttack(character: Model, feint: boolean): (boolean, Combat.Style?)
 	local entry = registered[character]
 	if entry == nil then
 		return false, nil
 	end
-	-- M3B-01: clicks outside the combat stance are nothing, on the server
-	-- as well as on the client. NPCs are always InCombat (NpcService sets
-	-- it at registration), so this never gates them.
+	-- Clicks outside the combat stance do nothing. NPCs are always InCombat.
 	if character:GetAttribute("InCombat") ~= true then
 		return false, nil
 	end
@@ -895,9 +713,7 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	local torso = character:FindFirstChild("HumanoidRootPart")
 	local swingPosition = if torso and torso:IsA("BasePart") then (torso :: BasePart).Position else Vector3.zero
 
-	-- Bryan (2026-09-30): a swing brings a run to an end (the player has to
-	-- double-tap W again afterwards; the client never re-sends Run(true)
-	-- on its own).
+	-- A swing ends a run; the client never re-sends Run(true).
 	if character:GetAttribute("Running") == true then
 		MovementService.SetRunning(character, false)
 	end
@@ -942,12 +758,12 @@ local function beginAttack(character: Model, feint: boolean): (boolean, Combat.S
 	return true, style
 end
 
--- Shared by the AttackStart remote and CombatService.Attack (NPCs).
+-- Shared by the AttackStart remote and NPCs.
 function CombatService.AttackStart(character: Model): (boolean, Combat.Style?)
 	return beginAttack(character, false)
 end
 
--- Shared by the AttackHit remote and CombatService.Attack (NPCs).
+-- Shared by the AttackHit remote and NPCs.
 function CombatService.AttackHit(character: Model, index: number)
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -969,15 +785,8 @@ function CombatService.AttackHit(character: Model, index: number)
 	if humanoid == nil or humanoid.Health <= 0 then
 		return
 	end
-	-- Defense in depth: onStatusChanged already interrupts (clears
-	-- entry.attack) the instant Stun/TrueStun/Knocked turns on, and Block/
-	-- LightStun/Recovery can't start while entry.attack ~= nil or while
-	-- already active - so this should already be unreachable via those
-	-- paths, but Roblox's deferred signal behavior means a status applied
-	-- in the same frame might not have run its Changed handler yet. This
-	-- ALSO doubles as the mechanism that stops a blocked feint's own
-	-- Recovery (applied mid-chain, below) from letting the rest of the
-	-- chain continue.
+	-- Defense in depth: a status applied this frame may not have run its Changed
+	-- handler yet. Also stops the rest of a chain after a blocked feint's Recovery.
 	for status in BLOCKS_ATTACK do
 		if StatusService.Has(character, status) then
 			if combatLogEnabled then
@@ -995,8 +804,7 @@ function CombatService.AttackHit(character: Model, index: number)
 	end
 
 	local now = Workspace:GetServerTimeNow()
-	-- M3-FIX6: minus the follow-through that precedes a looped hit 1, so the
-	-- window below reads the same as Combat.luau's numbers.
+	-- Minus the follow-through before a looped hit 1, so the window matches Combat.luau.
 	local elapsed = now - attack.segmentStartedAt - segmentOffset(attack)
 	local hit = attack.style.chain[index]
 	local tolerance = Config.Combat.HitTolerance
@@ -1049,28 +857,16 @@ function CombatService.AttackHit(character: Model, index: number)
 		local isFeintHit = attack.feint and index == 1 and attack.pass == 1
 		CombatService.ApplyHit(character, target, attack.style, hit, index, isFeintHit)
 	else
-		-- M3-FIX6: the whiff sound is the server's call now (EffectsController
-		-- used to guess the hit time off a flat timer).
 		Remotes.Server.FireAll("CombatEvent", "Miss", { attacker = character, hitIndex = index, hitName = hit.name })
 		if combatLogEnabled then
 			log:Info(string.format("%s's %s (hit %d) whiffed", character.Name, attack.style.displayName, index))
 		end
 	end
 
-	-- CombatService.ApplyHit above may have interrupted the TARGET's own
-	-- attack (a different Entry), stunned this very attacker on a parry, or
-	-- applied Recovery to this very attacker on a blocked feint - but
-	-- StatusService.Changed is a deferred BindableEvent, so none of THOSE
-	-- side effects has run its own handler yet; `entry`/`attack` here are
-	-- still this attacker's live state either way, and the very next
-	-- AttackHit call (if the chain continues) is what the BLOCKS_ATTACK
-	-- check above actually catches Recovery/Stun with.
-	-- M3-FIX6: the chain loops - after the style's last hit the next click
-	-- continues into hit 1 again. Nothing is being thrown until that click:
-	-- CurrentHitIndex is nil meanwhile (the trainer dummies read it as
-	-- "mid-swing"), and the next hit's own index comes back at
-	-- AttackContinue. No click in time and armContinueTimeout drops the
-	-- combo.
+	-- StatusService.Changed is deferred, so ApplyHit's effects on this attacker
+	-- (parry Stun, feint Recovery) haven't run yet; the next AttackHit's
+	-- BLOCKS_ATTACK check catches them. The chain now waits for the next click
+	-- (CurrentHitIndex is nil meanwhile); after the last hit nextHit wraps to 1.
 	attack.hitsLanded += 1
 	attack.phase += 1
 	if index >= #attack.style.chain then
@@ -1087,13 +883,9 @@ function CombatService.AttackHit(character: Model, index: number)
 	armContinueTimeout(character, entry, attack)
 end
 
--- M3-FIX6: ends a chain cleanly between hits - the attacker chose not to
--- throw the next one. Only meaningful while the chain waits for a click
--- (mid-segment it's a no-op: cancel or interrupt are the ways out of a live
--- hit). Chain.Recovery of cooldown, and CombatEvent AttackEnded so every
--- client fades the frozen punch out. CombatService.Attack (NPCs) calls this
--- after its single pass; a player's chain never ends this way today (their
--- clicks run out and it drops instead).
+-- Ends a chain between hits (only while it waits for a click): Chain.Recovery
+-- cooldown and CombatEvent AttackEnded. NPCs call it after one pass; a
+-- player's chain drops on timeout instead.
 function CombatService.AttackEnd(character: Model)
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -1110,12 +902,11 @@ function CombatService.AttackEnd(character: Model)
 	end
 end
 
--- M3-FIX5: the second (third, ...) click of a combo. Shared by the
--- AttackContinue remote and CombatService.Attack (NPCs). Accepted only
--- while the attack is waiting for exactly hit `index`, between Chain.HitGap
--- and Chain.ClickTimeout (both +/- tolerance) after the previous hit landed,
--- and under the same alive/status gates as any hit. Starts that hit's own
--- segment: the timing clock and the anti-teleport baseline restart here.
+-- The second (third, ...) click of a combo; shared by the AttackContinue
+-- remote and NPCs. Accepted only while waiting for exactly hit `index`, between
+-- Chain.HitGap and Chain.ClickTimeout (+/- tolerance) after the last hit.
+-- Starts that hit's segment: the timing clock and anti-teleport baseline
+-- restart.
 function CombatService.AttackContinue(character: Model, index: number): boolean
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -1165,7 +956,6 @@ function CombatService.AttackContinue(character: Model, index: number): boolean
 		return false
 	end
 	if sinceHit > Config.Combat.Chain.ClickTimeout + tolerance then
-		-- armContinueTimeout is about to drop the combo anyway.
 		if combatLogEnabled then
 			log:Warn(string.format("%s's AttackContinue(%d) dropped: too late (%.2fs after the last hit, timeout %.2fs)", character.Name, index, sinceHit, Config.Combat.Chain.ClickTimeout))
 		end
@@ -1185,22 +975,15 @@ function CombatService.AttackContinue(character: Model, index: number): boolean
 	if combatLogEnabled then
 		log:Info(string.format("%s continues into hit %d (%s, %.2fs after the last hit)", character.Name, index, hit.name, sinceHit))
 	end
-	-- The attacker's own client already unfroze its track when it clicked;
-	-- this is for everyone ELSE's copy of an NPC's combo animation
-	-- (NpcAnimController), which has no click of its own to go on.
+	-- Other clients' copy of an NPC's combo animation needs this; the attacker's
+	-- own client already unfroze on click.
 	Remotes.Server.FireAll("CombatEvent", "SwingContinue", { character = character, hit = index })
 	armSegmentWatchdog(character, entry, attack)
 	return true
 end
 
--- Shared by the AttackCancel remote and CombatService.Attack (NPCs, in
--- principle - NpcService doesn't cancel today, but nothing stops it later).
--- M3-FIX4-S: cancel is per-hit now (the next unlanded hit's own
--- cancelUntil, not a single swing-level window). Free before any hit has
--- landed (the bait); costs a full chain's own cooldown once at least one
--- has (REVIEW-M3-FIX4-S H3, below). What happens next depends on the
--- style's cancelInto trait (see the comment above Combat.Styles.Fist in
--- Shared/Data/Combat.luau).
+-- Cancel is per-hit (the next unlanded hit's cancelUntil). What follows depends
+-- on the style's cancelInto.
 function CombatService.AttackCancel(character: Model)
 	local entry = registered[character]
 	if entry == nil or entry.attack == nil then
@@ -1209,10 +992,6 @@ function CombatService.AttackCancel(character: Model)
 		end
 		return
 	end
-	-- M3B-01: matches AttackStart's own gate. In practice this should
-	-- already be unreachable while an attack is genuinely in progress
-	-- (nothing turns InCombat off mid-swing on its own), but the contract
-	-- is explicit that AttackCancel is rejected outside the stance too.
 	if character:GetAttribute("InCombat") ~= true then
 		return
 	end
@@ -1225,9 +1004,8 @@ function CombatService.AttackCancel(character: Model)
 	local now = Workspace:GetServerTimeNow()
 	local elapsed = now - attack.segmentStartedAt - segmentOffset(attack)
 	local tolerance = Config.Combat.HitTolerance
-	-- M3-FIX5: while the chain waits for the next click, nothing is being
-	-- thrown yet, so a cancel is always honoured (that pause IS the decision
-	-- point); the per-hit cancelUntil only applies once a segment is live.
+	-- While waiting for the next click a cancel is always honoured; cancelUntil
+	-- applies only to a live segment.
 	if not attack.waitingForContinue and elapsed > hit.cancelUntil + tolerance then
 		if combatLogEnabled then
 			log:Warn(
@@ -1246,17 +1024,9 @@ function CombatService.AttackCancel(character: Model)
 	local style = attack.style
 	local cancelledAtHit = attack.nextHit
 
-	-- REVIEW-M3-FIX4-S H3: cancelling is free ONLY before any hit in this
-	-- chain has landed - that's the intended bait, a swing that never
-	-- committed to anything. Cancelling once at least one hit already
-	-- landed is a different move (finish a Jab, then bail on the rest) and
-	-- costs a chain's own Recovery, so "land hit 1, cancel, restart" never
-	-- beats simply continuing the chain. (M3-FIX6: counted by hitsLanded,
-	-- since the chain loops and nextHit alone can't tell a fresh hit 1 from
-	-- a looped one.) beginAttack (including the cancel-into-jab path just
-	-- below) already checks NextAttackAt, so setting it here is enough - a
-	-- feint that follows a landed hit simply waits for it; a feint after a
-	-- free cancel (no hit landed) stays free, which is the bait.
+	-- Cancelling is free only before any hit has landed (the bait); after that it
+	-- costs Chain.Recovery. Counted by hitsLanded since the chain loops.
+	-- beginAttack checks NextAttackAt, so a cancel-into-jab waits on it.
 	if attack.hitsLanded > 0 then
 		clearAttack(character, entry, Config.Combat.Chain.Recovery)
 	else
@@ -1272,16 +1042,10 @@ function CombatService.AttackCancel(character: Model)
 	end
 end
 
--- The NPC entry point (same signature as before M3-FIX3-S): starts the
--- swing exactly like a player's AttackStart, then plays the player's part
--- itself: AttackHit at the middle of each chain hit's hitWindow and
--- (M3-FIX5) the "next click" - AttackContinue - Config.Npc.ContinueDelay
--- after each hit lands, so NPC hits go through the identical validation
--- (and can be interrupted, or time out, the same way) a player's own
--- client-reported hits do. M3-FIX6: one pass of the chain, then AttackEnd
--- (ContinueDelay after the last hit, so the punch holds a beat the way a
--- player's does) - an NPC never loops, its tree decides when to swing
--- again.
+-- NPC entry point: starts the swing like a player's AttackStart, then plays the
+-- client's part: AttackHit at each hit window's midpoint and AttackContinue
+-- Config.Npc.ContinueDelay after each hit. One pass, then AttackEnd; an NPC
+-- never loops.
 function CombatService.Attack(character: Model)
 	local started, style = beginAttack(character, false)
 	if not started or style == nil then
@@ -1291,8 +1055,7 @@ function CombatService.Attack(character: Model)
 	if entry == nil then
 		return
 	end
-	-- REVIEW-M3-FIX3-S L2: captured so a stale timer from an attack that got
-	-- interrupted/cancelled/re-started can't consume a LATER attack's hit.
+	-- Captured so a stale timer can't consume a later attack's hit.
 	local generation = entry.attackGeneration
 
 	local function playSegment(index: number)
@@ -1320,7 +1083,7 @@ function CombatService.Attack(character: Model)
 	playSegment(1)
 end
 
--- Shared by the Block() remote and NpcService (M3-04).
+-- Shared by the Block() remote and NpcService.
 function CombatService.SetBlocking(character: Model, on: boolean)
 	local entry = registered[character]
 	if entry == nil then
@@ -1328,10 +1091,7 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 	end
 
 	if on then
-		-- M3B-01: only gates STARTING a block - releasing one always has to
-		-- work regardless of InCombat, or a player who leaves the stance
-		-- (or gets Dying-frozen) mid-block would be stuck holding it
-		-- forever with no way to ever call this with `on = false` again.
+		-- Only starting a block is gated by InCombat; releasing must always work.
 		if character:GetAttribute("InCombat") ~= true then
 			return
 		end
@@ -1347,13 +1107,9 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 		if StatusService.Has(character, "Block") then
 			return
 		end
-		-- Can't start blocking while an attack (any hit of it) is still in
-		-- progress.
 		if entry.attack ~= nil then
 			return
 		end
-		-- onStatusChanged applies the speed modifier/HealthService.SetBlocking
-		-- (REVIEW-M3-03 M3) once this Changed(true) fires.
 		StatusService.Apply(character, "Block", nil, { value = 1 })
 	else
 		if not StatusService.Has(character, "Block") then
@@ -1363,10 +1119,7 @@ function CombatService.SetBlocking(character: Model, on: boolean)
 	end
 end
 
--- M3-FIX4-S: the `.weapon` dev command's own entry point - also usable
--- later by a shop/equip flow. Ends any in-progress attack outright rather
--- than trying to carry a chain index over into a style that might not even
--- have that many hits.
+-- Entry point for `.weapon` and equip flows. Ends any in-progress attack.
 function CombatService.SetWeapon(character: Model, styleName: string): boolean
 	local entry = registered[character]
 	if entry == nil then
@@ -1389,12 +1142,10 @@ function CombatService.SetWeapon(character: Model, styleName: string): boolean
 	return true
 end
 
--- M3B-01: the combat stance. AttackStart/AttackCancel/Block all require
--- InCombat to be true (Dash/Run don't). Leaving is always accepted;
--- entering needs the owning Player's own CombatUnlocked (a real registered
--- Player only - an NPC never calls this, it's always InCombat from
--- NpcService instead), alive, and clear of a short list of "can't fight
--- right now" states. Returns whether the requested state was applied.
+-- Combat stance: AttackStart/AttackCancel/Block require InCombat (Dash/Run
+-- don't). Leaving always works; entering needs the owner's CombatUnlocked,
+-- alive, and not Knocked/TrueStun/Recovery. NPCs never call this. Returns
+-- whether the state was applied.
 function CombatService.SetStance(character: Model, on: boolean): boolean
 	local entry = registered[character]
 	if entry == nil then
@@ -1415,8 +1166,7 @@ function CombatService.SetStance(character: Model, on: boolean): boolean
 	if owner:GetAttribute("CombatUnlocked") ~= true then
 		return false
 	end
-	-- The age-death scene (AgeService.startDeathSequence): frozen, about to
-	-- respawn into a fresh life - not a state to start a fight from.
+	-- The age-death scene: frozen, about to respawn.
 	if owner:GetAttribute("Dying") == true then
 		return false
 	end
@@ -1436,26 +1186,18 @@ function CombatService.SetStance(character: Model, on: boolean): boolean
 end
 
 -- ==================== tool -> style ====================
--- M3B-01: the equipped style comes from a weapon Tool in the character (a
--- string `Weapon` attribute naming a Combat.Style) - CharacterService/
--- backpack code decides what a player can equip, this just reacts to it.
--- `.weapon [style] [player]` (below) keeps working as a dev override, but
--- the next tool equip or unequip always wins over it, same as a real one
--- would.
+-- The equipped style comes from a weapon Tool's string `Weapon` attribute
+-- naming a Combat.Style. `.weapon` is a dev override that the next equip or
+-- unequip replaces.
 
 local function onToolEquipped(character: Model, tool: Tool)
 	local weaponName = tool:GetAttribute("Weapon")
 	if type(weaponName) ~= "string" then
-		-- The common case: most Tools (non-weapons) don't carry this
-		-- attribute at all - nothing to warn about.
 		return
 	end
 	if Combat.styleFor(weaponName) == nil then
-		-- REVIEW-M3B-01 M1: unlike a missing attribute, a Weapon string that
-		-- names no real style (a typo, or a style retired later) is a real
-		-- misconfiguration - warn instead of silently leaving whatever style
-		-- was equipped before, and fall back to Fist so the combatant is
-		-- never left on a style the client can't actually see a Tool for.
+		-- A Weapon string naming no real style is a misconfiguration: warn and fall
+		-- back to Fist.
 		log:Warn(string.format("%s's Tool %q has an unknown Weapon attribute %q; falling back to Fist", character.Name, tool.Name, weaponName))
 		CombatService.SetWeapon(character, "Fist")
 		return
@@ -1463,9 +1205,7 @@ local function onToolEquipped(character: Model, tool: Tool)
 	CombatService.SetWeapon(character, weaponName)
 end
 
--- Unequipping ANY weapon tool drops the style back to Fist outright - not
--- "whatever it was before this one," which nothing here tracks and the
--- design doesn't ask for (rule 2: "unequip -> Fist").
+-- Unequipping any weapon Tool drops the style back to Fist.
 local function onToolUnequipped(character: Model, tool: Tool)
 	local weaponName = tool:GetAttribute("Weapon")
 	if type(weaponName) ~= "string" or Combat.styleFor(weaponName) == nil then
@@ -1500,14 +1240,11 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		character:SetAttribute("Attacking", false)
 		character:SetAttribute("CurrentHitIndex", nil)
 		character:SetAttribute("HitCount", 0)
-		-- M3B-01: NPCs are always InCombat - NpcService flips this right
-		-- after this same Register call; a player starts out of the stance.
+		-- NPCs flip this to true right after Register; players start out of the stance.
 		character:SetAttribute("InCombat", false)
 	end)
 	MovementService.SetStyle(character, resolvedWeaponSet)
 
-	-- REVIEW-M3-03 M4: unregistered on death or on leaving the game
-	-- entirely, the same two triggers StatusService uses.
 	local okAncestry, ancestryConn = pcall(function()
 		return character.AncestryChanged:Connect(function(_child, parent)
 			if parent == nil then
@@ -1523,11 +1260,8 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 	if humanoid then
 		local okDied, diedConn = pcall(function()
 			return humanoid.Died:Connect(function()
-				-- REVIEW-M3B-01 H1: a dead PLAYER's corpse shouldn't keep
-				-- playing the InCombat stance idle for other clients (an NPC
-				-- is always InCombat and Unregister tears its whole entry
-				-- down right after this regardless, so this is a no-op for
-				-- one).
+				-- A dead player's corpse stops showing the stance; NPCs are always InCombat
+				-- and are unregistered anyway.
 				if entry.owner ~= nil then
 					pcall(function()
 						character:SetAttribute("InCombat", false)
@@ -1541,8 +1275,6 @@ function CombatService.Register(character: Model, owner: Player?, weaponSet: str
 		end
 	end
 
-	-- M3B-01: the equipped style tracks whichever weapon Tool (if any) is
-	-- parented into the character right now, and every equip/unequip after.
 	for _, child in character:GetChildren() do
 		if child:IsA("Tool") then
 			onToolEquipped(character, child)
@@ -1576,12 +1308,8 @@ function CombatService.Unregister(character: Model)
 		return
 	end
 	registered[character] = nil
-	-- An in-progress attack dies with the combatant - no event, nothing
-	-- left to tell (the character is gone or leaving); this just stops a
-	-- stale watchdog from touching a re-registered entry later
-	-- (attackGeneration on THIS entry no longer matters once it's orphaned).
-	-- Clear the attribute too, for tidiness, while the character instance
-	-- still exists (a corpse, or a leaving player).
+	-- An attack dies with the combatant, with no event; clearing entry.attack
+	-- stops stale watchdogs.
 	entry.attack = nil
 	pcall(function()
 		character:SetAttribute("Attacking", false)
@@ -1601,20 +1329,12 @@ function CombatService.Unregister(character: Model)
 end
 
 -- ==================== unlock ====================
--- M3B-01: CombatUnlocked mirrors `data.Meta.Unlocks.Combat OR
--- Config.Combat.UnlockedByDefault` - the blanket default lets everyone
--- fight until the tutorial (a later milestone) actually exists to earn it
--- properly; once Bryan flips that to false, this starts reflecting the
--- save flag alone. Meta, not Progress: the unlock is per-player forever,
--- not per-life (DataService.NewLife carries it over; only DataService.Wipe
--- clears it, same as a brand-new player). RankService-style: a public API
--- (for the future tutorial to call, same as AddMagoi/AddDeed) plus the same
--- DataService.Loaded wiring RankService uses to refresh the attribute on
--- load.
+-- CombatUnlocked mirrors Meta.Unlocks.Combat OR Config.Combat.UnlockedByDefault.
+-- Meta, not Progress: per-player forever, carried over by DataService.NewLife
+-- and cleared only by Wipe.
 
--- BUG-33: `.lock combat` is a session-only dev override that wins over the
--- UnlockedByDefault blanket (and the save flag); `.unlock combat` clears it.
--- Never saved, dropped on PlayerRemoving.
+-- `.lock combat` is a session-only override that beats the default and the
+-- save flag; `.unlock combat` clears it. Never saved.
 local devLocked: { [Player]: boolean? } = {}
 
 local function refreshCombatUnlockedAttribute(player: Player, data: SaveSchema.Data)
@@ -1629,8 +1349,7 @@ function CombatService.SetDevLocked(player: Player, locked: boolean)
 	devLocked[player] = if locked then true else nil
 end
 
--- Recomputes the attribute from `data` and any dev lock (SetUnlocked and the
--- DataService.Loaded wiring use it; exposed for the self-test).
+-- Recomputes the attribute from `data` and any dev lock.
 function CombatService.RefreshUnlocked(player: Player, data: SaveSchema.Data)
 	refreshCombatUnlockedAttribute(player, data)
 end
@@ -1652,9 +1371,8 @@ function CombatService.SetUnlocked(player: Player, unlocked: boolean, devOverrid
 	refreshCombatUnlockedAttribute(player, data)
 	log:Info(string.format("%s's combat unlock: %s", player.Name, tostring(unlocked)))
 
-	-- REVIEW-M3B-01 L1: locking someone already in the stance has to
-	-- actually leave it - CombatUnlocked going false doesn't do that on its
-	-- own (SetStance only ever checks it on the way IN).
+	-- Locking someone in the stance must leave it; SetStance only checks
+	-- CombatUnlocked on the way in.
 	if not unlocked and player.Character then
 		CombatService.SetStance(player.Character, false)
 	end
@@ -1876,10 +1594,7 @@ function CombatService:Init()
 end
 
 function CombatService:Start()
-	-- M3B-01: same catch-up pattern RankService uses for its own attributes
-	-- - a player whose save already loaded before this connection was made
-	-- (Start() runs after every service's Init()) still gets CombatUnlocked
-	-- set from their own data, not left unset.
+	-- Catch-up for players whose save loaded before this connection was made.
 	DataService.Loaded:Connect(function(player: Player)
 		local data = DataService.Get(player)
 		if data then

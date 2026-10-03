@@ -1,26 +1,14 @@
 --!strict
--- Lives per character (M3B-05, Bryan 2026-09-28). A character ("a life",
--- e.g. "Jamil") gets Config.Life.LivesPerCharacter (4) lives. Every REAL
--- death - Humanoid.Died from any cause: falling, the void, drowning, later
--- executions - costs one and the SAME character just respawns, no scene. A
--- combat knockout never touches this (StatusService.Apply "Knocked" never
--- sets Humanoid.Health to 0, so it never fires Died). The death that takes
--- the LAST life goes through the same afterlife scene a fatal heart attack
--- does (AgeService.StartDeathSequence, cause = "lastLife") and wipes to a
--- brand-new character with a fresh 4 lives. A fatal heart attack (old age)
--- is unrelated to LivesLeft entirely - it always wipes, cause = "heartAttack",
--- unchanged from before this milestone.
---
--- REVIEW-M3B-05 M1: the "still has lives" respawn waits Config.Life.
--- RespawnDelay (3s) instead of firing the same frame - an instant pop-back
--- left no death moment at all - via a guarded task.delay. The guard
--- (player.Character == the character that just died) protects against OUR
--- OWN delayed call firing after something else already respawned the
--- player. BUG-38 (2026-10-02): the engine's separate RespawnTime (5 s)
--- timer DID fire on the last-life path and cut the Rukh scene short, so
--- Init now pushes Players.RespawnTime far out (Config.Life.
--- EngineRespawnSeconds): every death is respawned by this service or by
--- AgeService, never by the engine.
+-- Lives per character. A character gets Config.Life.LivesPerCharacter lives. Every real death
+-- (Humanoid.Died from any cause: falling, void, drowning, ...) costs one and the same character
+-- respawns with no scene. A combat knockout never fires Died, so never touches this. The death
+-- that takes the LAST life goes through the afterlife scene (AgeService.StartDeathSequence,
+-- cause = "lastLife") and wipes to a brand-new character with fresh lives. A fatal heart attack
+-- always wipes (cause = "heartAttack") regardless of LivesLeft.
+-- The "still has lives" respawn waits Config.Life.RespawnDelay via a guarded task.delay (guard:
+-- player.Character is still the character that died). Init pushes Players.RespawnTime far out
+-- (Config.Life.EngineRespawnSeconds) so the engine never respawns anyone: every death is
+-- respawned by this service or by AgeService.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -42,11 +30,8 @@ local function refreshLivesLeftAttribute(player: Player, data: Data)
 	player:SetAttribute("LivesLeft", data.Character.LivesLeft)
 end
 
--- Decrements LivesLeft and returns which path this death takes - pure on
--- `data` alone, so self-tests can exercise the exact branch logic without a
--- live DataService-backed profile (Player.Character/:LoadCharacter() aren't
--- fakeable the way a bare attribute read/write is). The actual respawn/
--- scene side effects are onDied's own job below.
+-- Decrements LivesLeft and returns which path this death takes. Pure on `data`, so self-tests
+-- can exercise the branch logic; side effects are onDied's job.
 function LifeService.HandleDeath(data: Data): "respawn" | "lastLife"
 	data.Character.LivesLeft -= 1
 	if data.Character.LivesLeft > 0 then
@@ -55,10 +40,7 @@ function LifeService.HandleDeath(data: Data): "respawn" | "lastLife"
 	return "lastLife"
 end
 
--- REVIEW-M3B-05 M1: guarded so this specific delayed call is a no-op if the
--- player already has a DIFFERENT character (already respawned some other
--- way) by the time it fires - `character` is the one that just died, not
--- whatever player.Character happens to be when this runs.
+-- Guarded: a no-op if the player already has a different character by the time it fires.
 local function respawnAfterDelay(player: Player, character: Model)
 	task.delay(Config.Life.RespawnDelay, function()
 		if player.Parent == Players and player.Character == character then
@@ -67,22 +49,18 @@ local function respawnAfterDelay(player: Player, character: Model)
 	end)
 end
 
--- Runs on the player's own current character's Humanoid.Died. Never for an
--- NPC (LifeService only ever hooks a Player's own character).
+-- Runs on the player's current character's Humanoid.Died. Never for an NPC.
 local function onDied(player: Player, character: Model)
 	if player:GetAttribute("Dying") == true then
-		-- The heart-attack sequence (AgeService) already owns this death -
-		-- it freezes the humanoid rather than ever zeroing its health, so in
-		-- practice this only guards against a stray/duplicate Died fire
-		-- during the scene, not a real double-death.
+		-- The heart-attack sequence owns this death (it freezes the humanoid rather than
+		-- zeroing health), so this only guards a stray duplicate Died fire.
 		return
 	end
 
 	local data = DataService.Get(player)
 	if data == nil then
-		-- No save to charge a life against (not loaded yet, or the profile
-		-- was already released) - still owe the player SOME respawn, the
-		-- same delayed/guarded way as an ordinary "lives left" death.
+		-- No save to charge (not loaded, or profile released): still respawn, the same
+		-- delayed/guarded way.
 		respawnAfterDelay(player, character)
 		return
 	end
@@ -93,11 +71,8 @@ local function onDied(player: Player, character: Model)
 	DataService.Save(player)
 
 	if outcome == "respawn" then
-		-- "Simply respawns as the same character with no scene" - the join
-		-- pipeline (PlayerService's CharacterAdded/CharacterRemoving) does
-		-- everything else exactly like any other respawn, just not on the
-		-- very same frame (REVIEW-M3B-05 M1 - a real death moment, not an
-		-- instant pop-back).
+		-- Same character, no scene; the join pipeline does the rest, just not on the same
+		-- frame.
 		respawnAfterDelay(player, character)
 		return
 	end
@@ -112,8 +87,7 @@ local function hookCharacter(player: Player, character: Model)
 	if humanoid == nil then
 		return
 	end
-	-- REVIEW-M3B-05 L1: :Once, not :Connect - a stray second Died fire on
-	-- the same (already-dead) character can never charge a second life.
+	-- :Once, so a stray second Died fire can't charge a second life.
 	humanoid.Died:Once(function()
 		onDied(player, character)
 	end)
@@ -133,9 +107,8 @@ local function registerDevCommands()
 		if data == nil then
 			return string.format("%s: no save loaded", target.Name)
 		end
-		-- REVIEW-M3B-05 L2: clamped, not raw - a negative or absurdly large
-		-- value would otherwise reach the exact same field HandleDeath does
-		-- unconditional arithmetic on.
+		-- Clamped: a negative or huge value would otherwise reach unconditional arithmetic in
+		-- HandleDeath.
 		data.Character.LivesLeft = math.clamp(math.floor(n), 0, 99)
 		refreshLivesLeftAttribute(target, data)
 		return string.format("%s's LivesLeft: %d", target.Name, data.Character.LivesLeft)
@@ -157,11 +130,8 @@ local function registerDevCommands()
 end
 
 function LifeService:Init()
-	-- BUG-38: the engine's 5 s auto-respawn used to fire during the last-life
-	-- Rukh scene and cut it short (the character really dies on that path,
-	-- unlike the frozen heart-attack one). Every death path here and in
-	-- AgeService respawns on its own schedule; the engine timer becomes a
-	-- far-off safety net only (Config.Life.EngineRespawnSeconds).
+	-- The engine's 5 s auto-respawn is pushed far out so it can't cut the last-life scene
+	-- short; every death path respawns on its own schedule.
 	Players.RespawnTime = Config.Life.EngineRespawnSeconds
 	registerDevCommands()
 end

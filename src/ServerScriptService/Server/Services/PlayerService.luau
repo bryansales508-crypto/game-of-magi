@@ -1,12 +1,8 @@
 --!strict
--- The join pipeline: load -> character ready -> spawn -> ready, in order,
--- with no one-time signal that can be missed. Replaces the old MainScreen
--- remote race (AUDIT H3/P1/M9) and the old LocationHandler/Protection.
---
--- State lives entirely in one Player attribute, `JoinState`, so anything
--- (old or new code) can just read or watch it instead of coordinating
--- through a fragile chain of events:
---   "Loading" -> "Loaded" -> "Ready", reset to "Loading" on every respawn.
+-- The join pipeline: load -> character ready -> spawn -> ready, in order, with no one-time
+-- signal that can be missed.
+-- State lives in one Player attribute, `JoinState`: "Loading" -> "Loaded" -> "Ready", reset to
+-- "Loading" on every respawn. Anything can read or watch it.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -29,23 +25,18 @@ local STUCK_LOADING_SECONDS = 120
 
 local readyBindable = Instance.new("BindableEvent")
 
--- The character JoinState == "Ready" actually refers to. Roblox doesn't
--- guarantee CharacterAdded/CharacterRemoving handler order across scripts,
--- so on a respawn something else (old AppearanceController, a caller of
--- IsReady/WaitForReady) could otherwise still read "Ready" from the
--- previous life for one frame. IsReady checks this generation too
--- (REVIEW-M1-04S F1).
+-- The character JoinState == "Ready" refers to. CharacterAdded/CharacterRemoving order isn't
+-- guaranteed across scripts, so IsReady checks this generation too, or a reader could see the
+-- previous life's "Ready" for a frame.
 local readyCharacter: { [Player]: Model } = {}
 
 local PlayerService = {}
 PlayerService.Ready = readyBindable.Event :: RBXScriptSignal
--- Shared with DevService's .tp (REVIEW-M1-05S #3), so both places that
--- place a character at a spawn part use the same margin.
+-- Shared with DevService's .tp so both place characters at a spawn with the same margin.
 PlayerService.SPAWN_RAISE_STUDS = SPAWN_RAISE_STUDS
 
--- Pure: no Player needed, so SelfTestService can exercise every transition
--- directly. This is the ONLY place the state machine's rules live; setState
--- below just applies its result to a Player's attribute.
+-- Pure, so SelfTestService can exercise every transition. The only place the state machine's
+-- rules live; setState applies the result.
 function PlayerService.NextJoinState(state: JoinState, event: JoinEvent): JoinState
 	if event == "Respawn" then
 		return "Loading"
@@ -75,9 +66,8 @@ function PlayerService.IsReady(player: Player): boolean
 	return PlayerService.GetState(player) == "Ready" and readyCharacter[player] == player.Character
 end
 
--- Applies one event to `player`'s JoinState and writes the result back as
--- the attribute (a Respawn is written even if the state was already
--- "Loading", since it's the reset signal every respawn must (re)send).
+-- Applies one event to JoinState and writes the attribute (a Respawn is written even if already
+-- "Loading": it is the reset signal).
 local function setState(player: Player, event: JoinEvent): JoinState
 	local current: JoinState = PlayerService.GetState(player) or "Loading"
 	local nextState: JoinState = PlayerService.NextJoinState(current, event)
@@ -87,9 +77,8 @@ local function setState(player: Player, event: JoinEvent): JoinState
 	return nextState
 end
 
--- Waits for JoinState == "Ready" and returns the character it became ready
--- with (nil on timeout or if the player leaves first). Every loop iteration
--- re-checks player.Parent so a leaving player never leaks the thread.
+-- Waits for JoinState == "Ready" and returns the character it became ready with (nil on timeout
+-- or if the player leaves). Re-checks player.Parent each iteration so no thread leaks.
 function PlayerService.WaitForReady(player: Player, timeout: number?): Model?
 	local deadline = if timeout then os.clock() + timeout else nil
 	while not (PlayerService.IsReady(player) and player.Character) do
@@ -104,10 +93,8 @@ function PlayerService.WaitForReady(player: Player, timeout: number?): Model?
 	return player.Character
 end
 
--- Resolves Workspace.MAP.Spawns.QarzinSpawn fresh every call (cheap once the
--- map is loaded: WaitForChild returns instantly for an existing child), with
--- a bounded wait and a logged error instead of hanging forever if the map
--- isn't there.
+-- Resolves Workspace.MAP.Spawns.QarzinSpawn fresh each call, with a bounded wait and a logged
+-- error instead of hanging if the map isn't there.
 local function getSpawnCFrame(): CFrame?
 	local map = Workspace:WaitForChild("MAP", SPAWN_WAIT_TIMEOUT)
 	if map == nil then
@@ -127,17 +114,13 @@ local function getSpawnCFrame(): CFrame?
 		return nil
 	end
 
-	-- `+ Vector3` (not CFrame.new(position)) keeps QarzinSpawn's own facing
-	-- direction; only the position is translated. Raise by half the part's
-	-- own height plus a margin (REVIEW-M1-04S F3), not a flat guess, so a
-	-- tall or reshaped spawn part still clears the character.
+	-- `+ Vector3` (not CFrame.new(position)) keeps the spawn part's facing. Raised by half the
+	-- part's height plus a margin so a tall spawn part still clears the character.
 	return qarzin.CFrame + Vector3.new(0, qarzin.Size.Y / 2 + SPAWN_RAISE_STUDS, 0)
 end
 
--- Logs once (never kicks: the old 30s kick during character creation was
--- H3) if this exact character is still "Loading" after STUCK_LOADING_SECONDS.
--- Guarded against a later respawn: if player.Character has moved on, this
--- watchdog is stale and says nothing.
+-- Logs once (never kicks) if this exact character is still "Loading" after
+-- STUCK_LOADING_SECONDS. Stale (silent) if player.Character has moved on.
 local function startStuckWatchdog(player: Player, character: Model)
 	task.spawn(function()
 		task.wait(STUCK_LOADING_SECONDS)
@@ -168,8 +151,7 @@ local function onCharacterAdded(player: Player, character: Model)
 		end
 	end
 
-	-- Usually already loaded by the time a character exists; this only
-	-- really waits on a fast auto-spawn racing PlayerAdded's own load.
+	-- Usually already loaded; this only waits when a fast auto-spawn races PlayerAdded's load.
 	local data = DataService.WaitFor(player)
 	if data == nil or player.Parent ~= Players or player.Character ~= character then
 		return
@@ -180,8 +162,7 @@ end
 
 local function onPlayerAdded(player: Player)
 	if PlayerService.GetState(player) ~= nil then
-		-- Start() and PlayerAdded can both reach a player that joined right
-		-- before Start() ran; only run the pipeline once per player.
+		-- Start() and PlayerAdded can both reach a just-joined player; run the pipeline once.
 		return
 	end
 
@@ -189,17 +170,15 @@ local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character: Model)
 		onCharacterAdded(player, character)
 	end)
-	-- Fires before the next CharacterAdded (REVIEW-M1-04S F1): resets state
-	-- immediately, so nothing (old AppearanceController included) can read
-	-- a stale "Ready"/"Loaded" from the life that just ended.
+	-- Fires before the next CharacterAdded: resets state immediately so nothing reads a stale
+	-- "Ready"/"Loaded".
 	player.CharacterRemoving:Connect(function()
 		readyCharacter[player] = nil
 		setState(player, "Respawn")
 	end)
 
-	-- A character can already exist here: Start()'s catch-up loop reaches a
-	-- player who joined (and auto-spawned) before Init connected
-	-- CharacterAdded (REVIEW-M1-04S F2). Without this, that join stays on
+	-- A character can already exist here (Start()'s catch-up loop reaches a player who
+	-- auto-spawned before Init connected CharacterAdded); without this that join stays
 	-- "Loading" forever.
 	if player.Character then
 		task.spawn(onCharacterAdded, player, player.Character)
