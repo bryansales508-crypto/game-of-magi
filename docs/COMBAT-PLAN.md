@@ -1,5 +1,7 @@
 # Combat plan: the loop from the top (draft for Bryan, 2026-10-02)
 
+> **SHELVED (Bryan, 2026-10-03).** Not approved, nothing below is built. Bryan's call: the current combat "doesn't feel right and we are stacking issues on issues"; combat will be erased and redesigned from the top as its own milestone **after everything else is complete**. What's on main stays as-is (playable, stable) until then. Nobody builds on it in the meantime; combat bugs get logged, not fixed, unless they break something outside combat.
+
 Where combat stands after M3-FIX7 (every hit a Light, any landed hit interrupts, the chain loops forever while the clicks come) and what the next round should change. Numbers are proposals; you tune them in `Shared/Data/Combat.luau` and `Config.Combat`. Nothing here is built until you approve it.
 
 ## 1. The loop, as it should play
