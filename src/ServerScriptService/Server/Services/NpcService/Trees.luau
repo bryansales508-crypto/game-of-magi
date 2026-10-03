@@ -15,7 +15,6 @@ local Players = game:GetService("Players")
 local Log = require(ReplicatedStorage.Shared.Log)
 local Config = require(ReplicatedStorage.Shared.Config)
 local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
-local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local StatusService = require(script.Parent.Parent.StatusService)
 local CombatService = require(script.Parent.Parent.CombatService)
 local MovementService = require(script.Parent.Parent.MovementService)
@@ -453,13 +452,13 @@ local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Failure"
 end
 
--- Feinting Mohammed: throws the Fist chain, but cancels his OWN hit 2 once
--- its cancelUntil has passed since that hit's segment began (a scripted,
--- telegraphed feint, not a reaction to the target), then re-jabs
--- immediately (Fist's cancelInto is "Any" - nothing auto-fires the way
--- Dagger's "Jab" would). Repeats on rhythmSeconds; never blocks.
-local FIST_HIT2_CANCEL_UNTIL = (Combat.styleFor("Fist") :: Combat.Style).chain[2].cancelUntil
-
+-- Feinting Mohammed: throws the Fist chain, but cancels his OWN hit 2 on the
+-- first tick that sees CurrentHitIndex == 2 (a scripted, telegraphed feint,
+-- not a reaction to the target; no extra wait - the AI tick lag alone can
+-- push a later cancel past cancelUntil + HitTolerance, which the server
+-- refuses), then re-jabs immediately (Fist's cancelInto is "Any" - nothing
+-- auto-fires the way Dagger's "Jab" would). Repeats on rhythmSeconds; never
+-- blocks.
 local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 	local now = os.clock()
 	local attacking = bb.character:GetAttribute("Attacking") == true
@@ -484,15 +483,6 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 			return "Failure"
 		end
 		if currentHit == 2 then
-			-- Hit 2's own segment starts the first tick it's seen.
-			if bb.segmentAt == nil then
-				bb.segmentAt = now
-			end
-		else
-			bb.segmentAt = nil
-		end
-		if bb.segmentAt ~= nil and now - (bb.segmentAt :: number) >= FIST_HIT2_CANCEL_UNTIL then
-			bb.segmentAt = nil
 			CombatService.AttackCancel(bb.character)
 			bb.phase = "cancelled"
 			bb.phaseAt = now
@@ -502,7 +492,6 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 	end
 
 	-- bb.phase == "cancelled"
-	bb.segmentAt = nil
 	CombatService.Attack(bb.character)
 	bb.phase = "idle"
 	bb.phaseAt = now

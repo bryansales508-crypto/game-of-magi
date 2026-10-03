@@ -2612,14 +2612,26 @@ local function testTrainers(results: { Check })
 		tree.Tick(bb)
 		expect(results, "Trainers: Feinting Mohammed throws its Fist chain", trainer:GetAttribute("Attacking") == true)
 
-		-- He cancels hit 2 at its cancelUntil past that segment's start; its
-		-- hitWindow opens well after that, so a cancel caught here proves it
-		-- didn't just land normally.
-		local cancelled = pollUntil(2, function()
+		-- He cancels hit 2 on the first tick that sees it. Tick at the real AI
+		-- cadence (Config.Npc.TickSeconds) so a cancel the server would
+		-- refuse as too late is caught: a refused cancel lets hit 2 land, so
+		-- the target would lose more than hit 1's damage.
+		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
+		local cancelled = false
+		local deadline = os.clock() + 2
+		while os.clock() < deadline and not cancelled do
 			tree.Tick(bb)
-			return trainer:GetAttribute("Attacking") == false
-		end)
-		expect(results, "Trainers: Feinting Mohammed cancels its own hit 2 at cancelUntil", cancelled)
+			cancelled = trainer:GetAttribute("Attacking") == false
+			if not cancelled then
+				task.wait(Config.Npc.TickSeconds)
+			end
+		end
+		expect(results, "Trainers: Feinting Mohammed cancels its own hit 2 (cancel accepted, not refused as too late)", cancelled)
+		expect(
+			results,
+			"Trainers: Feinting Mohammed's hit 2 never landed (the cancel beat it)",
+			targetHumanoid.Health >= 100 - Combat.Styles.Fist.chain[1].damage
+		)
 
 		local rejabbed = pollUntil(0.5, function()
 			tree.Tick(bb)

@@ -22,8 +22,9 @@
 -- in-progress attack (a hit still unlanded, or the chain waiting for its
 -- next click), so a chain only keeps going while nobody blocks, parries,
 -- dashes away or hits first; Stun/TrueStun/Knocked turning on interrupts
--- too (block break, parry, knockout). Cancel is per-hit (each hit's own cancelUntil) and, depending on the style's
--- cancelInto trait, either returns the attacker to neutral ("Any") or
+-- too (block break, parry, knockout). Cancel is per-hit (each hit's own
+-- cancelUntil) and, depending on the style's cancelInto trait, either
+-- returns the attacker to neutral ("Any") or
 -- immediately throws a feint jab ("Jab") that punishes them with Recovery
 -- if it gets blocked. Knockback is no longer per-hit: a shared HitCount
 -- attribute triggers one impulse every `Combat.Knockback.everyHits` landed
@@ -81,9 +82,8 @@ local BLOCKS_BLOCK_START: { [string]: boolean } = {
 local ENDS_BLOCK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, LightStun = true }
 -- Statuses that also interrupt an in-progress attack the instant they turn
 -- on, regardless of what caused them (a real hit, a dev command, anything)
--- - onStatusChanged below reacts to all three. This is what actually
--- interrupts a target whenever a HEAVY lands on them, whatever they were
--- doing (a block break's TrueStun, a parry's Stun, a knockout). A landed
+-- - onStatusChanged below reacts to all three. This covers a block break's
+-- TrueStun, a parry's Stun, a knockout, a dev command. A landed
 -- hit's own interrupt is the unconditional check in ApplyHit below, not this
 -- table. NOT LightStun or Recovery here: LightStun doesn't gate an attack at
 -- all, and Recovery only ever turns on once a feint's own AttackHit has

@@ -16,7 +16,7 @@
 -- needs distance/time into the run - Bryan's call, Config.Missions.
 -- InterceptMin*), M3 (board rolls are cached per player per destination
 -- until a run to it starts), M5 (FragilePackage/VIP react to CombatService.
--- HitLanded - ANY landed hit, not just the Heavy-only `Hit` status), M6
+-- HitLanded - ANY landed hit), M6
 -- (the package's FragilePackage/HighlyValuable looks restored), L1 (leaving
 -- fails the run before local state is dropped), L2 (Mission attributes
 -- refresh after a new life), L3 (the interceptor is resolved by UserId, not
