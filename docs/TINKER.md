@@ -61,7 +61,9 @@ Conventions in the new code: services on the server live in `src/ServerScriptSer
 - **`Client/Controllers/EffectsController/init.luau`**: everything seen and heard: hit/miss/block/parry/block-break sounds and particles, stagger and block-reaction animations, the stunned pose, parry hit-stop, knockout blind screen and input freeze (local player), ragdoll visuals, dash trail, run zoom, and (M3-FIX4-C) bleed droplets while `Bleed > 0` and a knockback camera shake on `KnockedBack`. One handler per `CombatEvent` kind.
 
 ### Where the old pieces went
-`InteractionsHandler`, `InteractionsDesign`, `DamageHandler`, `PhysicalHandler`, `SpeedHandler` (a shim remains), `WeaponHandler`, `NPController`: deleted. `EffectsService.server.luau` now only creates `character.Effects` and does the ragdoll physics on `Knocked`.
+`InteractionsHandler`, `InteractionsDesign`, `DamageHandler`, `PhysicalHandler`, `SpeedHandler` (a shim remains), `WeaponHandler`, `NPController`: deleted. `EffectsService.server.luau` is gone (M7-01): `Server/Services/RagdollService.luau` now does the ragdoll physics on `Knocked` for every combatant (players and NPCs) and creates `character.Effects` for players.
+
+`.lock combat [player]` (M7-01) is a session-only dev lock that wins over `Config.Combat.UnlockedByDefault`; `.unlock combat` clears it.
 
 ---
 
