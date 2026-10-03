@@ -190,15 +190,19 @@ local Styles: { [string]: Style } = {
 		},
 		-- Unknown until Bryan makes the Dagger combo animation; the old swing
 		-- it plays today has no measured follow-through. The chain numbers
-		-- below are PLACEHOLDERS (now read as track seconds, and divided by
-		-- Config.Combat.ComboSpeed.Dagger) until that animation exists.
+		-- below are PLACEHOLDERS until that animation exists. They are authored
+		-- as track seconds (divided by Config.Combat.ComboSpeed.Dagger = 0.25
+		-- below), so each is the intended REAL seconds x 0.25: Stab exports as
+		-- 0.10 windup / 0.10 cancel / 0.25-0.45 hit window real seconds
+		-- (M7-01, BUG-34: they had come out 4x too long). M7-02's client timer
+		-- fallback lands the hit for a style whose animation has no hit keys.
 		loopOffset = 0,
 		chain = {
 			{
 				name = "Stab",
-				windupAt = 0.10,
-				cancelUntil = 0.10,
-				hitWindow = { min = 0.25, max = 0.45 },
+				windupAt = 0.025,
+				cancelUntil = 0.025,
+				hitWindow = { min = 0.0625, max = 0.1125 },
 				damage = 3,
 				range = 5,
 				radius = 1.5,
@@ -211,7 +215,7 @@ local Styles: { [string]: Style } = {
 				name = "Slash",
 				windupAt = 0,
 				cancelUntil = 0,
-				hitWindow = { min = 0.15, max = 0.35 },
+				hitWindow = { min = 0.0375, max = 0.0875 },
 				damage = 3,
 				range = 5,
 				radius = 1.5,
@@ -222,8 +226,8 @@ local Styles: { [string]: Style } = {
 			{
 				name = "Lunge",
 				windupAt = 0,
-				cancelUntil = 0.25,
-				hitWindow = { min = 0.60, max = 0.95 },
+				cancelUntil = 0.0625,
+				hitWindow = { min = 0.15, max = 0.2375 },
 				damage = 3,
 				range = 5,
 				radius = 1.7,

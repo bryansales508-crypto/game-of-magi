@@ -1612,11 +1612,37 @@ end
 -- DataService.Loaded wiring RankService uses to refresh the attribute on
 -- load.
 
+-- BUG-33: `.lock combat` is a session-only dev override that wins over the
+-- UnlockedByDefault blanket (and the save flag); `.unlock combat` clears it.
+-- Never saved, dropped on PlayerRemoving.
+local devLocked: { [Player]: boolean? } = {}
+
 local function refreshCombatUnlockedAttribute(player: Player, data: SaveSchema.Data)
+	if devLocked[player] then
+		player:SetAttribute("CombatUnlocked", false)
+		return
+	end
 	player:SetAttribute("CombatUnlocked", data.Meta.Unlocks.Combat or Config.Combat.UnlockedByDefault)
 end
 
-function CombatService.SetUnlocked(player: Player, unlocked: boolean)
+function CombatService.SetDevLocked(player: Player, locked: boolean)
+	devLocked[player] = if locked then true else nil
+end
+
+-- Recomputes the attribute from `data` and any dev lock (SetUnlocked and the
+-- DataService.Loaded wiring use it; exposed for the self-test).
+function CombatService.RefreshUnlocked(player: Player, data: SaveSchema.Data)
+	refreshCombatUnlockedAttribute(player, data)
+end
+
+-- `devOverride` (dev commands only): true = session lock that beats the default,
+-- false = clear it. nil leaves any dev lock as it is.
+function CombatService.SetUnlocked(player: Player, unlocked: boolean, devOverride: boolean?)
+	if devOverride == true then
+		CombatService.SetDevLocked(player, true)
+	elseif devOverride == false then
+		CombatService.SetDevLocked(player, false)
+	end
 	local data = DataService.Get(player)
 	if data == nil then
 		log:Warn(string.format("SetUnlocked(%s, %s): no save loaded", player.Name, tostring(unlocked)))
@@ -1770,7 +1796,7 @@ local function registerDevCommands()
 		if target == nil then
 			return err or "player not found"
 		end
-		CombatService.SetUnlocked(target, true)
+		CombatService.SetUnlocked(target, true, false)
 		return string.format("%s's combat: unlocked", target.Name)
 	end)
 
@@ -1782,7 +1808,7 @@ local function registerDevCommands()
 		if target == nil then
 			return err or "player not found"
 		end
-		CombatService.SetUnlocked(target, false)
+		CombatService.SetUnlocked(target, false, true)
 		return string.format("%s's combat: locked", target.Name)
 	end)
 end
@@ -1841,6 +1867,7 @@ function CombatService:Init()
 	StatusService.Changed:Connect(onStatusChanged)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
+		devLocked[player] = nil
 		local character = player.Character
 		if character then
 			CombatService.Unregister(character)

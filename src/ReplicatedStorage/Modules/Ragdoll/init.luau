@@ -1,14 +1,24 @@
-local Players           = game:GetService("Players")
+--!nocheck
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LimbTree          = require(script:WaitForChild("LimbTree"))
 
 local Ragdoll = {}
 
-function Ragdoll.RagdollCharacter(Character : Model)
-	local Player = Players:GetPlayerFromCharacter(Character)
-	local Humanoid = Character:FindFirstChild("Humanoid")
+local APPEARANCE_TIMEOUT = 5 -- seconds to wait for a player's AppearenceLoaded
 
-	while Character:WaitForChild("AppearenceLoaded").Value == false do task.wait() end
+function Ragdoll.RagdollCharacter(Character : Model)
+	local Humanoid = Character:FindFirstChild("Humanoid")
+	if not Humanoid then return end
+
+	-- Players get an AppearenceLoaded BoolValue (CharacterService); wait for it,
+	-- but never forever. NPCs have none, so they proceed at once.
+	local Loaded = Character:FindFirstChild("AppearenceLoaded")
+	if Loaded and Loaded:IsA("BoolValue") then
+		local Deadline = os.clock() + APPEARANCE_TIMEOUT
+		while Loaded.Value == false and os.clock() < Deadline and Character.Parent ~= nil do
+			task.wait()
+		end
+	end
 
 	if Humanoid.RigType == Enum.HumanoidRigType.R6 then
 		local Head             = Character:FindFirstChild("Head")
@@ -147,8 +157,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 end
 
 function Ragdoll.UnRagdollCharacter(Character : Model)
-	local Player = Players:GetPlayerFromCharacter(Character)
-	local Humanoid              = Character:FindFirstChild("Humanoid")
 	local HumanoidRootPart      = Character:FindFirstChild("HumanoidRootPart")
 	if HumanoidRootPart then HumanoidRootPart.CanCollide = true end
 

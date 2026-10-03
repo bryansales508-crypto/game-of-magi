@@ -33,6 +33,7 @@ local ShopService = require(script.Parent.ShopService)
 local StatusService = require(script.Parent.StatusService)
 local MovementService = require(script.Parent.MovementService)
 local CombatService = require(script.Parent.CombatService)
+local RagdollService = require(script.Parent.RagdollService)
 local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
 local NpcService = require(script.Parent.NpcService)
 local NpcTrees = require(script.Parent.NpcService.Trees)
@@ -3342,6 +3343,123 @@ local function testWorld(results: { Check })
 	root:Destroy()
 end
 
+-- M7-01: RagdollService folds the legacy EffectsService ragdoll; BUG-33's dev
+-- combat lock; BUG-34's Dagger numbers (exported real seconds).
+local function testRagdollAndLock(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestRagdollLock"
+	scratch.Parent = Workspace
+
+	-- Fake R6 NPC (no AppearenceLoaded, like every trainer/dummy).
+	do
+		local npc = Instance.new("Model")
+		npc.Name = "SelfTestRagdollNpc"
+		local function part(name: string, size: Vector3): Part
+			local p = Instance.new("Part")
+			p.Name = name
+			p.Size = size
+			p.Anchored = true
+			p.Parent = npc
+			return p
+		end
+		local torso = part("Torso", Vector3.new(2, 2, 1))
+		part("HumanoidRootPart", Vector3.new(2, 2, 1))
+		part("Head", Vector3.new(2, 1, 1))
+		part("Right Arm", Vector3.new(1, 2, 1))
+		part("Left Arm", Vector3.new(1, 2, 1))
+		part("Right Leg", Vector3.new(1, 2, 1))
+		part("Left Leg", Vector3.new(1, 2, 1))
+		local humanoid = Instance.new("Humanoid")
+		humanoid.RigType = Enum.HumanoidRigType.R6
+		humanoid.Parent = npc
+		npc.Parent = scratch
+
+		StatusService.Register(npc)
+		StatusService.Apply(npc, "Knocked", 30)
+		local ragdolled = pollUntil(2, function()
+			return torso:FindFirstChild("NeckJoint") ~= nil
+		end)
+		expect(results, "RagdollService: an NPC's Knocked builds its ragdoll joints (no infinite yield)", ragdolled)
+		expect(results, "RagdollService: IsRagdolled reports the NPC", RagdollService.IsRagdolled(npc))
+		expect(
+			results,
+			"RagdollService: the NPC's Humanoid is in Physics with GettingUp off",
+			humanoid:GetState() == Enum.HumanoidStateType.Physics and not humanoid:GetStateEnabled(Enum.HumanoidStateType.GettingUp)
+		)
+
+		StatusService.Apply(npc, "Knocked", 30) -- refresh: idempotent
+		StatusService.Remove(npc, "Knocked")
+		local cleared = pollUntil(2, function()
+			return torso:FindFirstChild("NeckJoint") == nil
+		end)
+		expect(results, "RagdollService: Knocked ending removes the joints", cleared and not RagdollService.IsRagdolled(npc))
+		expect(results, "RagdollService: GettingUp is re-enabled for the NPC", humanoid:GetStateEnabled(Enum.HumanoidStateType.GettingUp))
+		StatusService.Remove(npc, "Knocked") -- twice: no-op
+		expect(results, "RagdollService: clearing twice does nothing", not RagdollService.IsRagdolled(npc))
+
+		StatusService.Unregister(npc)
+		npc:Destroy()
+	end
+
+	-- Dev lock beats UnlockedByDefault.
+	do
+		local fakePlayerInstance = Instance.new("Folder")
+		fakePlayerInstance.Name = "SelfTestLockPlayer"
+		fakePlayerInstance.Parent = scratch
+		local fakePlayer = (fakePlayerInstance :: any) :: Player
+		local data = fakeCharacterData()
+
+		local character = Instance.new("Model")
+		character.Name = "SelfTestLockCharacter"
+		local hrp = Instance.new("Part")
+		hrp.Name = "HumanoidRootPart"
+		hrp.Anchored = true
+		hrp.Parent = character
+		Instance.new("Humanoid").Parent = character
+		character.Parent = scratch
+		StatusService.Register(character)
+		CombatService.Register(character, fakePlayer, "Fist")
+
+		local defaultOn = Config.Combat.UnlockedByDefault
+		CombatService.RefreshUnlocked(fakePlayer, data)
+		expect(results, "CombatService: CombatUnlocked follows the default with no dev lock", fakePlayer:GetAttribute("CombatUnlocked") == (defaultOn or data.Meta.Unlocks.Combat))
+
+		CombatService.SetDevLocked(fakePlayer, true)
+		CombatService.RefreshUnlocked(fakePlayer, data)
+		expect(
+			results,
+			"CombatService: a dev lock forces CombatUnlocked false even with the default on",
+			fakePlayer:GetAttribute("CombatUnlocked") == false
+		)
+		expect(results, "CombatService: SetStance(true) is refused while dev-locked", CombatService.SetStance(character, true) == false)
+
+		CombatService.SetDevLocked(fakePlayer, false)
+		CombatService.RefreshUnlocked(fakePlayer, data)
+		expect(
+			results,
+			"CombatService: unlock restores the default rule",
+			fakePlayer:GetAttribute("CombatUnlocked") == (defaultOn or data.Meta.Unlocks.Combat)
+		)
+
+		StatusService.Unregister(character)
+		CombatService.Unregister(character)
+		character:Destroy()
+	end
+
+	do
+		local stab = Combat.Styles.Dagger.chain[1]
+		expect(results, "Combat: Dagger Stab hit window opens at 0.25 real seconds", math.abs(stab.hitWindow.min - 0.25) < 1e-6)
+		expect(
+			results,
+			"Combat: Dagger Stab windup/cancel export as 0.10 real seconds",
+			math.abs(stab.windupAt - 0.10) < 1e-6 and math.abs(stab.cancelUntil - 0.10) < 1e-6
+		)
+		expect(results, "Combat: Dagger hit window opens after the windup", stab.hitWindow.min > stab.windupAt)
+	end
+
+	scratch:Destroy()
+end
+
 function SelfTestService:Init() end
 
 function SelfTestService:Start()
@@ -3369,6 +3487,7 @@ function SelfTestService:Start()
 		testMovementService(collected)
 		testCombatService(collected)
 		testCombatStance(collected)
+		testRagdollAndLock(collected)
 		testBehaviorTree(collected)
 		testNpcService(collected)
 		testTrainers(collected)
