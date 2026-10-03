@@ -1,4 +1,22 @@
-# When Bryan is back at Studio (updated 2026-09-29)
+# When Bryan is back at Studio (updated 2026-10-03)
+
+**Rojo first:** the serve is up (port 34872, restart loop); press Connect in the plugin once.
+
+## Playtest, in order (everything below was fixed 2026-10-02/03, see BUGS.md BUG-33..64)
+1. **M5B shop:** A (racks: hover highlight + E prompt on the hovered rack), C (refusals before charging), D (hover only for you). When it passes, delete `Workspace.Qarzin.ClothesStand.ClothingSpawn` by hand.
+2. **M5C delivery:** A (board colours/buttons, modifier chips in their own row, one description card), B (tracker at the real drop-off, FOV-proof, beacon pulse every 45 s), C (interceptor paid + coin sound), D (each modifier once: `.mission fail` or let Time Crunch run out), E (bad city), F (nothing left behind), G (intercepted mark clears on a completed delivery). Unbuilt cities have a magenta placeholder drop-off; `.tp <city>` reaches any city.
+3. **M6 world:** A (`.region`, `.music stop|play|next|volume`, the bottom-left music panel), C (walk and run footsteps, no engine footstep sound), B after you tag lamps/torches/fires `CityLight`.
+4. **Spot checks:** `.fresh` empties the purse GUI too; no overhead name/health on players; dash whoosh; Highly Valuable glow permanent on the package, courier pulses like everyone; Heavy Cargo pack bigger and dashes shorter; low health shortens walk, run AND dash; last life plays the whole Rukh scene (M3B-K).
+5. **Open, needs a repro:** the desert dash fling (BUG-58) - note where you were and whether you were on a slope.
+
+**Combat is shelved** (your call, 2026-10-03): don't playtest it; it gets redesigned from the top after everything else.
+
+## After the playtests: M7 close-out, then the gameplay-loop talk, then M8
+Fold InputHandler and the IntFold bridge into the new services; strip the rbxm-embedded scripts; your Studio deletions (clothes stocker, ServerStorage previous-game folder, R7/R8); then the gameplay-loop conversation (docs/ROADMAP.md section 4) before M8 talking NPCs and the tutorial.
+
+---
+
+# Older notes (2026-09-29)
 
 In order. **Rojo first:** the serve is up on port 34872, but today's 5C merge deleted the old mission scripts, which makes Rojo 7.7.0 restart; check the Studio plugin shows connected and press Connect if not. Everything below is in `docs/PLAYTEST.md`; write your notes under each scenario the way you have been.
 
