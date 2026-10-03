@@ -539,7 +539,25 @@ local function waitForCharacterCreated(player: Player, character: Model, data: D
 	return true
 end
 
+-- BUG-51 (Bryan): players never show Roblox's default overhead name or health
+-- bar (including the bar that appears when you hit someone). DisplayDistanceType
+-- None hides both; NPC trainers keep their own billboards (players only here).
+local PLAYER_DISPLAY_DISTANCE_TYPE = Enum.HumanoidDisplayDistanceType.None
+
+local function hideOverheadDisplay(character: Model)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid == nil then
+		return
+	end
+	humanoid.DisplayDistanceType = PLAYER_DISPLAY_DISTANCE_TYPE
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	humanoid.NameDisplayDistance = 0
+	humanoid.HealthDisplayDistance = 0
+end
+
 local function buildCharacter(player: Player, character: Model, data: Data)
+	hideOverheadDisplay(character)
+
 	local appearenceLoaded = Instance.new("BoolValue")
 	appearenceLoaded.Name = "AppearenceLoaded"
 	appearenceLoaded.Value = false
