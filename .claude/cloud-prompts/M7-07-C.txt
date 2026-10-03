@@ -1,0 +1,33 @@
+You are the client-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/client-builder.md` exactly. Your task is **M7-07-C: comment and dead-weight cleanup of the client code** (Bryan, 2026-10-03: "massive clean up... remove any prints, useless comments"). This is a ZERO-BEHAVIOUR-CHANGE task: when comments are stripped from every file you touch, the before and after must be byte-identical, except for the explicit deletions listed below.
+
+Git: work on the branch your session starts on. Never push main, never merge, never force-push. LAST commit starts with `DONE M7-07-C:`. `bash scripts/check.sh` to 0 errors.
+
+## Files you own
+Everything under `src/StarterPlayer/` (the `Client/` controllers, `Client/Main.client.luau`, `StarterCharacterScripts/Animate/init.client.luau`, `StarterCharacterScripts/Scripts/InputHandler.client.luau`, `StarterPlayerScripts/BackpackGUI.client.luau`, `StarterPlayerScripts/RbxCharacterSounds.client.luau`) and `src/StarterGui/`. NOT `src/ServerScriptService/`, `src/ReplicatedStorage/`, `default.project.json` or `docs/` (other sessions own those).
+
+## Comment rules (every `.luau` you own)
+Keep a comment only if it explains the CURRENT code to a reader who has never seen the project: what a module is for (one short paragraph at the top), why a non-obvious rule or number exists, a contract another file relies on (remote payload shapes, attribute names, GUI paths in Bryan's assets), a real caveat (engine quirk, ordering requirement). Delete everything else, in particular:
+- history narration: task/review IDs (`M3-FIX5`, `REVIEW-M6-02`, `BUG-nn`, `AUDIT L21`), dates, "Bryan 2026-..." attributions, "the old PhysicalHandler did / used to / replaces / no longer", "this fixes", "see the prompt", explanations of things that no longer exist;
+- comments that restate the line below them;
+- commented-out code; done or meaningless `TODO`s;
+- header essays longer than ~12 lines: compress to the purpose, the contracts, and the knobs.
+Rewrite a kept comment in plain present tense. Keep `--!strict`/`--!nocheck` and `-- selene: allow(...)` lines. Do not rename, reorder, reformat or re-type any code; do not touch string literals (log messages, GUI text) except in the deletions below.
+
+## Deletions (approved by Bryan as part of this cleanup)
+1. Stray `print(` / debugging `warn(` calls in files you own (keep the `warn` fallbacks in `Client/Main.client.luau`; keep `Shared/Log` calls; keep the `Config.World.Footsteps.Debug`-gated logging since it is a documented knob).
+2. In the legacy scripts (`InputHandler.client.luau`, `BackpackGUI.client.luau`, `Animate/init.client.luau`): remove dead code paths that nothing can reach any more (a branch keyed on a remote, folder or Value that no longer exists anywhere in `src/` - grep first and name the evidence), commented-out blocks, and debugging prints. Do NOT restructure them; folding them into the new controllers is a separate task.
+
+## One real fix, as its own FIRST commit (`BUG-65: ...`), before the cleanup commits
+**BUG-65 (Bryan, 2026-10-03):** an EMPTY clothes rack (invisible because it has no clothing on it - `Transparency = 1` on its part, or no item child, whatever the shop data/`ShopService` uses to mean "no stock") can still be hovered and highlighted. In `ShopController`, a rack that is currently invisible/empty must never highlight, never show its prompt, and never count as "the one rack in reach"; re-evaluate when its transparency or stock changes (property/attribute signal, not polling beyond the existing pass). Read `docs/reference/m5b-studio-dump.md` and `Server/Services/ShopService.luau` (read-only) for how an empty rack looks. This commit is the one allowed code change; the verification below will flag `ShopController` - say so.
+
+## Verification you must run and paste in your report
+```
+for f in $(git diff --name-only main -- '*.luau'); do
+  git show main:$f | perl -0pe 's/--\[(=*)\[.*?\]\1\]//gs; s/--[^\n]*//g; s/[ \t]+$//mg; s/\n+/\n/g' > /tmp/a
+  perl -0pe 's/--\[(=*)\[.*?\]\1\]//gs; s/--[^\n]*//g; s/[ \t]+$//mg; s/\n+/\n/g' $f > /tmp/b
+  cmp -s /tmp/a /tmp/b || echo "CODE CHANGED: $f"
+done
+```
+Every file must print nothing except the ones whose only changes are deleted prints or the named dead branches (list them with the evidence). Also report comment lines before/after (`grep -rhc '^\s*--'`) and `check.sh` counts.
+
+Reply with BRANCH, commit hash, the verification output, and a 4-line plain explanation for Bryan.

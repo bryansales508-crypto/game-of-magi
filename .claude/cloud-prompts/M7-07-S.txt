@@ -1,0 +1,32 @@
+You are the server-builder for Game of Magi (Roblox, Luau, Rojo). Read CLAUDE.md first, then follow `.claude/agents/server-builder.md` exactly. Your task is **M7-07-S: comment and dead-weight cleanup of the server and shared code** (Bryan, 2026-10-03: "massive clean up... remove any prints, useless comments, useless text docs"). This is a ZERO-BEHAVIOUR-CHANGE task: when comments are stripped from every file you touch, the before and after must be byte-identical, except for the explicit deletions listed below.
+
+Git: work on the branch your session starts on. Never push main, never merge, never force-push. LAST commit starts with `DONE M7-07-S:`. `bash scripts/check.sh` to 0 errors.
+
+## Files you own
+Everything under `src/ServerScriptService/` (including the empty legacy folders), `src/ReplicatedStorage/Shared/`, `src/ReplicatedStorage/Modules/` (Ragdoll, SpeedHandler, ColorMath), `src/ReplicatedStorage/Remotes/`, `src/ServerStorage/Parked/` (read-only: do NOT delete parked code, Bryan keeps it for later), `default.project.json` (only to drop folders you delete). NOT `src/StarterPlayer/` (a client-builder, M7-07-C, owns it) and NOT `docs/` (a third session rewrites them).
+
+## Comment rules (apply to every `.luau` you own; `Server/Packages/*` is vendored - leave it alone)
+Keep a comment only if it explains the CURRENT code to a reader who has never seen the project: what a module is for (one short paragraph at the top), why a non-obvious rule or number exists, a contract another file relies on (remote payload shapes, attribute names, data shapes), a real caveat (engine quirk, ordering requirement). Delete everything else, in particular:
+- history narration: task/review IDs (`M3-FIX4-S`, `REVIEW-M5C-01 M5`, `BUG-nn`, `AUDIT H7`), dates, "Bryan 2026-..." attributions, "the old code did X / used to / replaces / no longer", "this fixes", "see the prompt", "kept for compatibility" explanations of things that no longer exist;
+- comments that restate the line below them;
+- commented-out code; `TODO`s that are done or meaningless;
+- header essays longer than ~12 lines: compress to the purpose, the contracts, and the knobs.
+Rewrite a kept comment in plain present tense ("Every landed hit applies LightStun" not "M3-FIX7 made every hit apply..."). Keep `--!strict`/`--!nocheck` and `-- selene: allow(...)` lines. Do not rename, reorder, reformat or re-type any code; do not touch string literals (log messages included) except in the deletions below.
+
+## Deletions (approved by Bryan as part of this cleanup)
+1. The empty legacy folders `src/ServerScriptService/Character`, `Interactions`, `MISC`, `Services` (each holds only an `init.meta.json`) and their entries, if any, in `default.project.json`.
+2. Unused remote definitions: for every `*.model.json` under `src/ReplicatedStorage/Remotes/`, grep the whole `src/` tree for its name; delete the file if nothing references it (list each in the report). Keep every remote `Shared/Remotes.luau` registers or any code references.
+3. `src/ReplicatedStorage/Modules/SpeedHandler.luau` and `ColorMath.luau` ONLY if nothing in `src/` requires them any more (MovementService and FootstepController did; re-check and report; do not delete if used).
+4. Stray `print(` calls used for debugging in files you own (there should be none in the new code; `Shared/Log` is the logging path). Keep the `warn` fallbacks in `Server/Main.server.luau`.
+
+## Verification you must run and paste in your report
+```
+for f in $(git diff --name-only main -- '*.luau'); do
+  git show main:$f | perl -0pe 's/--\[(=*)\[.*?\]\1\]//gs; s/--[^\n]*//g; s/[ \t]+$//mg; s/\n+/\n/g' > /tmp/a
+  perl -0pe 's/--\[(=*)\[.*?\]\1\]//gs; s/--[^\n]*//g; s/[ \t]+$//mg; s/\n+/\n/g' $f > /tmp/b
+  cmp -s /tmp/a /tmp/b || echo "CODE CHANGED: $f"
+done
+```
+Every file must print nothing except the ones whose only change is a deleted `print(` (name those). Also report: comment lines before/after per directory (`grep -rhc '^\s*--'`), the list of deleted files, and `check.sh` counts.
+
+Reply with BRANCH, commit hash, the verification output, the deletion list, and a 4-line plain explanation for Bryan.
