@@ -130,6 +130,16 @@ local ALERT_TEMPLATES = {
 	Bad = MSG_TYPES:WaitForChild("MsgHold[REDALERT]"),
 }
 
+-- Modifier chip / pop-out sizes (pixels, like the rest of the board).
+local CHIP_WIDTH = 44
+local CHIP_HEIGHT = 26
+local POPOUT_WIDTH = 300
+local POPOUT_HEIGHT = 72
+local POPOUT_GAP = 6
+
+local TRACKER_WIDTH = 120
+local TRACKER_HEIGHT = 90
+
 local MERRIWEATHER_BOLD = Font.new(Font.fromEnum(Enum.Font.Merriweather).Family, Enum.FontWeight.Bold, Enum.FontStyle.Normal)
 
 -- ==================== types ====================
@@ -138,7 +148,7 @@ type Modifier = { key: string?, name: string, chance: number, text: string }
 type Destination = {
 	key: string,
 	name: string,
-	color: { number },
+	color: { [any]: number }, -- { r, g, b } from the server (also accepts { [1], [2], [3] })
 	lore: string,
 	image: string,
 	pay: number,
@@ -171,11 +181,29 @@ type RunState = {
 
 -- ==================== small helpers ====================
 
-local function toColor3(rgb: { number }?): Color3
+-- BUG-41: the server sends `{ r, g, b }` (0-1); the old read of `[1..3]`
+-- fell back to white for every channel. Accepts both shapes.
+local function toColor3(rgb: { [any]: number }?): Color3
 	if not rgb then
 		return Color3.new(1, 1, 1)
 	end
-	return Color3.new(rgb[1] or 1, rgb[2] or 1, rgb[3] or 1)
+	return Color3.new(rgb.r or rgb[1] or 1, rgb.g or rgb[2] or 1, rgb.b or rgb[3] or 1)
+end
+
+-- BUG-46: positions come over the wire as `{ x, y, z }` (MissionService
+-- vecToTable); reading `[1..3]` put every tracker anchor at the origin, the
+-- same wrong spot for every city. Accepts both shapes.
+local function toVector3(position: { [any]: number }?): Vector3?
+	if not position then
+		return nil
+	end
+	local x = position.x or position[1]
+	local y = position.y or position[2]
+	local z = position.z or position[3]
+	if typeof(x) ~= "number" or typeof(y) ~= "number" or typeof(z) ~= "number" then
+		return nil
+	end
+	return Vector3.new(x, y, z)
 end
 
 local function formatDistance(studs: number): string
@@ -302,6 +330,20 @@ local boardModifierInstances: { Instance } = {}
 local boardWatchThread: thread? = nil
 local selectedDestinationKey: string? = nil
 
+-- BUG-45: only one board modifier pop-out is open at a time (clicking
+-- another chip replaces it, clicking the same chip closes it).
+type OpenBoardPopOut = { popOut: Frame, chip: TextButton, idleTransparency: number }
+local openBoardPopOut: OpenBoardPopOut? = nil
+
+local function closeBoardPopOut()
+	local open = openBoardPopOut
+	openBoardPopOut = nil
+	if open then
+		open.popOut.Parent = nil
+		open.chip.BackgroundTransparency = open.idleTransparency
+	end
+end
+
 local function closeBoard()
 	if boardWatchThread then
 		task.cancel(boardWatchThread)
@@ -311,6 +353,7 @@ local function closeBoard()
 		connection:Disconnect()
 	end
 	table.clear(boardConnections)
+	closeBoardPopOut()
 	for _, inst in boardModifierInstances do
 		inst:Destroy()
 	end
@@ -323,6 +366,7 @@ local function closeBoard()
 end
 
 local function clearCityModifiers()
+	closeBoardPopOut()
 	for _, inst in boardModifierInstances do
 		inst:Destroy()
 	end
@@ -337,16 +381,34 @@ end
 -- `uiByKey`, when given (an active run only -- the board has no fail
 -- state), records each modifier's Constraint label and BONUS button under
 -- its own key so a later MissionUpdate "ModifierFailed" can find them.
-local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHost: Instance, sink: { Instance }, uiByKey: { [string]: ModifierUiEntry }?)
+--
+-- Placement (BUG-42/45): the template pop-out is a screen-wide {1,0} frame,
+-- which is what made it overlap everything. On the BOARD (`boardFrame` given)
+-- chips sit in their own row and a chip's pop-out is one fixed-size card
+-- below the board, left-aligned with the chip, one open at a time. IN A RUN
+-- (`boardFrame` nil) the pop-outs are listed in QuestLine.ModFrame, a column
+-- (UIListLayout) of name + one-line description cards, one per active
+-- modifier, never on top of each other.
+local function buildModifierRow(
+	modifiers: { Modifier },
+	row: Instance,
+	popOutHost: Instance,
+	sink: { Instance },
+	uiByKey: { [string]: ModifierUiEntry }?,
+	boardFrame: GuiObject?
+)
 	for _, modifier in modifiers do
-		local container = MOD_CONTAINER_TEMPLATE:Clone()
+		local container = MOD_CONTAINER_TEMPLATE:Clone() :: Frame
+		container.Size = UDim2.fromOffset(CHIP_WIDTH, CHIP_HEIGHT)
 		container.Parent = row
 		table.insert(sink, container)
 
-		local popOut = MOD_POP_OUT_TEMPLATE:Clone()
+		local popOut = MOD_POP_OUT_TEMPLATE:Clone() :: Frame
+		popOut.Size = if boardFrame then UDim2.fromOffset(POPOUT_WIDTH, POPOUT_HEIGHT) else UDim2.new(1, 0, 0, POPOUT_HEIGHT)
 		local constraint = (popOut :: any).Constraint :: TextLabel
 		;(popOut :: any).ModType.Text = modifier.name
 		constraint.Text = modifier.text
+		constraint.TextWrapped = true
 		table.insert(sink, popOut)
 
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
@@ -359,6 +421,21 @@ local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHo
 			local idleTransparency = typedBonusButton.BackgroundTransparency
 			local open = false
 			typedBonusButton.Activated:Connect(function()
+				if boardFrame then
+					local wasThis = openBoardPopOut ~= nil and openBoardPopOut.popOut == popOut
+					closeBoardPopOut()
+					if wasThis then
+						return
+					end
+					local anchorX = container.AbsolutePosition.X
+					local anchorY = boardFrame.AbsolutePosition.Y + boardFrame.AbsoluteSize.Y + POPOUT_GAP
+					popOut.AnchorPoint = Vector2.zero
+					popOut.Position = UDim2.fromOffset(anchorX, anchorY)
+					typedBonusButton.BackgroundTransparency = 0.75
+					popOut.Parent = popOutHost
+					openBoardPopOut = { popOut = popOut, chip = typedBonusButton, idleTransparency = idleTransparency }
+					return
+				end
 				open = not open
 				typedBonusButton.BackgroundTransparency = if open then 0.75 else idleTransparency
 				popOut.Parent = if open then popOutHost else nil
@@ -371,7 +448,7 @@ local function buildModifierRow(modifiers: { Modifier }, row: Instance, popOutHo
 	end
 end
 
-local function selectDestination(destination: Destination, textContainer: Instance, modifierRow: Instance, screenGui: ScreenGui)
+local function selectDestination(destination: Destination, textContainer: Instance, modifierRow: Instance, screenGui: ScreenGui, boardFrame: GuiObject)
 	selectedDestinationKey = destination.key
 	;(textContainer :: any).Visible = true
 
@@ -382,7 +459,7 @@ local function selectDestination(destination: Destination, textContainer: Instan
 	;(textContainer :: any).PayRow.Money.Text = tostring(math.floor(destination.pay))
 
 	clearCityModifiers()
-	buildModifierRow(destination.modifiers or {}, modifierRow, screenGui, boardModifierInstances)
+	buildModifierRow(destination.modifiers or {}, modifierRow, screenGui, boardModifierInstances, nil, boardFrame)
 end
 
 local function buildCityButton(destination: Destination, parent: Instance, layoutOrder: number, onClick: (Destination) -> ())
@@ -501,12 +578,14 @@ local function openBoard(board: any)
 
 	-- The board's own modifier preview row has no slot in the synced rbxm
 	-- (m5c-studio-dump.md has no board-side modifier container) -- built in
-	-- code, between the lore text and the pay row.
+	-- code, in its own row under the pay row.
 	local modifierRow = Instance.new("Frame")
 	modifierRow.Name = "ModifierRow"
 	modifierRow.BackgroundTransparency = 1
+	-- BUG-42: its own row under the pay row (PayRow ends at 0.9225), not
+	-- inside or over it.
 	modifierRow.Size = UDim2.fromScale(0.9, 0.07)
-	modifierRow.Position = UDim2.fromScale(0.5, 0.795)
+	modifierRow.Position = UDim2.fromScale(0.5, 0.96)
 	modifierRow.AnchorPoint = Vector2.new(0.5, 0.5)
 	modifierRow.Parent = textContainer
 
@@ -514,6 +593,7 @@ local function openBoard(board: any)
 	modifierLayout.FillDirection = Enum.FillDirection.Horizontal
 	modifierLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	modifierLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	modifierLayout.Padding = UDim.new(0, 4)
 	modifierLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	modifierLayout.Parent = modifierRow
 
@@ -530,7 +610,7 @@ local function openBoard(board: any)
 	local destinations: { Destination } = board.destinations
 	for index, destination in destinations do
 		buildCityButton(destination, scrollingFrame :: Instance, index, function(picked: Destination)
-			selectDestination(picked, textContainer :: Instance, modifierRow, clone)
+			selectDestination(picked, textContainer :: Instance, modifierRow, clone, outsideFrame :: GuiObject)
 		end)
 	end
 
@@ -603,7 +683,7 @@ local function teardownRun()
 	end
 end
 
-local function createTrackerAnchor(position: { number }?): Part
+local function createTrackerAnchor(position: { [any]: number }?): Part
 	local anchor = Instance.new("Part")
 	anchor.Name = "MissionTrackerAnchor"
 	anchor.Anchored = true
@@ -612,8 +692,9 @@ local function createTrackerAnchor(position: { number }?): Part
 	anchor.CanTouch = false
 	anchor.Transparency = 1
 	anchor.Size = Vector3.new(1, 1, 1)
-	if position then
-		anchor.Position = Vector3.new(position[1] or 0, position[2] or 0, position[3] or 0)
+	local resolved = toVector3(position)
+	if resolved then
+		anchor.Position = resolved
 	end
 	anchor.Parent = Workspace
 	return anchor
@@ -624,8 +705,8 @@ end
 -- `<City>Delivery` part) -- an anchor Part is created there and destroyed
 -- with the run. The named MISSION part is only a fallback for when the
 -- server sends no position at all.
-local function resolveTrackerTarget(cityKey: string?, position: { number }?): (BasePart, boolean)
-	if position then
+local function resolveTrackerTarget(cityKey: string?, position: { [any]: number }?): (BasePart, boolean)
+	if toVector3(position) then
 		return createTrackerAnchor(position), true
 	end
 
@@ -710,6 +791,18 @@ local function startRun(update: any)
 	local modFrame = questLineGui:FindFirstChild("ModFrame")
 	if not modFrame then
 		log:Warn("QuestLine.ModFrame missing; modifier pop-outs disabled")
+	elseif modFrame:IsA("Frame") then
+		-- BUG-42: the template column is only 0.1 of the screen wide, too
+		-- narrow to read a name + description. Widen it, right edge just left
+		-- of the quest list (Set, centred 0.917, 0.15 wide), growing leftward.
+		modFrame.AnchorPoint = Vector2.new(1, 0)
+		modFrame.Size = UDim2.fromScale(0.2, 0.4)
+		modFrame.Position = UDim2.fromScale(0.835, 0.5)
+		local layout = modFrame:FindFirstChildOfClass("UIListLayout")
+		if layout then
+			layout.Padding = UDim.new(0, 6)
+			layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+		end
 	end
 
 	local returning = update.returnPosition ~= nil
@@ -723,8 +816,25 @@ local function startRun(update: any)
 	questLineGui.Enabled = true
 
 	local trackerGui = QUEST_TRACKER_TEMPLATE:Clone()
+	-- BUG-44: the template is sized in STUDS ({1000,0}), so the camera's run
+	-- zoom (CombatController tweens Camera.FieldOfView) stretched it and its
+	-- distance text. Fixed pixel size, no world offsets, AlwaysOnTop: a pixel-
+	-- sized billboard is not scaled by FOV. The distance text is computed from
+	-- the character's root to the anchor (updateRunDistances), never the camera.
+	trackerGui.Size = UDim2.fromOffset(TRACKER_WIDTH, TRACKER_HEIGHT)
+	trackerGui.StudsOffset = Vector3.zero
+	trackerGui.StudsOffsetWorldSpace = Vector3.zero
+	trackerGui.ExtentsOffset = Vector3.zero
+	trackerGui.SizeOffset = Vector2.zero
+	trackerGui.AlwaysOnTop = true
+	trackerGui.MaxDistance = math.huge
 	trackerGui.Adornee = anchor
 	trackerGui.Parent = anchor
+	for _, descendant in trackerGui:GetDescendants() do
+		if descendant:IsA("ImageLabel") then
+			descendant.ScaleType = Enum.ScaleType.Fit
+		end
+	end
 
 	local run: RunState = {
 		trackerGui = trackerGui,
@@ -834,18 +944,44 @@ end
 
 -- ==================== courier beacon ====================
 
+-- BUG-43: the highlight fades in and out instead of popping. The server
+-- toggles the CourierBeacon attribute (Config.Missions.Beacon: every
+-- everySeconds, for forSeconds), the client eases the Highlight in over
+-- BEACON_FADE_SECONDS, holds while the attribute stays on, and eases out when
+-- it turns off before destroying it.
+local BEACON_FADE_SECONDS = 0.6
+local BEACON_FADE_INFO = TweenInfo.new(BEACON_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+local BEACON_FILL_TRANSPARENCY = 0.5 -- the Highlight default fill at full strength
+
 local function setBeacon(character: Model, on: boolean)
 	local existing = character:FindFirstChild("CourierBeaconHighlight")
 	if on then
-		if existing then
-			return
+		local highlight: Highlight
+		if existing and existing:IsA("Highlight") then
+			highlight = existing
+		else
+			highlight = Instance.new("Highlight")
+			highlight.Name = "CourierBeaconHighlight"
+			highlight.FillColor = BEACON_COLOR
+			highlight.OutlineColor = BEACON_COLOR
+			highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			highlight.FillTransparency = 1
+			highlight.OutlineTransparency = 1
+			highlight.Parent = character
 		end
-		local highlight = Instance.new("Highlight")
-		highlight.Name = "CourierBeaconHighlight"
-		highlight.FillColor = BEACON_COLOR
-		highlight.OutlineColor = BEACON_COLOR
-		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-		highlight.Parent = character
+		TweenService:Create(highlight, BEACON_FADE_INFO, {
+			FillTransparency = BEACON_FILL_TRANSPARENCY,
+			OutlineTransparency = 0,
+		}):Play()
+	elseif existing and existing:IsA("Highlight") then
+		local tween = TweenService:Create(existing, BEACON_FADE_INFO, { FillTransparency = 1, OutlineTransparency = 1 })
+		tween.Completed:Once(function()
+			-- only remove it if the beacon didn't come back on mid-fade
+			if character:GetAttribute("CourierBeacon") ~= true then
+				existing:Destroy()
+			end
+		end)
+		tween:Play()
 	elseif existing then
 		existing:Destroy()
 	end

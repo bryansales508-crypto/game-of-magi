@@ -426,8 +426,11 @@ Config.Missions = {
 	-- similar effect, HighlyValuable's package sparkle at MissionHandler:
 	-- 311-328, cycles on its own unrelated 1s-fade/6s-hold/20s-off tween for
 	-- a different purpose) - these are Bryan's own approved numbers.
+	-- BUG-43 (Bryan: "less frequently"): was 30 s, now 45 s (lead may tune).
+	-- Server-driven: MissionService reads these; the client fades in/out over
+	-- 0.6 s each way inside the forSeconds window.
 	Beacon = {
-		everySeconds = 30,
+		everySeconds = 45,
 		forSeconds = 3,
 	},
 }
