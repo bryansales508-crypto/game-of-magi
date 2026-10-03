@@ -1,7 +1,6 @@
 --!strict
 -- The Qarzin clothes stand, in synced code (Shared/Data/Shop.luau holds stock, look and
--- randomness). Purchases go through EconomyService.Pay and ItemService.Wear. The Studio-only
--- Workspace.Qarzin.ClothesStand.ClothingSpawn script is disabled at Init.
+-- randomness). Purchases go through EconomyService.Pay and ItemService.Wear.
 -- The hover highlight is client-only (ShopController): the server never enables the rig's
 -- Highlight or toggles the *HL parts' transparency; every prompt stays Enabled with
 -- RequiresLineOfSight = false so the client decides locally.
@@ -434,11 +433,6 @@ end
 function ShopService:Init()
 	local stand = getStand()
 	if stand then
-		local studioScript = stand:FindFirstChild(Shop.StudioScriptName)
-		if studioScript and studioScript:IsA("Script") then
-			studioScript.Disabled = true
-			log:Info("disabled the Studio-only ClothingSpawn script (Bryan deletes it once this phase passes)")
-		end
 	else
 		log:Warn("Workspace.Qarzin.ClothesStand not found at Init")
 	end

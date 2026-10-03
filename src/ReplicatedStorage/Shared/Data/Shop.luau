@@ -29,7 +29,6 @@ export type CloakStandOffset = {
 -- The stand's parts under Workspace (not synced; names only).
 
 Shop.WorkspacePath = "Qarzin.ClothesStand"
-Shop.StudioScriptName = "ClothingSpawn"
 
 Shop.HatTableName = "HatTable"
 Shop.HeadHolderName = "HeadHolder"
