@@ -1433,7 +1433,7 @@ end
 -- helpers, the hit-check geometry against fake models parented in
 -- Workspace (spatial queries only find parts actually in the DataModel),
 -- knockout at 0 HP, the AttackStart/AttackHit/AttackCancel chain-hit
--- sequence (window/order checks, per-hit cancel, Light/Heavy interrupts),
+-- sequence (window/order checks, per-hit cancel),
 -- feints, bleed and the count-based knockback, and the NPC server-timed
 -- sequence. Block's meter-drain (HealthService.SpendBlock) needs a real
 -- Player and is exercised by the playtester instead - ResolveBlock's own
@@ -1585,10 +1585,10 @@ local function testCombatService(results: { Check })
 	-- -> held -> broken sequence, against a fake (no-Player) blocker - which
 	-- only works at all because a target with no real Player gets its own
 	-- HealthService-backed block meter now (via HealthService.Register, the
-	-- same as NpcService gives a real NPC). Uses the Heavy (blockDrain 45,
-	-- M3-FIX4-S: per-hit now, not the old flat Combat.Block.drainPerHit):
-	-- 100 -(parry, no drain)-> 100 -(cooldown-forced hold, -45)-> 55
-	-- -(still holds, -45)-> 10 -(45 needed, only 10 left: breaks).
+	-- same as NpcService gives a real NPC). Uses Fist hit 1's blockDrain
+	-- (per-hit, not the old flat Combat.Block.drainPerHit), and derives the
+	-- hit count from Config.Health.MaxBlock: a parry costs nothing, then
+	-- floor(MaxBlock / drain) hits are held and the next one breaks.
 	do
 		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
@@ -1599,11 +1599,12 @@ local function testCombatService(results: { Check })
 		CombatService.Register(blocker, nil, "Fist")
 
 		local blockerHumanoid = blocker:FindFirstChildOfClass("Humanoid") :: Humanoid
-		local heavy = fist.chain[2]
+		local jab = fist.chain[1]
+		local heldHits = math.floor(Config.Health.MaxBlock / jab.blockDrain)
 
 		StatusService.Apply(blocker, "Block", nil, { value = 1 })
 
-		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2)
+		CombatService.ApplyHit(attacker, blocker, fist, jab, 1)
 		expect(
 			results,
 			"CombatService: a parry stuns the attacker and costs no block HP (M1)",
@@ -1611,7 +1612,7 @@ local function testCombatService(results: { Check })
 		)
 
 		StatusService.Remove(attacker, "Stun")
-		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 100 -> 55
+		CombatService.ApplyHit(attacker, blocker, fist, jab, 1) -- drains blockDrain
 		expect(
 			results,
 			"CombatService: a second hit right after a parry can't parry again (AUDIT H5 cooldown) and drains the meter instead",
@@ -1626,10 +1627,17 @@ local function testCombatService(results: { Check })
 			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
 		)
 
-		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 55 -> 10
+		CombatService.ApplyHit(attacker, blocker, fist, jab, 1) -- drains again
 		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
 
-		CombatService.ApplyHit(attacker, blocker, fist, heavy, 2) -- 10 < 45: breaks
+		-- Keep hitting until it breaks: at most heldHits more (one drain
+		-- already spent above, plus slack for regen during the wait).
+		for _ = 1, heldHits + 2 do
+			if not StatusService.Has(blocker, "Block") then
+				break
+			end
+			CombatService.ApplyHit(attacker, blocker, fist, jab, 1)
+		end
 		expect(results, "CombatService: the block breaks once a no-Player target's meter runs out (L8)", not StatusService.Has(blocker, "Block"))
 		expect(results, "CombatService: a broken block applies TrueStun", StatusService.Has(blocker, "TrueStun"))
 
@@ -1690,9 +1698,9 @@ local function testCombatService(results: { Check })
 		expect(results, "CombatService: an out-of-order AttackHit index is dropped", attacker:GetAttribute("Attacking") == true)
 
 		-- M3-FIX4-S: cancel is per-hit now - hit 1 (Jab) already landed, but
-		-- hit 2 (Heavy) is the new "next unlanded hit", and elapsed so far
-		-- (~hit 1's own window midpoint) is still well inside HEAVY's own
-		-- cancelUntil (1.05s) - so this is accepted, unlike the old flat
+		-- hit 2 (Cross) is the new "next unlanded hit", and elapsed so far
+		-- (~hit 1's own window midpoint) is still well inside hit 2's own
+		-- cancelUntil - so this is accepted, unlike the old flat
 		-- "only before hit 1 lands" rule.
 		CombatService.AttackCancel(attacker)
 		expect(
@@ -1734,7 +1742,7 @@ local function testCombatService(results: { Check })
 		expect(
 			results,
 			"CombatService: an AttackHit for a hit the chain is still waiting on is dropped",
-			attacker:GetAttribute("Attacking") == true and attacker:GetAttribute("CurrentHit") == ""
+			attacker:GetAttribute("Attacking") == true and attacker:GetAttribute("CurrentHitIndex") == nil
 		)
 		task.wait(Config.Combat.Chain.HitGap + tolerance)
 		local continuedAt = Workspace:GetServerTimeNow()
@@ -1742,7 +1750,7 @@ local function testCombatService(results: { Check })
 		expect(
 			results,
 			"CombatService: AttackContinue after Chain.HitGap is accepted and starts hit 2's segment",
-			continued == true and attacker:GetAttribute("CurrentHit") == "Heavy"
+			continued == true and attacker:GetAttribute("CurrentHitIndex") == 2
 		)
 
 		-- Just past hit 2's window (measured from the continue: max +
@@ -1852,12 +1860,9 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- M3-FIX4-S rule 1/2: a Light "cannot be interrupted [by another
-	-- Light]"; a Heavy always can - via the kind-conditional check in
-	-- ApplyHit while the TARGET's own next unlanded hit is a Heavy, OR
-	-- (REVIEW-M3-FIX4-S M2, confirmed intended) via the ordinary Stun path
-	-- whenever a HEAVY lands on them, whatever they were doing - heavy stun
-	-- overrides even a Light in progress.
+	-- M3-FIX7-S (Bryan, 2026-10-02): ANY landed hit interrupts a target
+	-- that is mid-attack - a hit still unlanded, or the chain waiting for
+	-- its next click. The check runs synchronously inside ApplyHit.
 	do
 		local attacker = buildFakeCombatant("SelfTestInterruptLightAttacker", Vector3.new(1000, 5, 0), Vector3.new(1000, 5, 3))
 		local target = buildFakeCombatant("SelfTestInterruptLightTarget", Vector3.new(1000, 5, 3), Vector3.new(1000, 5, 0))
@@ -1867,13 +1872,13 @@ local function testCombatService(results: { Check })
 		CombatService.Register(target, nil, "Fist")
 
 		CombatService.AttackStart(target)
-		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is a Light", target:GetAttribute("Attacking") == true)
+		expect(results, "CombatService: interrupt setup - the target is mid-attack", target:GetAttribute("Attacking") == true)
 
 		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
 		expect(
 			results,
-			"CombatService: a Light can't be interrupted - getting hit while the next unlanded hit is Light leaves the attack running",
-			target:GetAttribute("Attacking") == true
+			"CombatService: a landed hit interrupts a target mid-chain (Attacking ends)",
+			target:GetAttribute("Attacking") == false
 		)
 
 		StatusService.Unregister(attacker)
@@ -1884,47 +1889,11 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- REVIEW-M3-FIX4-S M2: unlike the Light-on-Light case right above, a
-	-- landed HEAVY interrupts a target's Light in progress too - not
-	-- through the kind-conditional check (which only fires for the
-	-- target's own pending Heavy), but through the ordinary Stun-turns-on
-	-- path (every Heavy applies a real Stun). That path is a deferred
-	-- BindableEvent (StatusService.Changed), so this polls for it instead
-	-- of asserting immediately (BUG-26's own fix pattern) - unlike the
-	-- kind-conditional check, which runs synchronously inside ApplyHit
-	-- itself and needs no poll.
+	-- The same interrupt applies while the chain is frozen on a punch waiting
+	-- for the next click (between segments).
 	do
-		local attacker = buildFakeCombatant("SelfTestInterruptHeavyOnLightAttacker", Vector3.new(1010, 5, 0), Vector3.new(1010, 5, 3))
-		local target = buildFakeCombatant("SelfTestInterruptHeavyOnLightTarget", Vector3.new(1010, 5, 3), Vector3.new(1010, 5, 0))
-		StatusService.Register(attacker)
-		StatusService.Register(target)
-		CombatService.Register(attacker, nil, "Fist")
-		CombatService.Register(target, nil, "Fist")
-
-		CombatService.AttackStart(target)
-		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is a Light", target:GetAttribute("Attacking") == true)
-
-		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- a Heavy landing
-		local interrupted = pollUntil(1, function()
-			return target:GetAttribute("Attacking") == false
-		end)
-		expect(
-			results,
-			"CombatService: a landed Heavy interrupts a target's Light in progress too (heavy stun overrides)",
-			interrupted
-		)
-
-		StatusService.Unregister(attacker)
-		StatusService.Unregister(target)
-		CombatService.Unregister(attacker)
-		CombatService.Unregister(target)
-		attacker:Destroy()
-		target:Destroy()
-	end
-
-	do
-		local attacker = buildFakeCombatant("SelfTestInterruptHeavyAttacker", Vector3.new(1020, 5, 0), Vector3.new(1020, 5, 3))
-		local target = buildFakeCombatant("SelfTestInterruptHeavyTarget", Vector3.new(1020, 5, 3), Vector3.new(1020, 5, 0))
+		local attacker = buildFakeCombatant("SelfTestInterruptWaitAttacker", Vector3.new(1005, 5, 0), Vector3.new(1005, 5, 3))
+		local target = buildFakeCombatant("SelfTestInterruptWaitTarget", Vector3.new(1005, 5, 3), Vector3.new(1005, 5, 0))
 		StatusService.Register(attacker)
 		StatusService.Register(target)
 		CombatService.Register(attacker, nil, "Fist")
@@ -1936,13 +1905,17 @@ local function testCombatService(results: { Check })
 		if remaining > 0 then
 			task.wait(remaining)
 		end
-		CombatService.AttackHit(target, 1) -- lands (or whiffs - either way advances to hit 2, the Heavy)
-		expect(results, "CombatService: interrupt setup - the target's next unlanded hit is now the Heavy", target:GetAttribute("Attacking") == true)
-
-		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1) -- any landed hit, light or heavy
+		CombatService.AttackHit(target, 1) -- lands (or whiffs); the chain now waits for the next click
 		expect(
 			results,
-			"CombatService: getting hit while the next unlanded hit is a Heavy interrupts the attack",
+			"CombatService: interrupt setup - the chain is waiting for a click",
+			target:GetAttribute("Attacking") == true and target:GetAttribute("CurrentHitIndex") == nil
+		)
+
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
+		expect(
+			results,
+			"CombatService: a landed hit interrupts a chain frozen between segments too",
 			target:GetAttribute("Attacking") == false
 		)
 
@@ -1952,6 +1925,40 @@ local function testCombatService(results: { Check })
 		CombatService.Unregister(target)
 		attacker:Destroy()
 		target:Destroy()
+	end
+
+	-- A Stun/TrueStun turning on (block break, parry, dev command)
+	-- interrupts an attack in progress. That path is a deferred
+	-- BindableEvent (StatusService.Changed), so this polls for it instead of
+	-- asserting immediately (BUG-26's own fix pattern).
+	do
+		local target = buildFakeCombatant("SelfTestInterruptStunTarget", Vector3.new(1010, 5, 3), Vector3.new(1010, 5, 0))
+		StatusService.Register(target)
+		CombatService.Register(target, nil, "Fist")
+
+		CombatService.AttackStart(target)
+		expect(results, "CombatService: interrupt setup - the target is mid-attack", target:GetAttribute("Attacking") == true)
+
+		StatusService.Apply(target, "TrueStun", 0.5)
+		local interrupted = pollUntil(1, function()
+			return target:GetAttribute("Attacking") == false
+		end)
+		expect(results, "CombatService: a Stun/TrueStun turning on interrupts the target's attack in progress", interrupted)
+
+		StatusService.Unregister(target)
+		CombatService.Unregister(target)
+		target:Destroy()
+	end
+
+	-- M3-FIX7-S: the authored timings are track seconds, divided once by
+	-- Config.Combat.ComboSpeed at load (Combat.luau).
+	do
+		local trackMin = 0.35
+		expect(
+			results,
+			"Combat: Fist hit 1's hitWindow.min is the authored track value divided by ComboSpeed.Fist",
+			math.abs(fist.chain[1].hitWindow.min - trackMin / Config.Combat.ComboSpeed.Fist) < 1e-9
+		)
 	end
 
 	-- M3-FIX4-S rule 3/4: Dagger's cancelInto is "Jab" - a successful cancel
@@ -2164,10 +2171,9 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- REVIEW-M5C-01 M5: HitLanded fires for EVERY landed hit, Light or
-	-- Heavy alike - unlike the bridged `Hit` status (Heavy-only,
-	-- M3-FIX4-S), which is what let a Light-hit courier through untouched
-	-- against FragilePackage/VIP before this signal existed.
+	-- REVIEW-M5C-01 M5: HitLanded fires for EVERY landed hit, with the
+	-- hit's name (M3-FIX7-S: nothing applies the bridged `Hit` status any
+	-- more, so this is the signal FragilePackage/VIP rely on).
 	do
 		local attacker = buildFakeCombatant("SelfTestHitLandedAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 3))
 		local target = buildFakeCombatant("SelfTestHitLandedTarget", Vector3.new(1200, 5, 3), Vector3.new(1200, 5, 0))
@@ -2177,24 +2183,24 @@ local function testCombatService(results: { Check })
 		CombatService.Register(target, nil, "Fist")
 
 		local landed: { string } = {}
-		local conn = CombatService.HitLanded:Connect(function(hitTarget: Model, _hitAttacker: Model, kind: string)
+		local conn = CombatService.HitLanded:Connect(function(hitTarget: Model, _hitAttacker: Model, hitName: string)
 			if hitTarget == target then
-				table.insert(landed, kind)
+				table.insert(landed, hitName)
 			end
 		end)
 
-		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1) -- Light
-		local sawLight = pollUntil(1, function()
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[1], 1)
+		local sawFirst = pollUntil(1, function()
 			return #landed >= 1
 		end)
-		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2) -- Heavy
+		CombatService.ApplyHit(attacker, target, fist, fist.chain[2], 2)
 		local sawBoth = pollUntil(1, function()
 			return #landed >= 2
 		end)
 
 		conn:Disconnect()
-		expect(results, "CombatService: HitLanded fires for a landed Light hit (not just Heavy - REVIEW-M5C-01 M5)", sawLight and landed[1] == "Light")
-		expect(results, "CombatService: HitLanded fires for a landed Heavy hit too", sawBoth and landed[2] == "Heavy")
+		expect(results, "CombatService: HitLanded fires for a landed hit with its name (REVIEW-M5C-01 M5)", sawFirst and landed[1] == fist.chain[1].name)
+		expect(results, "CombatService: HitLanded fires for every hit in the chain", sawBoth and landed[2] == fist.chain[2].name)
 
 		StatusService.Unregister(attacker)
 		StatusService.Unregister(target)
@@ -2449,7 +2455,7 @@ end
 -- M3B-02: each trainer tree ticks without error through its main branch,
 -- against a real registered trainer (so CombatService.Attack/AttackCancel/
 -- SetBlocking and MovementService.Dash have live state to act on) and a
--- plain fake target Model whose Attacking/CurrentHit attributes are set
+-- plain fake target Model whose Attacking/CurrentHitIndex attributes are set
 -- directly (a trainer only ever reads those two off its target, so there's
 -- nothing for the target to be registered with).
 local function testTrainers(results: { Check })
@@ -2537,14 +2543,14 @@ local function testTrainers(results: { Check })
 		local trainer = buildFakeCombatant("SelfTestJamalIdle", Vector3.new(2020, 5, 0), Vector3.new(2020, 5, 1))
 		local target = buildFakeCombatant("SelfTestJamalTargetIdle", Vector3.new(2020, 5, 3), Vector3.new(2020, 5, 4))
 		target:SetAttribute("Attacking", false)
-		target:SetAttribute("CurrentHit", "")
+		target:SetAttribute("CurrentHitIndex", nil)
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.01, engageRadius = 50 })
 		tree.Tick(bb)
 		expect(
 			results,
-			"Trainers: Jabbing Jamal doesn't jab without a Heavy wind-up (blocks instead)",
+			"Trainers: Jabbing Jamal doesn't jab while the target isn't attacking (blocks instead)",
 			trainer:GetAttribute("Attacking") ~= true and StatusService.Has(trainer, "Block")
 		)
 		teardown(trainer, target)
@@ -2554,7 +2560,7 @@ local function testTrainers(results: { Check })
 		local trainer = buildFakeCombatant("SelfTestJamalReact", Vector3.new(2030, 5, 0), Vector3.new(2030, 5, 1))
 		local target = buildFakeCombatant("SelfTestJamalTargetReact", Vector3.new(2030, 5, 3), Vector3.new(2030, 5, 4))
 		target:SetAttribute("Attacking", true)
-		target:SetAttribute("CurrentHit", "Heavy")
+		target:SetAttribute("CurrentHitIndex", 1)
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("JabbingJamal", { reactionSeconds = 0.05, engageRadius = 50 })
@@ -2562,15 +2568,15 @@ local function testTrainers(results: { Check })
 			tree.Tick(bb)
 			return trainer:GetAttribute("Attacking") == true
 		end)
-		expect(results, "Trainers: Jabbing Jamal jabs only when the target's CurrentHit == \"Heavy\"", jabbed)
+		expect(results, "Trainers: Jabbing Jamal jabs once the target starts an attack (Attacking true)", jabbed)
 		teardown(trainer, target)
 	end
 
 	do
-		local trainer = buildFakeCombatant("SelfTestPeteLight", Vector3.new(2040, 5, 0), Vector3.new(2040, 5, 1))
-		local target = buildFakeCombatant("SelfTestPeteTargetLight", Vector3.new(2040, 5, 3), Vector3.new(2040, 5, 4))
+		local trainer = buildFakeCombatant("SelfTestPeteHit1", Vector3.new(2040, 5, 0), Vector3.new(2040, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetHit1", Vector3.new(2040, 5, 3), Vector3.new(2040, 5, 4))
 		target:SetAttribute("Attacking", true)
-		target:SetAttribute("CurrentHit", "Light")
+		target:SetAttribute("CurrentHitIndex", 1)
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.05, engageRadius = 50 })
@@ -2578,22 +2584,22 @@ local function testTrainers(results: { Check })
 			tree.Tick(bb)
 			return StatusService.Has(trainer, "Block")
 		end)
-		expect(results, "Trainers: Parry Pete parries the target's first Light", parried)
+		expect(results, "Trainers: Parry Pete parries the target's hit 1", parried)
 		teardown(trainer, target)
 	end
 
 	do
-		local trainer = buildFakeCombatant("SelfTestPeteHeavy", Vector3.new(2050, 5, 0), Vector3.new(2050, 5, 1))
-		local target = buildFakeCombatant("SelfTestPeteTargetHeavy", Vector3.new(2050, 5, 3), Vector3.new(2050, 5, 4))
+		local trainer = buildFakeCombatant("SelfTestPeteHit2", Vector3.new(2050, 5, 0), Vector3.new(2050, 5, 1))
+		local target = buildFakeCombatant("SelfTestPeteTargetHit2", Vector3.new(2050, 5, 3), Vector3.new(2050, 5, 4))
 		target:SetAttribute("Attacking", true)
-		target:SetAttribute("CurrentHit", "Heavy")
+		target:SetAttribute("CurrentHitIndex", 2)
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("ParryPete", { reactionSeconds = 0.02, engageRadius = 50 })
 		for _ = 1, 5 do
 			tree.Tick(bb)
 		end
-		expect(results, "Trainers: Parry Pete never parries a Heavy", not StatusService.Has(trainer, "Block"))
+		expect(results, "Trainers: Parry Pete never parries once the target is past hit 1", not StatusService.Has(trainer, "Block"))
 		teardown(trainer, target)
 	end
 
@@ -2604,16 +2610,16 @@ local function testTrainers(results: { Check })
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("FeintingMohammed", { rhythmSeconds = 0.01, engageRadius = 50 })
 		tree.Tick(bb)
-		expect(results, "Trainers: Feinting Mohammed throws its light-heavy chain", trainer:GetAttribute("Attacking") == true)
+		expect(results, "Trainers: Feinting Mohammed throws its Fist chain", trainer:GetAttribute("Attacking") == true)
 
-		-- Combat.Styles.Fist.chain[2] (Heavy)'s own cancelUntil is 1.05s;
-		-- its hitWindow doesn't open until 1.45s - a cancel caught well
-		-- before that proves it didn't just land normally.
-		local cancelled = pollUntil(1.3, function()
+		-- He cancels hit 2 at its cancelUntil past that segment's start; its
+		-- hitWindow opens well after that, so a cancel caught here proves it
+		-- didn't just land normally.
+		local cancelled = pollUntil(2, function()
 			tree.Tick(bb)
 			return trainer:GetAttribute("Attacking") == false
 		end)
-		expect(results, "Trainers: Feinting Mohammed cancels its own heavy at cancelUntil", cancelled)
+		expect(results, "Trainers: Feinting Mohammed cancels its own hit 2 at cancelUntil", cancelled)
 
 		local rejabbed = pollUntil(0.5, function()
 			tree.Tick(bb)
@@ -2627,7 +2633,6 @@ local function testTrainers(results: { Check })
 		local trainer = buildFakeCombatant("SelfTestDalila", Vector3.new(2080, 5, 0), Vector3.new(2080, 5, 1))
 		local target = buildFakeCombatant("SelfTestDalilaTarget", Vector3.new(2080, 5, 3), Vector3.new(2080, 5, 4))
 		target:SetAttribute("Attacking", true)
-		target:SetAttribute("CurrentHit", "Heavy")
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.05, engageRadius = 50 })
@@ -2636,19 +2641,19 @@ local function testTrainers(results: { Check })
 			local nextDashAt = trainer:GetAttribute("NextDashAt")
 			return typeof(nextDashAt) == "number" and (nextDashAt :: number) > 0
 		end)
-		expect(results, "Trainers: Dashing Dalila dashes away on the target's Heavy wind-up", dashed)
+		expect(results, "Trainers: Dashing Dalila dashes away when the target starts an attack", dashed)
 		teardown(trainer, target)
 	end
 
 	-- REVIEW-M3B-02: the non-reacting branch is a lone jab, not the full
 	-- Sam-style chain - with the target idle, she should throw (Attacking
-	-- true) and then self-cancel her own heavy (Attacking false again,
-	-- well before the heavy's own hitWindow would resolve it naturally).
+	-- true) and then self-cancel at her own hit 2 (Attacking false again,
+	-- before hit 2's own hitWindow would resolve it naturally).
 	do
 		local trainer = buildFakeCombatant("SelfTestDalilaRhythm", Vector3.new(2085, 5, 0), Vector3.new(2085, 5, 1))
 		local target = buildFakeCombatant("SelfTestDalilaRhythmTarget", Vector3.new(2085, 5, 3), Vector3.new(2085, 5, 4))
 		target:SetAttribute("Attacking", false)
-		target:SetAttribute("CurrentHit", "")
+		target:SetAttribute("CurrentHitIndex", nil)
 		registerTrainer(trainer)
 		local bb = buildTrainerBlackboard(trainer, target, 50)
 		local tree = NpcTrees.BuildTrainer("DashingDalila", { reactionSeconds = 0.05, rhythmSeconds = 0.01, engageRadius = 50 })
@@ -2657,13 +2662,13 @@ local function testTrainers(results: { Check })
 			tree.Tick(bb)
 			return trainer:GetAttribute("Attacking") == true
 		end)
-		expect(results, "Trainers: Dashing Dalila jabs on rhythm when the target isn't winding up a Heavy", jabbed)
+		expect(results, "Trainers: Dashing Dalila jabs on rhythm when the target isn't attacking", jabbed)
 
-		local cancelled = pollUntil(1.3, function()
+		local cancelled = pollUntil(2, function()
 			tree.Tick(bb)
 			return trainer:GetAttribute("Attacking") == false
 		end)
-		expect(results, "Trainers: Dashing Dalila cancels her own heavy - a lone jab, never the full chain", cancelled)
+		expect(results, "Trainers: Dashing Dalila cancels her own hit 2 - a lone jab, never the full chain", cancelled)
 
 		teardown(trainer, target)
 	end

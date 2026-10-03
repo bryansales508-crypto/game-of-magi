@@ -1,66 +1,51 @@
 --!strict
--- Combat tuning numbers (M3-01/M3-FIX3-S/M3-FIX4-S, TRIAGE #10/#13). Data
--- only, frozen: nothing in here runs any logic. Bryan tunes the feel by
--- editing the numbers below; CombatService/MovementService/StatusService/
--- HealthService read them, they never own a copy of their own.
+-- Combat tuning numbers (M3-01/M3-FIX3-S/M3-FIX4-S/M3-FIX7-S, TRIAGE #10/#13).
+-- Data only, frozen (the one bit of logic is the track-to-real-seconds
+-- conversion below, run once at load). Bryan tunes the feel by editing the
+-- numbers below; CombatService/MovementService/StatusService/HealthService
+-- read them, they never own a copy of their own.
 --
--- M3-FIX4-S (Bryan, 2026-09-28) replaced the flat "Moves" swing/punch shape
--- with a fighting-style framework: every weapon is a Combat.Style - a
--- chain of hits, each Light or Heavy, plus style-level traits. This is the
--- rock-paper-scissors basis for every future weapon, not just Fist/Dagger.
+-- M3-FIX7-S (Bryan, 2026-10-02): the Light/Heavy framework is gone. Every
+-- hit is a Light: it lands, applies LightStun (the target can't block or
+-- parry, but CAN still attack or dash) and nothing else - no full Stun, no
+-- flinch. ANY landed hit interrupts the target's own in-progress attack
+-- (including a chain frozen between clicks), so a chain loops for as long as
+-- the clicks come and ends when the defender blocks, parries, dashes away or
+-- hits first; Stun/TrueStun/Knocked (block break, parry, knockout) interrupt
+-- too. Each weapon is a Combat.Style: a chain of hits plus style traits.
+--
+-- ONE SPEED KNOB. The authored timings below (windupAt, cancelUntil,
+-- hitWindow, loopOffset) are ANIMATION-TRACK seconds - the times the
+-- animation editor shows. At module load they are divided by
+-- Config.Combat.ComboSpeed[styleName], so the exported Combat.Styles holds
+-- REAL seconds since each segment's start, which is what CombatService and
+-- the client read. To make a combo faster or slower, change ComboSpeed in
+-- Config; never hand-convert numbers here.
 --
 --   chain      - in order. Each ChainHit:
---     kind          - "Light" (fast, can't be interrupted, small damage,
---                      NO knockback of its own - see Combat.Knockback
---                      below; a landed Light applies LightStun for
---                      lightStun seconds: the target can't block or parry,
---                      but CAN still attack or dash) or "Heavy" (slow,
---                      readable wind-up, big damage, big block drain;
---                      while a combatant's next unlanded hit is a Heavy,
---                      ANY hit landing on them interrupts their attack -
---                      AttackCancelled reason="interrupted" - a Light's
---                      own wind-up carries no such risk).
---     windupAt      - seconds since Swing the wind-up marker plays (the
---                      client slows the animation here, Config.Combat -
---                      client-only; the server never reads windupSpeed for
---                      timing, only for the client's own slow-down).
---     cancelUntil   - seconds since Swing until which AttackCancel is
---                      still honoured for THIS hit, while it's still the
---                      next unlanded one (a Light's own cancelUntil equals
---                      its windupAt; a Heavy's is partway into its own
---                      wind-up).
---     hitWindow     - {min, max}: seconds since Swing inside which this
---                      hit's AttackHit report is accepted (+/-
+--     name          - display/log name.
+--     windupAt      - seconds since the segment start the wind-up marker
+--                      plays.
+--     cancelUntil   - seconds since the segment start until which
+--                      AttackCancel is still honoured for THIS hit, while
+--                      it's still the next unlanded one.
+--     hitWindow     - {min, max}: seconds since the segment start inside
+--                      which this hit's AttackHit report is accepted (+/-
 --                      Config.Combat.HitTolerance either way).
---     damage/range/radius - as before (range/radius describe the server's
---                      own forward hit-check sphere; not part of Bryan's
---                      own design shorthand, added here since the hit-
---                      check needs them - same numbers the old Fist/Dagger
---                      moves used).
---     stun          - full Stun (can't attack/block/dash) on a landed hit;
---                      0 for every Light in the data below - a Light's own
---                      LightStun is the separate, softer stun.
---     lightStun     - LightStun duration on a landed hit; 0 for Heavies
---                      (they use the full `stun` above instead).
+--     damage/range/radius - damage, and the server's own forward hit-check
+--                      sphere (range/radius).
+--     lightStun     - LightStun duration on a landed hit.
 --     blockDrain    - block HP a facing, holding block loses to THIS hit
---                      if it's blocked (not parried) - replaces the old
---                      flat Combat.Block.drainPerHit.
+--                      if it's blocked (not parried).
 --     bleedStacks   - Bleed stacks a landed hit adds (0 = none); only
 --                      meaningful for a style with a `bleed` trait.
---     windupSpeed   - client-only: the animation's speed during this
---                      hit's own wind-up, as a MULTIPLIER on the style's
---                      Config.Combat.ComboSpeed (1 = no slowdown, 0.5 =
---                      half speed). Bryan 2026-09-30: a Heavy's slow
---                      should be barely noticeable but enough to punish.
---                      Retune that hit's hitWindow whenever this changes
---                      (slower wind-up = the hit marker arrives later).
 --   cancelInto       - what a successful AttackCancel turns into: "Any"
 --                      (free to block/attack/dash next, no extra cooldown)
---                      or "Jab" (the server immediately starts chain[1] -
---                      always a Light - as a new attack flagged feint=true;
---                      if THAT lands blocked, not parried, the attacker
---                      pays feintRecoverySeconds of Recovery - can't
---                      attack/block/dash - for overcommitting the bait).
+--                      or "Jab" (the server immediately starts chain[1] as a
+--                      new attack flagged feint=true; if THAT lands blocked,
+--                      not parried, the attacker pays feintRecoverySeconds of
+--                      Recovery - can't attack/block/dash - for
+--                      overcommitting the bait).
 --   speedMult/dashCooldownMult - MovementService.SetStyle multiplies the
 --                      walk/run baseline and the dash cooldown by these
 --                      (1.0 = no change) while this style is equipped.
@@ -69,30 +54,29 @@
 --                      ticks it once a second; never knocks out on its own
 --                      (floors at 1 HP). Refreshed (duration reset, not
 --                      extended) on every new stack.
+--   loopOffset       - see M3-FIX6 below.
 --
 -- M3-FIX5 (Bryan, 2026-09-30): one click per hit. Every hit's windupAt,
 -- cancelUntil and hitWindow are measured from the start of THAT HIT'S OWN
 -- SEGMENT, not from the first click: hit 1's segment starts at Swing
 -- (AttackStart accepted); hit 2's starts when the player's second click
 -- (AttackContinue) is accepted, and so on. The client freezes the combo
--- animation at each later hit's wind-up marker until that click, so a
--- later hit's windupAt is 0 (its wind-up begins the instant the click
--- lands) and a later Light's cancelUntil is 0 too (the pause before the
--- click is the decision point - a cancel there is always honoured). The
--- pacing between hits (gap, timeout, recovery) is Config.Combat.Chain,
--- shared by every style; the old per-style recovery/timeout are gone.
+-- animation at each later hit's start until that click. The pacing between
+-- hits (gap, timeout, recovery) is Config.Combat.Chain, shared by every
+-- style.
 --
 -- M3-FIX6 (Bryan, 2026-10-01): the animation freezes ON THE PUNCH (not at
 -- the next wind-up) and the chain LOOPS: hit 1, hit 2, hit 1, hit 2, ...
 -- for as long as the clicks keep coming. So every segment after the first
 -- starts with the PREVIOUS punch's follow-through (the track resumes from
 -- the frozen punch), then the live hit's wind-up, then its punch: a later
--- hit's windupAt is that follow-through's length, not 0. Hit 1 is special:
--- its first segment starts at the animation's very start (windupAt ~0),
--- but every LATER pass of hit 1 starts with the LAST hit's follow-through
--- before the track wraps - that length is the style's `loopOffset`, and the
--- server adds it to hit 1's windupAt/cancelUntil/hitWindow on every pass
--- after the first (the client's cancel check mirrors that).
+-- hit's windupAt is the track time from the frozen punch to its wind-up
+-- marker (it can be that follow-through's length). Hit 1 is special: its
+-- first segment starts at the animation's very start, but every LATER pass
+-- of hit 1 starts with the LAST hit's follow-through before the track wraps
+-- - that length is the style's `loopOffset`, and the server adds it to hit
+-- 1's windupAt/cancelUntil/hitWindow on every pass after the first (the
+-- client's cancel check mirrors that).
 --
 -- Keep two things true whenever these numbers are retuned against a real
 -- animation: every hit's own cancelUntil should give a human enough time
@@ -101,37 +85,28 @@
 -- AttackHit report is never valid before its wind-up has even finished
 -- playing (every entry below already satisfies that).
 --
--- The numbers below are PLACEHOLDERS - Bryan re-tunes them once he reads
--- the real wind-up/hit marker times off his animations with `.combat log
--- on`. Old numbers this replaces (M3-FIX3-S's flat Swing/Punch shape, and
--- before that SYSTEMS 9 / DamageHandler's 3-step Jab/Cross/Finisher combo):
--- both had every weapon set as one server-timed shape with no Light/Heavy
--- distinction, no feints, no bleed, and knockback on every hit instead of
--- the count-based Combat.Knockback below. ComboStep is kept as a character
--- attribute for compatibility but stays 1 - there's no combo-step chain to
--- advance through, just the one style's own chain.
+-- ComboStep is kept as a character attribute for compatibility but stays 1 -
+-- there's no combo-step chain to advance through, just the one style's own
+-- chain.
+
+local Config = require(script.Parent.Parent.Config)
 
 export type HitWindow = {
 	min: number,
 	max: number,
 }
 
-export type HitKind = "Light" | "Heavy"
-
 export type ChainHit = {
 	name: string,
-	kind: HitKind,
 	windupAt: number,
 	cancelUntil: number,
 	hitWindow: HitWindow,
 	damage: number,
 	range: number,
 	radius: number,
-	stun: number,
 	lightStun: number,
 	blockDrain: number,
 	bleedStacks: number,
-	windupSpeed: number,
 }
 
 export type BleedTrait = {
@@ -153,57 +128,48 @@ export type Style = {
 
 local Combat = {}
 
+-- Authored in ANIMATION-TRACK seconds; converted to real seconds below.
 local Styles: { [string]: Style } = {
 	Fist = {
 		displayName = "Fist",
 		cancelInto = "Any",
 		speedMult = 1.0,
 		dashCooldownMult = 1.0,
-		-- Punch2's follow-through: track 1.5s -> 2.0s (the end), 0.5s of
-		-- track at ComboSpeed 1.3 = 0.38s before the loop wraps into WindUp1.
-		loopOffset = 0.38,
+		-- Punch2's follow-through: track 1.5s -> 2.0s (the end) before the
+		-- loop wraps into WindUp1.
+		loopOffset = 0.5,
 		chain = {
 			-- Bryan's Fist animation (rbxassetid://104341608277955), keyframes
 			-- read off the asset 2026-10-01: WindUp1 0.0s, Punch1 0.5s, WindUp2
-			-- 1.0s, Punch2 1.5s, end 2.0s (track time). Config.Combat.ComboSpeed
-			-- Fist = 1.3 -> every 0.5s of track is 0.38s at full speed, 0.64s
-			-- inside the Heavy's 0.6 wind-up slow.
+			-- 1.0s, Punch2 1.5s, end 2.0s (track time).
 			--
 			-- Segment 1 (from Swing): WindUp1 on the first frame, Punch1 at
-			-- +0.38s.
+			-- track 0.5.
 			{
 				name = "Jab",
-				kind = "Light",
-				windupAt = 0.05,
+				windupAt = 0.0,
 				cancelUntil = 0.05,
-				hitWindow = { min = 0.28, max = 0.50 },
+				hitWindow = { min = 0.35, max = 0.65 },
 				damage = 4,
 				range = 4.5,
 				radius = 1.6,
-				stun = 0.0,
 				lightStun = 0.9,
 				blockDrain = 15,
 				bleedStacks = 0,
-				windupSpeed = 1.0,
 			},
-			-- Segment 2 (from the click, frozen on Punch1): Punch1's
-			-- follow-through 0.5s -> 1.0s at full speed = WindUp2 at +0.38s,
-			-- then WindUp2 -> Punch2 at 1.3 x 0.6 = +0.64s more: Punch2 at
-			-- +1.03s. Cancel is honoured a little way into the wind-up.
+			-- Segment 2 (from the click, frozen on Punch1 at track 0.5):
+			-- WindUp2 at track 1.0, Punch2 at track 1.5.
 			{
-				name = "Heavy",
-				kind = "Heavy",
-				windupAt = 0.38,
-				cancelUntil = 0.55,
-				hitWindow = { min = 0.90, max = 1.15 },
-				damage = 12,
+				name = "Cross",
+				windupAt = 0.5,
+				cancelUntil = 0.5,
+				hitWindow = { min = 0.85, max = 1.15 },
+				damage = 4,
 				range = 4.5,
 				radius = 1.6,
-				stun = 0.8,
-				lightStun = 0,
-				blockDrain = 45,
+				lightStun = 0.9,
+				blockDrain = 15,
 				bleedStacks = 0,
-				windupSpeed = 0.6,
 			},
 		},
 	},
@@ -223,63 +189,67 @@ local Styles: { [string]: Style } = {
 			maxStacks = 3,
 		},
 		-- Unknown until Bryan makes the Dagger combo animation; the old swing
-		-- it plays today has no measured follow-through. Placeholder numbers
-		-- below likewise (they predate the freeze-on-the-punch flow).
+		-- it plays today has no measured follow-through. The chain numbers
+		-- below are PLACEHOLDERS (now read as track seconds, and divided by
+		-- Config.Combat.ComboSpeed.Dagger) until that animation exists.
 		loopOffset = 0,
 		chain = {
 			{
 				name = "Stab",
-				kind = "Light",
 				windupAt = 0.10,
 				cancelUntil = 0.10,
 				hitWindow = { min = 0.25, max = 0.45 },
 				damage = 3,
 				range = 5,
 				radius = 1.5,
-				stun = 0.0,
 				lightStun = 0.8,
 				blockDrain = 10,
 				bleedStacks = 1,
-				windupSpeed = 1.0,
 			},
 			-- Segments 2 and 3: measured from their own click.
 			{
 				name = "Slash",
-				kind = "Light",
 				windupAt = 0,
 				cancelUntil = 0,
 				hitWindow = { min = 0.15, max = 0.35 },
 				damage = 3,
 				range = 5,
 				radius = 1.5,
-				stun = 0.0,
 				lightStun = 0.8,
 				blockDrain = 10,
 				bleedStacks = 1,
-				windupSpeed = 1.0,
 			},
 			{
 				name = "Lunge",
-				kind = "Heavy",
 				windupAt = 0,
 				cancelUntil = 0.25,
 				hitWindow = { min = 0.60, max = 0.95 },
-				damage = 8,
+				damage = 3,
 				range = 5,
 				radius = 1.7,
-				stun = 0.7,
-				lightStun = 0,
-				blockDrain = 35,
+				lightStun = 0.8,
+				blockDrain = 10,
 				bleedStacks = 2,
-				windupSpeed = 0.6,
 			},
 		},
 	},
 }
+
+-- Track seconds -> real seconds, once. A style with no ComboSpeed entry plays
+-- at 1x.
+for styleName, style in Styles do
+	local speed = (Config.Combat.ComboSpeed :: { [string]: number })[styleName] or 1
+	style.loopOffset /= speed
+	for _, hit in style.chain do
+		hit.windupAt /= speed
+		hit.cancelUntil /= speed
+		hit.hitWindow.min /= speed
+		hit.hitWindow.max /= speed
+	end
+end
 Combat.Styles = Styles
 
--- M3-FIX4-S: knockback is no longer per-hit (a Light never knocks back at
--- all; a Heavy's own "big damage" doesn't need its own impulse either) -
+-- M3-FIX4-S: knockback is no longer per-hit (no hit knocks back on its own) -
 -- instead every landed hit (from any source) adds 1 to the target's own
 -- HitCount attribute; on the `everyHits`th hit, one impulse fires (away
 -- from whoever landed that hit), CombatEvent KnockedBack fires, and the
@@ -294,8 +264,7 @@ Combat.Knockback = {
 -- Blocking and parrying (SYSTEMS 9: 0.25s parry window on every Block(true),
 -- the parry-cap bug (AUDIT M2) fixed by CombatService never adding block
 -- above HealthService's MaxBlock). M3-FIX4-S: the flat drainPerHit is gone -
--- every ChainHit carries its own blockDrain now (a Heavy costs far more
--- meter than a Light).
+-- every ChainHit carries its own blockDrain now.
 Combat.Block = {
 	parryWindow = 0.25,
 	-- AUDIT H5: no duplicate parry markers / endless parries. CombatService
@@ -333,21 +302,11 @@ Combat.Knockout = {
 	healthOnGetUp = 0.25,
 }
 
--- The Stagger status's own short hit-stun feel (Combat.Stagger.hitStun),
--- distinct from a full Stun/LightStun status: it's what MovementService's
--- "Hit" speed modifier and StatusService's "Hit" status duration use.
--- M3-FIX4-S: applies to a landed HEAVY hit only now - a Light's own
--- LightStun already carries its own (softer) feel, with no extra flinch.
-Combat.Stagger = {
-	hitStun = 0.35,
-}
-
 table.freeze(Combat.Knockback)
 table.freeze(Combat.Block)
 table.freeze(Combat.Dash)
 table.freeze(Combat.Run)
 table.freeze(Combat.Knockout)
-table.freeze(Combat.Stagger)
 for _, style in Combat.Styles do
 	for _, hit in style.chain do
 		table.freeze(hit.hitWindow)

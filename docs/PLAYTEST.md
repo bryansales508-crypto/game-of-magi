@@ -408,9 +408,9 @@ Setup as before. Numbers you can tune live: `Shared/Data/Combat.luau` (Rojo sync
 **Bryan runs (feel):**
 
 ### M3-A Fist combo (updated 2026-09-30, M3-FIX5: one click per hit)
-- `C` into the stance, `.combat log on`. Click once at a dummy: the jab winds up and lands, then your character freezes at the start of the heavy's wind-up. Click again: the heavy winds up (slowed) and lands. Wait, then click: a new combo starts at the jab. **Pass:** two distinct hits per combo, one click each; Output shows `AttackHit(1) accepted`, `continues into hit 2`, `AttackHit(2) accepted`, `attack complete`.
-- Click once and do nothing: after about a second the frozen pose fades out and Output says `combo dropped`. Click once, then mash immediately: the heavy still comes exactly once, after the short gap (Output: `AttackContinue(2) dropped: too soon` at most once, then `continues into hit 2`). Click once, then right-click: the combo cancels and the cancel highlight flashes.
-- Marker tuning: each `marker:` line prints the seconds since that hit's own start; those are the numbers for `windupAt`/`cancelUntil`/`hitWindow` in `Combat.luau` (hit 2 is measured from your second click). If `AttackHit(2) dropped: too early/late` shows up, retune hit 2's window.
+- `C` into the stance, `.combat log on`. Click once at a dummy: the jab winds up and lands, then your character freezes on the punch. Click again: the Cross winds up and lands, and the chain loops back to the jab on the next click (all hits are Lights, M3-FIX7). **Pass:** two distinct hits per combo, one click each; Output shows `AttackHit(1) accepted`, `continues into hit 2`, `AttackHit(2) accepted`, `attack complete`.
+- Click once and do nothing: after about a second the frozen pose fades out and Output says `combo dropped`. Click once, then mash immediately: the second hit still comes exactly once, after the short gap (Output: `AttackContinue(2) dropped: too soon` at most once, then `continues into hit 2`). Click once, then right-click: the combo cancels and the cancel highlight flashes.
+- Marker tuning: each `marker:` line prints the seconds since that hit's own start; those are the numbers for `windupAt`/`cancelUntil`/`hitWindow` in `Combat.luau` (hit 2 is measured from your second click). If `AttackHit(2) dropped: too early/late` shows up, retune hit 2's window (track seconds in `Combat.luau`; `Config.Combat.ComboSpeed` is the speed knob).
 
 ### M3-B Block, parry, block break
 - Hold F while a Target dummy punches: block sound and pose, no damage. Tap F just as a punch lands: parry effect, the dummy staggers. Keep blocking through many hits: the block bar drains, breaks, TrueStun, then refills. **Pass:** immune while the block holds; break feels right; a second parry within 1.5 s is a normal block.
@@ -482,22 +482,22 @@ Setup: Play, `.state`. Marker names per style must already match your animations
 - `.weapon Dagger` (the dagger appears in hand), press C off, then click: you enter the stance and the stab comes out as the first hit. **Pass:** one click did both; `.weapon Fist` removes the dagger.
 
 ### M3B-C Straight Sam (block, then parry)
-- `.dummy spawn StraightSam`. Hold F: his light and heavy are blocked, your block meter drains, breaks on the heavies. Then time F just before his light: parry effect, he is stunned, land your light-heavy. **Pass:** blocked hits do no damage; a parry stuns him long enough for your full chain.
+- `.dummy spawn StraightSam`. Hold F: his hits are blocked, your block meter drains and eventually breaks. Then time F just before his first hit: parry effect, he is stunned, land your chain. **Pass:** blocked hits do no damage; a parry stuns him long enough for your full chain.
 
-### M3B-D Turtle Tariq (heavies break block)
-- Spawn him, land light-heavy chains: his block breaks on a heavy (block-break effect, TrueStun), then your chain lands. **Pass:** the break happens within about three chains; lights alone never break him.
+### M3B-D Turtle Tariq (a held chain breaks block)
+- Spawn him, keep chains going: his block drains and breaks (block-break effect, TrueStun), then your chain lands. **Pass:** the break happens after about `MaxBlock / blockDrain` blocked hits.
 
-### M3B-E Jabbing Jamal (bait the interrupt)
-- Spawn him. Throw a straight chain: his jab interrupts your heavy (you get "interrupted", cancel highlight not shown). Then: light, start the heavy, right-click cancel into holding F as his jab comes: parry, punish. **Pass:** both outcomes as described.
+### M3B-E Jabbing Jamal (bait the jab)
+- Spawn him. Start a swing: he jabs a beat after you start (a landed jab light-stuns you AND interrupts your swing). Then: start a swing, right-click cancel into holding F as his jab comes: parry, punish. **Pass:** both outcomes as described.
 
 ### M3B-F Parry Pete (feint the parry)
-- Spawn him. Throw a straight: he parries your light and you get stunned. Then: light (he parries air because you cancel it before the wind-up? no: cancel the LIGHT before its wind-up marker with right-click, wait a beat, then throw): his parry window has passed, the light lands. **Pass:** the delayed hit lands; the straight one is parried.
+- Spawn him. Throw a straight: he parries your hit 1 and you get stunned. Then: start a swing, cancel it with right-click, wait a beat, then throw: his parry window has passed, the hit lands. **Pass:** the delayed hit lands; the straight one is parried.
 
 ### M3B-G Feinting Mohammed (punish the feint)
-- Spawn him. Hold F when his heavy would come: it never comes; the re-jab is blocked; with the Fist style he has no feint recovery, so instead read the cancel highlight and jab him during his re-jab wind-up? Lights can't be interrupted, so: block the re-jab, then answer with your own chain while he recovers his rhythm. `.weapon Dagger` on YOURSELF to see the punishable feint: your feint stab blocked by Tariq gives you half a second of Recovery. **Pass:** you see the cancel highlight on Mohammed every cycle; with the dagger, a blocked feint locks you out for 0.5 s.
+- Spawn him. Hold F when his second hit would come: it never comes (he cancels it); the re-jab is blocked; with the Fist style he has no feint recovery, so read the cancel highlight and block the re-jab, then answer with your own chain while he recovers his rhythm. `.weapon Dagger` on YOURSELF to see the punishable feint: your feint stab blocked by Tariq gives you half a second of Recovery. **Pass:** you see the cancel highlight on Mohammed every cycle; with the dagger, a blocked feint locks you out for 0.5 s.
 
 ### M3B-H Dashing Dalila (spacing)
-- Spawn her. Land your light: she is light-stunned and dashes out of your heavy wind-up. Chase and land the light again with the heavy delayed. **Pass:** her dash has a cooldown; the second time your heavy lands.
+- Spawn her. Start a swing: she dashes away a beat after you start. Chase and land a hit once her dash is on cooldown. **Pass:** her dash has a cooldown; the second time your hit lands.
 
 ### M3B-I Sparring Sinbad (the exam)
 - Spawn him and fight for two minutes. **Pass:** no errors, no stuck states (`Attacking` never stays true after a swing ends; controls always return), knockback on your 6th hit taken and on his, bleed if you use the dagger.

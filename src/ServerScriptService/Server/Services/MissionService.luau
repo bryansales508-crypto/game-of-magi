@@ -1111,11 +1111,10 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 	end
 end
 
--- M5: FragilePackage/VIP fail on ANY landed hit (Light or Heavy) - the
--- bridged `Hit` status only ever fires for a Heavy (Combat.Stagger's
--- flinch/slow, M3-FIX4-S), which used to let a Light-hit courier through
--- untouched. CombatService.HitLanded fires for every landed hit instead.
-local function onHitLanded(target: Model, _attacker: Model, _kind: string)
+-- M5: FragilePackage/VIP fail on ANY landed hit. CombatService.HitLanded
+-- fires for every landed hit (M3-FIX7-S: nothing applies the bridged `Hit`
+-- status any more, so this signal is the only hook).
+local function onHitLanded(target: Model, _attacker: Model, _hitName: string)
 	local run = runByCharacter[target]
 	if run == nil then
 		return

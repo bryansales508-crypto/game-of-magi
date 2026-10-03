@@ -179,13 +179,6 @@ Config.Combat = {
 	-- How long EffectsController flashes the "Cancel" Highlight for a
 	-- cancelled (not interrupted) attack.
 	CancelFlashSeconds = 0.25,
-	-- M3-FIX3-C (client): fallback wind-up slowdown for a hit whose own
-	-- windupSpeed isn't in Shared/Data/Combat.luau. A MULTIPLIER on the
-	-- style's ComboSpeed (1 = no slowdown, 0.5 = half speed) - the per-hit
-	-- windupSpeed values in Combat.luau mean the same thing. A pure client
-	-- feel knob - the server never reads this, it only ever validates
-	-- hitWindow/cancelUntil, so retuning it means retuning those too.
-	WindupSpeed = 0.6,
 	-- M3B-01/M3B-03: the combat stance (docs/M3B-PLAN.md section 1). The
 	-- key toggles SetStance(not InCombat); clicks/Block/cancel only work
 	-- while InCombat (a click with a weapon Tool equipped is the one
@@ -326,7 +319,7 @@ Config.Npc = {
 	-- M3B-02: the seven training dummies (docs/M3B-PLAN.md section 3,
 	-- Bryan's roster, approved 2026-09-28). All Fist style. reactionSeconds
 	-- is the delay before a dummy reacts to something it read off the
-	-- player's own attributes (CurrentHit/Attacking); rhythmSeconds paces a
+	-- player's own attributes (CurrentHitIndex/Attacking); rhythmSeconds paces a
 	-- dummy that throws on its own schedule rather than reacting; weights
 	-- are Sparring Sinbad's own throw/cancel/parry/dash mix. engageRadius
 	-- (12): a trainer only fights its spawner or the nearest player within

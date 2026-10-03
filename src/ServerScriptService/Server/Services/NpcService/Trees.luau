@@ -30,8 +30,10 @@ local function isKnocked(bb: any): boolean
 	return StatusService.Has(bb.character, "Knocked")
 end
 
+-- M3-FIX7-S: every landed hit applies LightStun (nothing applies the "Hit"
+-- status any more), so that is the "I was just hit" signal.
 local function wasHit(bb: any): boolean
-	return StatusService.Has(bb.character, "Hit")
+	return StatusService.Has(bb.character, "LightStun")
 end
 
 -- Best-effort: plays an existing Animation by name if the NPC's art
@@ -288,7 +290,7 @@ end
 -- CombatService.Attack/.AttackCancel/.SetBlocking and MovementService.Dash -
 -- AttackCancel joins the two Bryan named explicitly (Attack/SetBlocking/
 -- Dash) because Feinting Mohammed's whole habit (throw the light, cancel
--- the telegraphed heavy, re-jab) has no other way to exist: it's an
+-- the telegraphed hit 2, re-jab) has no other way to exist: it's an
 -- existing public CombatService entry point, not a new one.
 --
 -- A trainer never chases or wanders - it stands still and reacts, so
@@ -363,7 +365,7 @@ local function dashAway(bb: any): boolean
 	return MovementService.Dash(bb.character, localDir.X, localDir.Z)
 end
 
--- Straight Sam: light-heavy straight on a fixed rhythm, never cancels
+-- Straight Sam: two-hit Fist chain on a fixed rhythm, never cancels
 -- (CombatService.Attack throws the WHOLE chain itself - there's nothing
 -- here that could cancel it even if it wanted to), never blocks.
 local function samDecide(bb: any, cfg: any): BehaviorTree.Status
@@ -389,15 +391,15 @@ local function tariqDecide(bb: any, _cfg: any): BehaviorTree.Status
 	return "Success"
 end
 
--- Jabbing Jamal: idle (blocking) until the target's Heavy wind-up starts
--- (CurrentHit == "Heavy" while they're mid-swing), then jabs after
--- reactionSeconds - the bait-and-punish Bryan's teaching order wants here.
+-- Jabbing Jamal: idle (blocking) until the target STARTS any attack
+-- (Attacking true), then jabs after reactionSeconds - the bait-and-punish
+-- Bryan's teaching order wants here.
 local function jamalDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
-	local heavyWindup = target:GetAttribute("Attacking") == true and target:GetAttribute("CurrentHit") == "Heavy"
+	local targetAttacking = target:GetAttribute("Attacking") == true
 
-	if not heavyWindup then
+	if not targetAttacking then
 		bb.phase = "idle"
 		bb.phaseAt = nil
 		CombatService.SetBlocking(bb.character, true)
@@ -417,18 +419,18 @@ local function jamalDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Running"
 end
 
--- Parry Pete: idle until the target's first Light of a swing, then times a
--- real parry (a fresh Block Apply - not just holding it, which is what
--- actually opens a live parry window) reactionSeconds later. The read
--- resets if the swing ends (or moves past Light) before the timer fires.
+-- Parry Pete: idle until the target's hit 1 of a swing, then times a real
+-- parry (a fresh Block Apply - not just holding it, which is what actually
+-- opens a live parry window) reactionSeconds later. The read resets if the
+-- swing ends (or moves past hit 1) before the timer fires.
 local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
 	local attacking = target:GetAttribute("Attacking") == true
-	local currentHit = target:GetAttribute("CurrentHit")
+	local currentHit = target:GetAttribute("CurrentHitIndex")
 
 	if bb.phase == "reacting" then
-		if not (attacking and currentHit == "Light") then
+		if not (attacking and currentHit == 1) then
 			bb.phase = "idle"
 			bb.phaseAt = nil
 			return "Failure"
@@ -442,7 +444,7 @@ local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 		return "Running"
 	end
 
-	if attacking and currentHit == "Light" then
+	if attacking and currentHit == 1 then
 		bb.phase = "reacting"
 		bb.phaseAt = now
 		return "Running"
@@ -451,17 +453,17 @@ local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Failure"
 end
 
--- Feinting Mohammed: throws the light-heavy Fist chain, but cancels his OWN
--- heavy the instant its cancelUntil passes (a scripted, telegraphed feint,
--- not a reaction to the target), then re-jabs immediately (Fist's
--- cancelInto is "Any" - nothing auto-fires the way Dagger's "Jab" would).
--- Repeats on rhythmSeconds; never blocks.
-local FIST_HEAVY_CANCEL_UNTIL = (Combat.styleFor("Fist") :: Combat.Style).chain[2].cancelUntil
+-- Feinting Mohammed: throws the Fist chain, but cancels his OWN hit 2 once
+-- its cancelUntil has passed since that hit's segment began (a scripted,
+-- telegraphed feint, not a reaction to the target), then re-jabs
+-- immediately (Fist's cancelInto is "Any" - nothing auto-fires the way
+-- Dagger's "Jab" would). Repeats on rhythmSeconds; never blocks.
+local FIST_HIT2_CANCEL_UNTIL = (Combat.styleFor("Fist") :: Combat.Style).chain[2].cancelUntil
 
 local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 	local now = os.clock()
 	local attacking = bb.character:GetAttribute("Attacking") == true
-	local currentHit = bb.character:GetAttribute("CurrentHit")
+	local currentHit = bb.character:GetAttribute("CurrentHitIndex")
 
 	if bb.phase == nil or bb.phase == "idle" then
 		if bb.phaseAt ~= nil and now - (bb.phaseAt :: number) < cfg.rhythmSeconds then
@@ -481,7 +483,16 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 			bb.phaseAt = now
 			return "Failure"
 		end
-		if currentHit == "Heavy" and now - (bb.phaseAt :: number) >= FIST_HEAVY_CANCEL_UNTIL then
+		if currentHit == 2 then
+			-- Hit 2's own segment starts the first tick it's seen.
+			if bb.segmentAt == nil then
+				bb.segmentAt = now
+			end
+		else
+			bb.segmentAt = nil
+		end
+		if bb.segmentAt ~= nil and now - (bb.segmentAt :: number) >= FIST_HIT2_CANCEL_UNTIL then
+			bb.segmentAt = nil
 			CombatService.AttackCancel(bb.character)
 			bb.phase = "cancelled"
 			bb.phaseAt = now
@@ -491,21 +502,22 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 	end
 
 	-- bb.phase == "cancelled"
+	bb.segmentAt = nil
 	CombatService.Attack(bb.character)
 	bb.phase = "idle"
 	bb.phaseAt = now
 	return "Success"
 end
 
--- Dashing Dalila: dashes away the moment the target's Heavy wind-up starts
+-- Dashing Dalila: dashes away when the target starts any attack
 -- (reactionSeconds later, the same read as Jamal); otherwise jabs on
 -- rhythmSeconds like Sam's first hit alone.
 local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
-	local heavyWindup = target:GetAttribute("Attacking") == true and target:GetAttribute("CurrentHit") == "Heavy"
+	local targetAttacking = target:GetAttribute("Attacking") == true
 
-	if heavyWindup then
+	if targetAttacking then
 		if bb.phase ~= "reacting" then
 			bb.phase = "reacting"
 			bb.phaseAt = now
@@ -521,18 +533,18 @@ local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 
 	-- REVIEW-M3B-02: a lone jab, not the full chain - the exact same
 	-- self-cancel Feinting Mohammed uses (CombatService.AttackCancel once
-	-- her own CurrentHit becomes "Heavy"), just without his re-jab: she
+	-- her own CurrentHitIndex becomes 2), just without his re-jab: she
 	-- just pokes once per rhythmSeconds and waits for the next cycle,
-	-- never committing to a heavy on her own initiative.
+	-- never committing to the second hit on her own initiative.
 	if bb.phase == "jabbing" then
 		if bb.character:GetAttribute("Attacking") ~= true then
 			-- Ended some other way (interrupted, say) before ever reaching
-			-- the heavy - the rhythm timer restarts from here either way.
+			-- hit 2 - the rhythm timer restarts from here either way.
 			bb.phase = "idle"
 			bb.phaseAt = now
 			return "Failure"
 		end
-		if bb.character:GetAttribute("CurrentHit") == "Heavy" then
+		if bb.character:GetAttribute("CurrentHitIndex") == 2 then
 			CombatService.AttackCancel(bb.character)
 			bb.phase = "idle"
 			bb.phaseAt = now
