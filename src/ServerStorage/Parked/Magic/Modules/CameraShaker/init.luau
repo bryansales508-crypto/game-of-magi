@@ -141,7 +141,6 @@ function CameraShaker:Update(dt)
 	
 	local instances = self._camShakeInstances
 	
-	-- Update all instances:
 	for i = 1,#instances do
 		
 		local c = instances[i]
@@ -157,7 +156,6 @@ function CameraShaker:Update(dt)
 		
 	end
 	
-	-- Remove dead instances:
 	for i = #self._removeInstances,1,-1 do
 		local instIndex = self._removeInstances[i]
 		table.remove(instances, instIndex)

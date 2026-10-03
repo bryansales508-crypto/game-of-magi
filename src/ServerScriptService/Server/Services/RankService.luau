@@ -1,23 +1,16 @@
 --!strict
--- Rank, Rukh alignment and epithets (M4-01, DESIGN.md section 3a). Computes
--- each player's rank/alignment from Progress (Magoi/GoldRukh/BlackRukh),
--- owns the Rank/RankIndex/Epithet/Alignment/EpithetPending attributes
--- (taken over from HealthService's old per-tick refresh - see HealthService's
--- own M4-01 comment), and fires the rank-up/alignment-changed moments and
--- the origin epithet choice at birth.
+-- Rank, Rukh alignment and epithets. Computes each player's rank/alignment from Progress
+-- (Magoi/GoldRukh/BlackRukh), owns the Rank/RankIndex/Epithet/Alignment/EpithetPending
+-- attributes, and fires the rank-up/alignment-changed moments and the origin epithet
+-- choice at birth.
 --
--- A rank-up never overwrites a choice that's still pending, and never skips
--- straight to the top rank when one grant crosses several thresholds at
--- once: NextRankToAnnounce/NextRankAfterChoice walk the player forward one
--- rank at a time, the origin choice always first (H1 fix, REVIEW-M4-01).
+-- A rank-up never overwrites a choice that's still pending, and never skips to the top
+-- rank when one grant crosses several thresholds: NextRankToAnnounce/NextRankAfterChoice
+-- walk the player forward one rank at a time, the origin choice always first.
 --
--- No shared polling loop: every Progress mutation goes through AddMagoi/
--- AddDeed (including the dev `.magoi`/`.magoi+`/`.rukh` commands, re-
--- registered below to route through them - DevService.Register overwrites
--- its own built-in entries by name, the same public extension point
--- AgeService/HealthService already use to ADD commands), so the rank/
--- alignment check runs right where the number actually changes instead of
--- up to a tick late.
+-- No polling loop: every Progress mutation goes through AddMagoi/AddDeed (the dev
+-- `.magoi`/`.magoi+`/`.rukh` commands are re-registered to route through them), so the
+-- rank/alignment check runs where the number changes.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -35,27 +28,20 @@ local log = Log.new("RankService")
 
 type Data = SaveSchema.Data
 type DeedKind = "Gold" | "Black"
--- A local alias for the qualified external type (same idiom Epithets.luau
--- uses for its own AlignmentKey), rather than writing Alignment.Alignment
--- at every call site.
+-- Local alias for the qualified external type, to avoid writing Alignment.Alignment at every call site.
 type RukhAlignment = Alignment.Alignment
 
 local RankService = {}
 
--- ==================== pure helpers (self-tested directly) ====================
 
--- Ranks.titleFor takes a Magoi amount, not a rank index; this resolves a
--- known index (e.g. from a stored PendingEpithet) to its gendered title by
--- feeding back that rank's own threshold, which always resolves to the same
--- index (rankFor picks the highest threshold at or below the given amount).
+-- Ranks.titleFor takes a Magoi amount, not a rank index; this resolves a known index
+-- to its gendered title by feeding back that rank's own threshold.
 function RankService.TitleForIndex(index: number, gender: number): string
 	return Ranks.titleFor(Ranks.List[index].magoi, gender)
 end
 
--- Pure: mutates data.Progress.Magoi by `amount` (clamped at 0) and returns
--- the rank index before and after, so a caller - or a self-test, with a
--- fake Data table and no Player/DataService at all - can decide whether
--- this crossed a rank threshold.
+-- Pure: mutates data.Progress.Magoi by `amount` (clamped at 0) and returns the rank
+-- index before and after, so a caller or self-test can tell whether a threshold was crossed.
 function RankService.ApplyMagoi(data: Data, amount: number): (number, number)
 	local oldIndex = (Ranks.rankFor(data.Progress.Magoi))
 	data.Progress.Magoi = math.max(0, data.Progress.Magoi + amount)
@@ -65,12 +51,9 @@ end
 
 -- Pure: same shape as ApplyMagoi, for one Rukh tally.
 function RankService.ApplyDeed(data: Data, kind: DeedKind, amount: number): (RukhAlignment, RukhAlignment)
-	-- The `: RukhAlignment` annotations below are needed, not decorative:
-	-- luau-lsp 1.54.0 widens Alignment.alignmentFor's return to plain
-	-- `string` when it's read back through a second module boundary with a
-	-- `::` cast (a real reproduction, not a guess); a `local x: T = expr`
-	-- declaration doesn't have the same problem, so that's the form used
-	-- here instead.
+	-- The `: RukhAlignment` annotations are needed: luau-lsp 1.54.0 widens
+	-- Alignment.alignmentFor's return to `string` when read back through a `::` cast across
+	-- a module boundary; a `local x: T = expr` declaration avoids it.
 	local oldAlignment: RukhAlignment = Alignment.alignmentFor(data.Progress.GoldRukh, data.Progress.BlackRukh)
 	if kind == "Gold" then
 		data.Progress.GoldRukh = math.max(0, data.Progress.GoldRukh + amount)
@@ -81,12 +64,9 @@ function RankService.ApplyDeed(data: Data, kind: DeedKind, amount: number): (Ruk
 	return oldAlignment, newAlignment
 end
 
--- Pure: applies a ChooseEpithet(index) request against `data` directly.
--- Returns (true) on success, or (false, reason) if there's nothing pending
--- or index is out of range - the remote's own validator (Shared/Remotes.luau)
--- already guarantees an in-range integer, so the range check here is
--- defense in depth (and a fake Data table for the self-test), not the only
--- guard.
+-- Pure: applies a ChooseEpithet(index) request against `data`. Returns (true) on success
+-- or (false, reason) if nothing is pending or index is out of range. The remote validator
+-- already guarantees an in-range integer; the range check here is defense in depth.
 function RankService.ApplyChooseEpithet(data: Data, index: number): (boolean, string?)
 	local pending = data.Progress.PendingEpithet
 	if pending == nil then
@@ -112,13 +92,10 @@ function RankService.ShouldOfferOrigin(data: Data, gender: number): boolean
 	return data.Progress.Epithet == "" and data.Progress.PendingEpithet == nil and gender ~= 0
 end
 
--- Pure (H1 fix, REVIEW-M4-01): decides which rank, if any, AddMagoi should
--- announce right after an ApplyMagoi call. Never overwrites a choice
--- that's still pending (nil while one is), never announces before the
--- origin epithet exists (Epithet == "" - it always comes first), and never
--- jumps past oldIndex + 1 even if `amount` crossed several thresholds at
--- once - RankService.NextRankAfterChoice below walks the rest forward one
--- at a time as each card is answered.
+-- Pure: decides which rank, if any, AddMagoi should announce right after ApplyMagoi.
+-- Never overwrites a pending choice (nil while one is), never announces before the origin
+-- epithet exists (Epithet == ""), and never jumps past oldIndex + 1; NextRankAfterChoice
+-- walks the rest forward as each card is answered.
 function RankService.NextRankToAnnounce(data: Data, oldIndex: number, newIndex: number): number?
 	if newIndex <= oldIndex then
 		return nil
@@ -132,11 +109,9 @@ function RankService.NextRankToAnnounce(data: Data, oldIndex: number, newIndex: 
 	return oldIndex + 1
 end
 
--- Pure (H1 fix, REVIEW-M4-01): once `answeredRank`'s choice has just been
--- cleared (ChooseEpithet), decides whether Magoi has already reached the
--- NEXT rank up too - a single big grant across several thresholds walks
--- the player through one card per rank, in order, instead of announcing
--- only the final one.
+-- Pure: once `answeredRank`'s choice has been cleared (ChooseEpithet), decides whether
+-- Magoi has already reached the NEXT rank, so a big grant walks the player through one
+-- card per rank, in order.
 function RankService.NextRankAfterChoice(data: Data, answeredRank: number): number?
 	if data.Progress.PendingEpithet ~= nil then
 		return nil
@@ -148,7 +123,6 @@ function RankService.NextRankAfterChoice(data: Data, answeredRank: number): numb
 	return nil
 end
 
--- ==================== attributes ====================
 
 local function refreshRankAttributes(player: Player, data: Data)
 	local rankIndex = (Ranks.rankFor(data.Progress.Magoi))
@@ -159,15 +133,12 @@ local function refreshRankAttributes(player: Player, data: Data)
 	player:SetAttribute("EpithetPending", data.Progress.PendingEpithet ~= nil)
 end
 
--- ==================== the rank-up / origin moment ====================
 
--- Rolls three epithet choices for `rankIndex`, stores them as the pending
--- choice, refreshes attributes and fires RankUp. `origin` picks the White
--- Rukh Street Rat bank (DESIGN.md 3a: origin is always chosen before a life
--- is judged) instead of the player's actual current alignment. Callers
--- never pass more than one rank above whatever was last resolved -
--- NextRankToAnnounce/NextRankAfterChoice below are what decide `rankIndex`,
--- never AddMagoi's own newIndex directly (H1 fix, REVIEW-M4-01).
+-- Rolls three epithet choices for `rankIndex`, stores them as the pending choice,
+-- refreshes attributes and fires RankUp. `origin` picks the White Rukh Street Rat bank
+-- (origin is always chosen before a life is judged) instead of the player's current
+-- alignment. `rankIndex` comes from NextRankToAnnounce/NextRankAfterChoice, never from
+-- AddMagoi's newIndex directly.
 local function announceRankUp(player: Player, data: Data, rankIndex: number, origin: boolean)
 	local gender = data.Character.Gender
 	local rankTitle = Ranks.List[rankIndex].title
@@ -205,8 +176,8 @@ local function announceRankUp(player: Player, data: Data, rankIndex: number, ori
 	)
 end
 
--- Fires the origin choice (DESIGN.md 3a) the first time a life's character
--- creation is done with nothing chosen or pending yet.
+-- Fires the origin choice the first time a life's character creation is done with
+-- nothing chosen or pending.
 local function checkOrigin(player: Player, data: Data)
 	local gender = player:GetAttribute("Gender")
 	if type(gender) ~= "number" then
@@ -218,7 +189,6 @@ local function checkOrigin(player: Player, data: Data)
 	announceRankUp(player, data, 1, true)
 end
 
--- ==================== public API (M5 missions call these) ====================
 
 function RankService.AddMagoi(player: Player, amount: number, reason: string)
 	local data = DataService.Get(player)
@@ -239,10 +209,9 @@ function RankService.AddMagoi(player: Player, amount: number, reason: string)
 	end
 end
 
--- Pure (BUG-60): the alignment label AlignmentChanged should carry for a
--- deed, or nil for none. A flip to a non-White alignment announces the new
--- alignment (as before); otherwise any Rukh GAIN flutters in the deed's own
--- colour (Gold deed -> "Gold Rukh"). Losses and zero grants stay silent.
+-- Pure: the alignment label AlignmentChanged should carry for a deed, or nil. A flip to
+-- a non-White alignment announces the new alignment; otherwise any Rukh GAIN flutters in
+-- the deed's own colour (Gold deed -> "Gold Rukh"). Losses and zero grants stay silent.
 function RankService.FlutterAlignment(oldAlignment: RukhAlignment, newAlignment: RukhAlignment, kind: DeedKind, amount: number): string?
 	if newAlignment ~= oldAlignment and newAlignment ~= "White" then
 		return Alignment.label(newAlignment)
@@ -260,10 +229,8 @@ function RankService.AddDeed(player: Player, kind: DeedKind, amount: number)
 		return
 	end
 
-	-- Explicit annotations, not just decoration: an unannotated destructure
-	-- of ApplyDeed's return hits the same luau-lsp widening as the `::` cast
-	-- did in ApplyDeed itself (see its own comment) - annotating each local
-	-- here avoids it too.
+	-- Explicit annotations: an unannotated destructure of ApplyDeed's return hits the same
+	-- luau-lsp widening noted in ApplyDeed.
 	local oldAlignment: RukhAlignment, newAlignment: RukhAlignment = RankService.ApplyDeed(data, kind, amount)
 
 	log:Info(
@@ -271,9 +238,7 @@ function RankService.AddDeed(player: Player, kind: DeedKind, amount: number)
 	)
 	refreshRankAttributes(player, data)
 
-	-- BUG-60: the client's Rukh flutter listens to AlignmentChanged, which used
-	-- to fire only when the alignment itself flipped - so a normal delivery's
-	-- +1 Gold Rukh never fluttered. Every Rukh gain now fires it.
+	-- The client's Rukh flutter listens to AlignmentChanged, so every Rukh gain fires it.
 	local flutter = RankService.FlutterAlignment(oldAlignment, newAlignment, kind, amount)
 	if flutter then
 		Remotes.Server.Fire("AlignmentChanged", player, { alignment = flutter })
@@ -299,13 +264,11 @@ function RankService.GetAlignment(player: Player): RukhAlignment
 	return alignment
 end
 
--- ==================== per-player registration ====================
 
--- One connection per session (not per life): CharacterService sets this
--- attribute to 0 at the start of every life (including a death's fresh
--- character) and to the real gender once CreateCharacter succeeds, so this
--- single signal both re-syncs a new life's rank/alignment and fires the
--- origin choice once creation completes.
+-- One connection per session (not per life): CharacterService sets Gender to 0 at the
+-- start of every life and to the real gender once CreateCharacter succeeds, so this one
+-- signal re-syncs a new life's rank/alignment and fires the origin choice once creation
+-- completes.
 local genderConnections: { [Player]: RBXScriptConnection } = {}
 
 local function onGenderAttributeChanged(player: Player)
@@ -316,10 +279,8 @@ local function onGenderAttributeChanged(player: Player)
 
 	local gender = player:GetAttribute("Gender")
 	if gender == 0 then
-		-- A fresh life (or a dev .fresh): DataService.NewLife/Wipe already
-		-- reset Progress before the new character's Gender attribute is set
-		-- back to 0, so just resync the display attributes to match -
-		-- nothing to announce for a life that hasn't earned anything yet.
+		-- A fresh life: NewLife/Wipe already reset Progress, so just resync the display
+		-- attributes; nothing to announce.
 		refreshRankAttributes(player, data)
 		return
 	end
@@ -332,10 +293,8 @@ local function registerPlayer(player: Player, data: Data)
 
 	local pending = data.Progress.PendingEpithet
 	if pending then
-		-- A rank-up (or the origin choice) was still unanswered when this
-		-- session ended; re-send the same stored choices so the client shows
-		-- the card again instead of rolling a fresh (and possibly
-		-- different) set.
+		-- Re-send the stored choices for a rank-up/origin choice still unanswered when the last
+		-- session ended, instead of rolling a different set.
 		local origin = pending.rank == 1 and data.Progress.Epithet == ""
 		local alignmentKey: RukhAlignment
 		if origin then
@@ -368,16 +327,9 @@ local function clearPlayer(player: Player)
 	end
 end
 
--- ==================== dev commands ====================
--- Registered via DevService.Register, same as AgeService/HealthService's
--- own dev commands - and, for magoi/magoi+/rukh, re-registered under the
--- SAME names DevService itself already defined. Commands is just a plain
--- table keyed by name (DevService.Register is the public way any service
--- adds to it), so this overwrites those three with versions that route
--- through AddMagoi/AddDeed instead of writing Progress directly, without
--- DevService needing to require RankService back (Roblox errors on a
--- cyclic ModuleScript require, and RankService already requires DevService
--- for Register/ResolvePlayer).
+-- Registered via DevService.Register. For magoi/magoi+/rukh this overwrites DevService's
+-- built-ins by name with versions that route through AddMagoi/AddDeed, without DevService
+-- requiring RankService back (a cyclic require).
 
 -- Mirrors DevService's own splitTrailingPlayer (not exported): every value
 -- before an optional trailing player name is a number, so a non-numeric
@@ -462,11 +414,9 @@ local function rankupCommand(caller: Player, args: { string }): string
 	return string.format("%s's Magoi: %d -> %d", target.Name, oldMagoi, data.Progress.Magoi)
 end
 
--- Keeps the existing `.epithet <text> [player]` behaviour and adds
--- `.epithet clear [player]`, which clears both the epithet and any pending
--- choice (and, since that makes the life look freshly-created again,
--- re-checks the origin condition - handy for the playtester re-testing the
--- birth flow without a full `.fresh`).
+-- `.epithet <text> [player]` sets the epithet; `.epithet clear [player]` clears the epithet
+-- and any pending choice and re-checks the origin condition (for re-testing the birth
+-- flow without `.fresh`).
 local function epithetCommand(caller: Player, args: { string }): string
 	if args[1] and args[1]:lower() == "clear" then
 		local target, err = DevService.ResolvePlayer(caller, args[2])
@@ -514,7 +464,6 @@ local function registerDevCommands()
 	DevService.Register("epithet", "clear|<text> [player] - clear the epithet/pending choice, or set epithet text", epithetCommand)
 end
 
--- ==================== service ====================
 
 function RankService:Init()
 	registerDevCommands()
@@ -525,9 +474,7 @@ function RankService:Init()
 			return
 		end
 
-		-- Captured before ApplyChooseEpithet clears it - needed for the H1
-		-- fix below (REVIEW-M4-01): walking forward one rank at a time once
-		-- this choice is answered.
+		-- Captured before ApplyChooseEpithet clears it, to walk forward one rank at a time once answered.
 		local pendingBefore = data.Progress.PendingEpithet
 
 		local ok, reason = RankService.ApplyChooseEpithet(data, index)
@@ -556,9 +503,7 @@ function RankService:Start()
 		end
 	end)
 
-	-- Catches a player whose DataService.Loaded already fired before this
-	-- connection was made (the same race PlayerService/DataService's own
-	-- catch-up loops guard against).
+	-- Catches a player whose DataService.Loaded fired before this connection was made.
 	for _, player in Players:GetPlayers() do
 		if DataService.IsLoaded(player) then
 			local data = DataService.Get(player)

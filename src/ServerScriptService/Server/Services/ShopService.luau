@@ -1,24 +1,13 @@
 --!strict
--- The Qarzin clothes stand, in synced code (M5-PLAN.md Phase 5B, Bryan's
--- rules 2026-09-29). Replaces the Studio-only
--- Workspace.Qarzin.ClothesStand.ClothingSpawn script (disabled at Init,
--- Bryan deletes it once this phase passes) - same stock, look and
--- randomness as that script (docs/reference/m5b-studio-dump.md), moved into
--- Shared/Data/Shop.luau + this service, purchases through
--- EconomyService.Pay and ItemService.Wear instead of the old MarketHandler/
--- OnCharacter.Currency.
---
--- The hover highlight is client-only now (M5B's ShopController, a separate
--- client task): the server never enables the rig's Highlight and never
--- toggles the *HL parts' transparency - every prompt just stays Enabled,
--- RequiresLineOfSight = false, so a client can decide locally (e.g. a mouse
--- raycast against the always-present *HL part) whose highlight to show.
---
--- Stocking runs once per server, StockDelaySeconds after Start (same delay
--- the old script used) - no per-frame loop anywhere in this file. Every
--- ProximityPrompt connection this service makes is tracked in
--- `connections`; `.shop restock` disconnects and destroys everything before
--- stocking again.
+-- The Qarzin clothes stand, in synced code (Shared/Data/Shop.luau holds stock, look and
+-- randomness). Purchases go through EconomyService.Pay and ItemService.Wear. The Studio-only
+-- Workspace.Qarzin.ClothesStand.ClothingSpawn script is disabled at Init.
+-- The hover highlight is client-only (ShopController): the server never enables the rig's
+-- Highlight or toggles the *HL parts' transparency; every prompt stays Enabled with
+-- RequiresLineOfSight = false so the client decides locally.
+-- Stocking runs once per server, StockDelaySeconds after Start. Every ProximityPrompt
+-- connection is tracked in `connections`; `.shop restock` disconnects and destroys everything
+-- before stocking again.
 
 local Workspace = game:GetService("Workspace")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -48,11 +37,9 @@ local ShopService = {}
 
 export type PurchaseDecision = "ok" | "slotsFull" | "owned"
 
--- Pure: every check that must pass BEFORE EconomyService.Pay is ever
--- called - slot capacity (hats and cloaks share the same 3-slot
--- Gear.Hats), then exact item+colour ownership. Affordability is checked
--- last, inside EconomyService.Pay itself (it already fires the right
--- flavour line on failure), so this never duplicates that check.
+-- Pure: every check that must pass BEFORE EconomyService.Pay: slot capacity (hats and cloaks
+-- share the 3-slot Gear.Hats), then exact item+colour ownership. Affordability is left to
+-- EconomyService.Pay.
 function ShopService.Decide(data: Data, itemType: ItemType, code: string): PurchaseDecision
 	if (itemType == "H" or itemType == "C") and not ItemService.HasFreeHatSlot(data) then
 		return "slotsFull"
@@ -63,10 +50,9 @@ function ShopService.Decide(data: Data, itemType: ItemType, code: string): Purch
 	return "ok"
 end
 
--- ==================== flavour lines (old MarketHandler pools not covered by EconomyService) ====================
--- NeedMoney/Convert are EconomyService.Pay's job (SYSTEMS.md section 6).
--- These two are shop-specific: full hat/cloak inventory, and "I already
--- have this".
+-- ==================== shop flavour lines ====================
+-- NeedMoney/Convert are EconomyService.Pay's job; these are shop-specific: full hat/cloak
+-- inventory, and "I already have this".
 
 local MAX_CAPACITY_LINES = {
 	"I don't have enough room...",
@@ -148,7 +134,7 @@ local function clearStock()
 				and part.Name ~= Shop.PantsHLName
 			then
 				part.Transparency = 1
-				part.CollisionGroup = "ClothingRackGroup" -- REVIEW-M5B-01: an undressed rack must not stay solid
+				part.CollisionGroup = "ClothingRackGroup"
 			end
 		end
 		local shirt = rack:FindFirstChildOfClass("Shirt")
@@ -170,10 +156,8 @@ local function createPrompt(parent: Instance, objectText: string, price: number,
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.HoldDuration = Shop.HoldDuration
 	prompt.ObjectText = objectText
-	-- Explicit annotations, not decoration: luau-lsp 1.54.0 widens a
-	-- required module's returned union type to plain `string` when it's
-	-- read back through a module boundary without one (same reproduction as
-	-- EconomyService.priceCommand's own comment).
+	-- Explicit annotations: luau-lsp 1.54.0 widens a required module's union type to `string`
+	-- across a module boundary without one.
 	local coin: Coin, amount: number = Economy.toPrice(price)
 	prompt.ActionText = Economy.format(coin, amount)
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
@@ -290,8 +274,7 @@ local function stockCloaks(stand: Instance)
 		return
 	end
 
-	-- Every holder gets a distinct cloak (docs dump #2: "every one of the 3
-	-- holders"), not a partial random subset like hats.
+	-- Every holder gets a distinct cloak, not a random subset like hats.
 	local names = shuffled(Shop.CloakNames)
 	local amount = math.min(#holders, #names)
 	for i = 1, amount do
@@ -404,9 +387,7 @@ end
 
 -- ==================== top-level stock/restock ====================
 
--- Typed as variadic (not `()`) so pcall(stockStand) below type-checks as
--- (boolean, ...any) instead of just (boolean) - same trick DevService's
--- AgeChangeHook and Main.server.luau's ServiceModule contract use.
+-- Typed as variadic so pcall(stockStand) type-checks.
 local function stockStand(): ...any
 	local stand = getStand()
 	if stand == nil then

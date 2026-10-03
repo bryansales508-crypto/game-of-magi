@@ -1,37 +1,15 @@
 --!strict
 --!optimize 2
 --!native
---|bruh
 
 --[[ ColorMath : Crazyblox 2025
+Math on Color3 (add, sub, mul, div, idiv) plus sRGB <-> linear RGB conversion.
+Color3 stores 0-1 sRGB floats, which cannot be added or multiplied directly; each
+call converts inputs to linear RGB, does the math, and converts back, so it is
+convenient rather than fast (avoid heavy loops). Usage: local Color3 = require(path.to.module)
+shadows the global and keeps every other Color3 member available.
 
-	ABOUT:
-An easy-to-use math extension of RBX Color3.
-Color3 doesn't support math, and stores its values as 0-1 sRGB floats.
-The sRGB color space splits dark and bright values between a linear scale [straight] and a gamma curve.
-sRGB originated in 1996, allocating human-noticeable color differences to an 8-bit integer.
-Due to this, sRGB needs converting to Linear RGB [AKA lRGB] so that we can do math.
-
-	SETUP:
-As this module is Color3-only, replacing the Color3 global is optimal for readability.
-The below line gives you auto-complete where you would need it most for these functions.
-local Color3 = require(path.to.module)
-
-	API:
-API is minimal, accepting and returning standard Color3 userdata.
-Color3's are converted from sRGB, calculated as lRGB, and converted back to sRGB.
-This can be costly in heavy loops, but this is designed for ease-of-use, not speed.
-Long-term compatibility is ensured by preventing below API's being overrided by Roblox.
-Colorspace conversions are included for more granular operation [eg. Color3:Lerp()]
-
-Math [sRGB input only]:
-ColorMath.add( Color3, ...Color3 ): Color3
-ColorMath.sub( Color3, ...Color3 ): Color3
-ColorMath.mul( Color3, ...Color3 ): Color3
-ColorMath.div( Color3, ...Color3 ): Color3
-ColorMath.idiv( Color3, ...Color3 ): Color3
-
-Color Space:
+ColorMath.add / sub / mul / div / idiv( Color3, ...Color3 ): Color3   (sRGB in and out)
 ColorMath.sRGB_To_lRGB( ...Color3 ): ...Color3
 ColorMath.lRGB_To_sRGB( ...Color3 ): ...Color3
 ]]
@@ -129,15 +107,12 @@ local ColorMath = {
 		)
 	end,
 	
-	--Floor-divides given Color3's in order
 	idiv = function( Start: Color3, ...: Color3 ): Color3
-		--Start with initial color
 		local C: vector = vector.create(
 			Start.R <= 0.04045 and Start.R * 0.07739938080495357 or ( ( Start.R + 0.055 ) * 0.9478672985781991 ) ^ 2.4,
 			Start.G <= 0.04045 and Start.G * 0.07739938080495357 or ( ( Start.G + 0.055 ) * 0.9478672985781991 ) ^ 2.4,
 			Start.B <= 0.04045 and Start.B * 0.07739938080495357 or ( ( Start.B + 0.055 ) * 0.9478672985781991 ) ^ 2.4
 		)
-		--Iterate through remainder of colors
 		for _, Color: Color3 in {...} do
 			C //= vector.create(
 				Color.R <= 0.04045 and Color.R * 0.07739938080495357 or ( ( Color.R + 0.055 ) * 0.9478672985781991 ) ^ 2.4,

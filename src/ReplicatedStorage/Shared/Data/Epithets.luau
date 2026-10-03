@@ -1,24 +1,5 @@
 --!strict
--- Epithet banks (DESIGN 3a), keyed [rankTitle][alignment]. Bryan can add,
--- rename or cut epithets at any time; only the shape below matters.
---
--- Two title/DESIGN entries name both genders in one line ("The Exiled
--- Prince/Princess", "The Fisherman's Son/Daughter"). Those are stored as
--- a { male = ..., female = ... } pair instead of two separate bank
--- entries, so bankFor can resolve the right one for a known gender while
--- still returning the combined "X/Y" form when the gender is 0/unknown
--- (matching Ranks.titleFor's King/Queen behaviour). Every other entry is
--- a plain string.
---
--- Street Rat is the origin rank, always chosen at birth while the
--- character is still White Rukh, so DESIGN gives it one bank reused for
--- every alignment key (documented there as "same bank at birth").
---
--- DESIGN's per-rank tables only list Gold/GoldBlack/Black columns above
--- Street Rat: "White" shouldn't occur past Street Rat once missions have
--- generated deeds, but bankFor still needs an answer if it ever does, so
--- it falls back to that rank's GoldBlack bank (the neutral middle) rather
--- than erroring or returning an empty list.
+-- Epithet banks, keyed [rankTitle][alignment]. Entries are plain strings, except the two that name both genders ("The Exiled Prince/Princess", "The Fisherman's Son/Daughter"), stored as { male, female } so bankFor resolves the right one for a known gender and returns the combined "X/Y" form when gender is 0/unknown. Street Rat is the origin rank, chosen at birth while still White Rukh, so one bank serves every alignment key. Higher ranks list only Gold/GoldBlack/Black; bankFor falls back to GoldBlack for anything else (e.g. White).
 
 local Alignment = require(script.Parent.Alignment)
 
@@ -76,10 +57,7 @@ local RANKS: { [string]: AlignmentBanks } = {
 	},
 }
 
--- BUG-09: Street Rat's four alignment keys all alias the same STREET_RAT
--- table (its one shared bank), so this loop visits it - and its gendered
--- entries - more than once. table.freeze errors on an already-frozen
--- table, so every freeze here is guarded instead of unconditional.
+-- Street Rat's four alignment keys alias the same bank table, so this loop visits it more than once; table.freeze errors on an already-frozen table, hence the guards.
 for _, banks in RANKS do
 	for _, bank in banks do
 		for _, entry in bank do
@@ -111,8 +89,7 @@ local function resolveEntry(entry: BankEntry, gender: number): string
 	return entry.male .. "/" .. entry.female
 end
 
--- The list of epithet strings (already resolved for `gender`) available
--- at `rankTitle` and `alignment`.
+-- Epithet strings available at `rankTitle` and `alignment`, resolved for `gender`.
 function Epithets.bankFor(rankTitle: string, alignment: AlignmentKey, gender: number): { string }
 	local banks = RANKS[rankTitle]
 	if not banks then
@@ -135,10 +112,7 @@ function Epithets.bankFor(rankTitle: string, alignment: AlignmentKey, gender: nu
 	return resolved
 end
 
--- 3 random, distinct epithets from that bank, for the rank-up choice
--- screen. `exclude` (already-taken epithets) is honoured when the bank
--- still has at least 3 left after removing them; otherwise it's ignored
--- so a pick is always returned.
+-- Three random, distinct epithets from that bank. `exclude` is honoured only when at least 3 remain after removing them.
 function Epithets.pick3(rankTitle: string, alignment: AlignmentKey, gender: number, exclude: { string }?): { string }
 	local bank = Epithets.bankFor(rankTitle, alignment, gender)
 
