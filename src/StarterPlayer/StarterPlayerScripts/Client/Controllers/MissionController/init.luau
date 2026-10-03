@@ -432,9 +432,19 @@ local function buildModifierRow(
 		cardPadding.Parent = popOut
 		table.insert(sink, popOut)
 
+		-- BUG-54: the badge's own "!!!" label was drawn over the description.
+		-- Only its Percentage child is kept, in the card's top-right corner
+		-- on the name row; the "!!!" label is dropped.
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
-		;(chanceBadge :: any).Percentage.Text = formatChance(modifier.chance)
-		chanceBadge.Parent = popOut
+		local percentage = (chanceBadge :: any).Percentage :: TextLabel
+		percentage.Text = formatChance(modifier.chance)
+		percentage.AnchorPoint = Vector2.new(1, 0)
+		percentage.Position = UDim2.new(1, -POPOUT_PADDING, 0, POPOUT_PADDING)
+		percentage.Size = UDim2.fromOffset(60, 26)
+		percentage.TextXAlignment = Enum.TextXAlignment.Right
+		percentage.Parent = popOut
+		chanceBadge:Destroy()
+		modType.Size = UDim2.new(1, -2 * POPOUT_PADDING - 64, 0, 26)
 
 		local bonusButton = (container :: any).BONUS
 		local typedBonusButton: TextButton? = if bonusButton and bonusButton:IsA("TextButton") then bonusButton else nil
