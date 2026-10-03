@@ -2898,7 +2898,7 @@ local function testMissionService(results: { Check })
 			-- BUG-59: a missing part now yields a placeholder, not a refusal.
 			expect(results, "MissionService (BUG-59): with the drop-off parts missing, destinations come from placeholders", posA ~= nil and posB ~= nil)
 		end
-		for _, root in { game:GetService("Workspace"), missionFolder } do
+		for _, root in { game:GetService("Workspace"), missionFolder, game:GetService("Workspace"):FindFirstChild("MissionPlaceholders") } do
 			if root then
 				for _, city in { "Qarzin", "Saleh" } do
 					local leftover = root:FindFirstChild(Cities.DeliveryPartName(city) .. "_PLACEHOLDER")
@@ -2939,6 +2939,70 @@ local function testMissionService(results: { Check })
 		real.Parent = folder2
 		expect(results, "MissionService (BUG-59): a present Delivery part is used untouched", MissionService.ResolveDeliveryPart("Saleh", folder2) == real and #folder2:GetChildren() == 1)
 		folder2:Destroy()
+	end
+
+	-- BUG-59 (review): the sweep removes stale placeholders at any depth and
+	-- the whole MissionPlaceholders folder, and leaves real parts alone.
+	do
+		local root = Instance.new("Folder")
+		local nested = Instance.new("Folder")
+		nested.Parent = root
+		local stale = Instance.new("Part")
+		stale.Name = "SalehDelivery_PLACEHOLDER"
+		stale.Parent = nested
+		local realPart = Instance.new("Part")
+		realPart.Name = "SalehDelivery"
+		realPart.Parent = nested
+		local folder = Instance.new("Folder")
+		folder.Name = "MissionPlaceholders"
+		folder.Parent = root
+		Instance.new("Part").Parent = folder
+		local removed = MissionService.SweepPlaceholders(root)
+		expect(results, "MissionService (BUG-59): sweep removes nested stale placeholders and the placeholder folder", removed == 2 and stale.Parent == nil and root:FindFirstChild("MissionPlaceholders") == nil)
+		expect(results, "MissionService (BUG-59): sweep leaves real Delivery parts alone", realPart.Parent == nested)
+		root:Destroy()
+	end
+
+	-- BUG-56: scale/offset math.
+	do
+		expect(results, "MissionService (BUG-56): a normal package is not scaled", MissionService.PackScale(false) == 1)
+		expect(results, "MissionService (BUG-56): HeavyCargo scales by Config.Missions.HeavyCargoPackScale", MissionService.PackScale(true) == Config.Missions.HeavyCargoPackScale and MissionService.PackScale(true) > 1)
+		expect(results, "MissionService (BUG-56): torso offsets scale with the pack", MissionService.ScaledOffset(1.25, 2) == 2.5 and MissionService.ScaledOffset(0.3, 1) == 0.3)
+	end
+
+	-- BUG-55: Highlight on the package only; HV gets the ordinary beacon schedule.
+	do
+		local fakeCharacter = Instance.new("Model")
+		local fakePack = Instance.new("Model")
+		fakePack.Name = "Pack"
+		local main = Instance.new("Part")
+		main.Name = "Main"
+		main.Parent = fakePack
+		fakePack.Parent = fakeCharacter
+		local hl = MissionService.ApplyHighlyValuableLook(fakePack)
+		if hl then
+			expect(results, "MissionService (BUG-55): the Highlight is parented to the package", hl.Parent == fakePack and hl.Adornee == fakePack)
+		end
+		expect(results, "MissionService (BUG-55): the courier's character never gets a Highlight", fakeCharacter:FindFirstChildOfClass("Highlight") == nil)
+		local onHv, nextHv = MissionService.InitialBeacon(100)
+		expect(results, "MissionService (BUG-55): every courier (HV too) starts with the beacon off and the first pulse after the ordinary interval", onHv == false and nextHv == 100 + Config.Missions.Beacon.everySeconds)
+		fakeCharacter:Destroy()
+	end
+
+	-- BUG-51: overhead display settings on a fake character.
+	do
+		local fake = Instance.new("Model")
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = fake
+		CharacterService.HideOverheadDisplay(fake)
+		expect(
+			results,
+			"CharacterService (BUG-51): the overhead name and health bar are hidden",
+			humanoid.DisplayDistanceType == Enum.HumanoidDisplayDistanceType.None
+				and humanoid.HealthDisplayType == Enum.HumanoidHealthDisplayType.AlwaysOff
+				and humanoid.NameDisplayDistance == 0
+		)
+		fake:Destroy()
 	end
 
 	-- BUG-50: a replaced save re-publishes the purse. ResetToTemplate +

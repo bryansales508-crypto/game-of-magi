@@ -544,7 +544,7 @@ end
 -- None hides both; NPC trainers keep their own billboards (players only here).
 local PLAYER_DISPLAY_DISTANCE_TYPE = Enum.HumanoidDisplayDistanceType.None
 
-local function hideOverheadDisplay(character: Model)
+function CharacterService.HideOverheadDisplay(character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil then
 		return
@@ -556,7 +556,7 @@ local function hideOverheadDisplay(character: Model)
 end
 
 local function buildCharacter(player: Player, character: Model, data: Data)
-	hideOverheadDisplay(character)
+	CharacterService.HideOverheadDisplay(character) -- second pass; CharacterAdded already did it
 
 	local appearenceLoaded = Instance.new("BoolValue")
 	appearenceLoaded.Name = "AppearenceLoaded"
@@ -668,7 +668,29 @@ function CharacterService:Init()
 	end)
 end
 
+-- BUG-51: hide the default overhead name/health the moment the Humanoid
+-- exists, not after PlayerService.Ready (which waits for the client).
+local function hideWhenHumanoidExists(character: Model)
+	if character:FindFirstChildOfClass("Humanoid") == nil then
+		character:WaitForChild("Humanoid", 10)
+	end
+	CharacterService.HideOverheadDisplay(character)
+end
+
+local function watchPlayer(player: Player)
+	player.CharacterAdded:Connect(function(character: Model)
+		task.spawn(hideWhenHumanoidExists, character)
+	end)
+	if player.Character then
+		task.spawn(hideWhenHumanoidExists, player.Character)
+	end
+end
+
 function CharacterService:Start()
+	Players.PlayerAdded:Connect(watchPlayer)
+	for _, player in Players:GetPlayers() do
+		watchPlayer(player)
+	end
 	-- Resolved here, not Init() (Init must not yield; WaitForChild can).
 	resolveSoundsAndParticles()
 

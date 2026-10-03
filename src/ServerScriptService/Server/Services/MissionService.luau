@@ -447,8 +447,9 @@ end
 
 -- The part a city's deliveries go to: the real part under `parent` if it
 -- exists, else (reusing or creating) the placeholder in the same parent, else
--- nil. `parent` is Workspace.MAP.MISSION in play; the self-test passes a temp
--- folder.
+-- nil. `parent` is Workspace.MissionPlaceholders in play (the real part is
+-- looked up in the map first by getDeliveryPart); the self-test passes a
+-- temp folder.
 function MissionService.ResolveDeliveryPart(cityKey: string, parent: Instance): BasePart?
 	local name = Cities.DeliveryPartName(cityKey)
 	local real = parent:FindFirstChild(name)
@@ -491,10 +492,50 @@ function MissionService.ResolveDeliveryPart(cityKey: string, parent: Instance): 
 	return placeholder
 end
 
+-- Placeholders live in their own server-made folder, never in the real map.
+local PLACEHOLDER_FOLDER_NAME = "MissionPlaceholders"
+
+local function placeholderFolder(): Folder
+	local folder = Workspace:FindFirstChild(PLACEHOLDER_FOLDER_NAME)
+	if folder and folder:IsA("Folder") then
+		return folder
+	end
+	if folder then
+		folder:Destroy()
+	end
+	local created = Instance.new("Folder")
+	created.Name = PLACEHOLDER_FOLDER_NAME
+	created.Parent = Workspace
+	return created
+end
+
+-- On Start: removes every `*_PLACEHOLDER` part anywhere under Workspace and
+-- the whole MissionPlaceholders folder, so a stale one saved into the place
+-- can never shadow a real part. Returns how many were removed.
+function MissionService.SweepPlaceholders(root: Instance): number
+	local removed = 0
+	for _, inst in root:GetDescendants() do
+		if inst:IsA("BasePart") and inst.Name:sub(-#PLACEHOLDER_SUFFIX) == PLACEHOLDER_SUFFIX then
+			inst:Destroy()
+			removed += 1
+		end
+	end
+	local folder = root:FindFirstChild(PLACEHOLDER_FOLDER_NAME)
+	if folder then
+		removed += #folder:GetChildren()
+		folder:Destroy()
+	end
+	return removed
+end
+
 local function getDeliveryPart(cityKey: string): BasePart?
 	local map = Workspace:FindFirstChild("MAP")
 	local missionFolder = map and map:FindFirstChild("MISSION")
-	return MissionService.ResolveDeliveryPart(cityKey, missionFolder or Workspace)
+	local real = missionFolder and missionFolder:FindFirstChild(Cities.DeliveryPartName(cityKey))
+	if real and real:IsA("BasePart") then
+		return real
+	end
+	return MissionService.ResolveDeliveryPart(cityKey, placeholderFolder())
 end
 
 -- BUG-46: the one place a city key becomes a world position. Each city's own
@@ -652,6 +693,23 @@ local PACKAGE_TEMPLATE_NAMES = { "Package1", "Package2" }
 -- BUG-56: HeavyCargo draws the package bigger (the old game's look), by
 -- Config.Missions.HeavyCargoPackScale. Applied here, when the package is
 -- attached; undone for free when cleanupRun destroys the package.
+-- Pure (BUG-56): the model scale for a package, and a torso-space offset
+-- scaled to match so a bigger pack sits on the back, not in it.
+function MissionService.PackScale(heavyCargo: boolean): number
+	return if heavyCargo then Config.Missions.HeavyCargoPackScale else 1
+end
+
+function MissionService.ScaledOffset(offset: number, scale: number): number
+	return offset * scale
+end
+
+-- Pure (BUG-55): the courier's beacon schedule at run start - off, first
+-- pulse after the ordinary interval, identical for every courier
+-- (HighlyValuable included).
+function MissionService.InitialBeacon(now: number): (boolean, number)
+	return false, now + Config.Missions.Beacon.everySeconds
+end
+
 local function attachPackage(character: Model, heavyCargo: boolean): Instance?
 	local objects = ReplicatedFirst:FindFirstChild("Objects")
 	if objects == nil then
@@ -672,8 +730,9 @@ local function attachPackage(character: Model, heavyCargo: boolean): Instance?
 
 	local pack = (template:Clone() :: Model)
 	pack.Name = "Pack"
-	if heavyCargo then
-		pack:ScaleTo(pack:GetScale() * Config.Missions.HeavyCargoPackScale)
+	local scale = MissionService.PackScale(heavyCargo)
+	if scale ~= 1 then
+		pack:ScaleTo(pack:GetScale() * scale)
 	end
 	local primary = pack.PrimaryPart
 	if primary == nil then
@@ -685,9 +744,9 @@ local function attachPackage(character: Model, heavyCargo: boolean): Instance?
 	local main = pack:FindFirstChild("Main")
 	if main and main:IsA("BasePart") then
 		if pack:FindFirstChild("Pack1") then
-			main.CFrame = torso.CFrame:ToWorldSpace(CFrame.new(0, 0, 0.3) * CFrame.Angles(0, math.rad(180), 0))
+			main.CFrame = torso.CFrame:ToWorldSpace(CFrame.new(0, 0, MissionService.ScaledOffset(0.3, scale)) * CFrame.Angles(0, math.rad(180), 0))
 		elseif pack:FindFirstChild("Pack2") then
-			main.CFrame = torso.CFrame:ToWorldSpace(CFrame.new(0, 0, 1.25) * CFrame.Angles(math.rad(270), math.rad(90), math.rad(90)))
+			main.CFrame = torso.CFrame:ToWorldSpace(CFrame.new(0, 0, MissionService.ScaledOffset(1.25, scale)) * CFrame.Angles(math.rad(270), math.rad(90), math.rad(90)))
 		end
 	end
 
@@ -736,21 +795,22 @@ local VALUABLE_FADE_SECONDS = 1
 local VALUABLE_HOLD_SECONDS = 6
 local VALUABLE_OFF_SECONDS = 20
 
-local function applyHighlyValuableLook(run: Run)
-	local pack = run.pack
+-- Returns the gold Highlight (parented to the package, never the character),
+-- or nil if the art is missing; the caller stores it for the pulse machine.
+function MissionService.ApplyHighlyValuableLook(pack: Instance?): Highlight?
 	if pack == nil then
-		return
+		return nil
 	end
 	local main = pack:FindFirstChild("Main")
 	if main == nil or not main:IsA("BasePart") then
-		return
+		return nil
 	end
 
 	local vfx = ReplicatedFirst:FindFirstChild("VFX")
 	local miscEffects = vfx and vfx:FindFirstChild("MiscEffects")
 	if miscEffects == nil then
 		log:Warn("ReplicatedFirst.VFX.MiscEffects is missing - HighlyValuable has no sparkle/highlight")
-		return
+		return nil
 	end
 
 	local trueSparkle = miscEffects:FindFirstChild("trueSparkle")
@@ -783,11 +843,10 @@ local function applyHighlyValuableLook(run: Run)
 		hl.Adornee = pack
 		hl.Parent = pack
 
-		run.valuableHighlight = hl
-		run.valuablePhase = "FadeIn"
-		run.valuablePhaseEndsAt = Workspace:GetServerTimeNow() + VALUABLE_FADE_SECONDS
 		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 0.75, OutlineTransparency = 0 }):Play()
+		return hl
 	end
+	return nil
 end
 
 -- Advances the HighlyValuable pulse's phase machine by exactly one step, if
@@ -873,6 +932,8 @@ local function startRun(
 	local hasTimeCrunch = hasModifier(modifiers, "TimeCrunch")
 	local hasHighlyValuable = hasModifier(modifiers, "HighlyValuable")
 
+	local beaconOn, beaconNextAt = MissionService.InitialBeacon(now)
+
 	local run: Run = {
 		player = player,
 		character = character,
@@ -901,8 +962,8 @@ local function startRun(
 		valuablePhaseEndsAt = nil,
 		settled = false,
 		-- BUG-55: HighlyValuable couriers use the ordinary occasional beacon.
-		beaconOn = false,
-		beaconNextAt = now + Config.Missions.Beacon.everySeconds,
+		beaconOn = beaconOn,
+		beaconNextAt = beaconNextAt,
 		beaconOffAt = nil,
 	}
 
@@ -913,7 +974,12 @@ local function startRun(
 		applyFragileLook(run.pack)
 	end
 	if hasHighlyValuable then
-		applyHighlyValuableLook(run)
+		local hl = MissionService.ApplyHighlyValuableLook(run.pack)
+		if hl then
+			run.valuableHighlight = hl
+			run.valuablePhase = "FadeIn"
+			run.valuablePhaseEndsAt = Workspace:GetServerTimeNow() + VALUABLE_FADE_SECONDS
+		end
 	end
 
 	runs[player] = run
@@ -1555,6 +1621,10 @@ function MissionService:Init()
 end
 
 function MissionService:Start()
+	local swept = MissionService.SweepPlaceholders(Workspace)
+	if swept > 0 then
+		log:Info(string.format("Swept %d stale delivery placeholder(s) on start", swept))
+	end
 	Remotes.Server.On("MissionOpenBoard", onOpenBoard)
 	Remotes.Server.On("MissionStart", onMissionStart)
 	Remotes.Server.On("MissionExit", onMissionExit)
