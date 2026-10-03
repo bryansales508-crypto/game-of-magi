@@ -582,12 +582,23 @@ Config.World = {
 		-- Fallback for when Animate's walk markers don't fire (or while
 		-- running): one step per this many studs walked. 0 = off.
 		FallbackStrideStuds = 5.5,
+		-- BUG-57: seconds between running steps. 0 = follow the run
+		-- animation itself (one step each half of its loop, at whatever
+		-- speed it plays); set a number only to override that.
+		RunStepSeconds = 0,
+	},
+	-- BUG-61: the old dash sound. The deleted PhysicalHandler/server dash
+	-- handler cloned Torso.SoundEffects.QuickDash; it now lives at
+	-- ReplicatedFirst.SFX.CombatSounds.QuickDash (m6-studio-dump.md).
+	Sfx = {
+		Dash = "QuickDash",
 	},
 }
 table.freeze(Config.World.Music)
 table.freeze(Config.World.DayNight)
 table.freeze(Config.World.Ocean)
 table.freeze(Config.World.Footsteps)
+table.freeze(Config.World.Sfx)
 table.freeze(Config.World)
 table.freeze(Config)
 

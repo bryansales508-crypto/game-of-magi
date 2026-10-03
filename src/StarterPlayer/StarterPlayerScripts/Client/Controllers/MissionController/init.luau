@@ -432,9 +432,19 @@ local function buildModifierRow(
 		cardPadding.Parent = popOut
 		table.insert(sink, popOut)
 
+		-- BUG-54: the badge's own "!!!" label was drawn over the description.
+		-- Only its Percentage child is kept, in the card's top-right corner
+		-- on the name row; the "!!!" label is dropped.
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
-		;(chanceBadge :: any).Percentage.Text = formatChance(modifier.chance)
-		chanceBadge.Parent = popOut
+		local percentage = (chanceBadge :: any).Percentage :: TextLabel
+		percentage.Text = formatChance(modifier.chance)
+		percentage.AnchorPoint = Vector2.new(1, 0)
+		percentage.Position = UDim2.new(1, -POPOUT_PADDING, 0, POPOUT_PADDING)
+		percentage.Size = UDim2.fromOffset(60, 26)
+		percentage.TextXAlignment = Enum.TextXAlignment.Right
+		percentage.Parent = popOut
+		chanceBadge:Destroy()
+		modType.Size = UDim2.new(1, -2 * POPOUT_PADDING - 64, 0, 26)
 
 		local bonusButton = (container :: any).BONUS
 		local typedBonusButton: TextButton? = if bonusButton and bonusButton:IsA("TextButton") then bonusButton else nil
@@ -504,12 +514,35 @@ local function selectDestination(destination: Destination, textContainer: Instan
 	buildModifierRow(destination.modifiers or {}, modifierRow, screenGui, boardModifierInstances, nil, boardFrame)
 end
 
+-- BUG-53: the old board's button structure (m5c-studio-dump.md section 1):
+-- a 56 px slot holding a per-city coloured Frame (0.9 wide, anchored centre)
+-- with a TextButton on it (0.9 x 0.7, Merriweather Bold 18, black border;
+-- Rathole's border matches its fill). Colours come from the server as before.
 local function buildCityButton(destination: Destination, parent: Instance, layoutOrder: number, onClick: (Destination) -> ())
 	local color = toColor3(destination.color)
+
+	local slot = Instance.new("Frame")
+	slot.Name = destination.key
+	slot.LayoutOrder = layoutOrder
+	slot.Size = UDim2.new(1, 0, 0, 56)
+	slot.BackgroundTransparency = 1
+	slot.BorderSizePixel = 0
+	slot.Parent = parent
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Plate"
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.Size = UDim2.fromScale(0.9, 1)
+	frame.BackgroundColor3 = color
+	frame.BorderSizePixel = 0
+	frame.Parent = slot
+
 	local button = Instance.new("TextButton")
-	button.Name = destination.key
-	button.LayoutOrder = layoutOrder
-	button.Size = UDim2.fromOffset(225, 56)
+	button.Name = "Button"
+	button.AnchorPoint = Vector2.new(0.5, 0.5)
+	button.Position = UDim2.fromScale(0.5, 0.5)
+	button.Size = UDim2.fromScale(0.9, 0.7)
 	button.BackgroundColor3 = color
 	button.BorderColor3 = if destination.key == "Rathole" then color else Color3.new(0, 0, 0)
 	button.BorderSizePixel = 2
@@ -518,7 +551,7 @@ local function buildCityButton(destination: Destination, parent: Instance, layou
 	button.TextColor3 = Color3.new(1, 1, 1)
 	button.TextSize = 18
 	button.FontFace = MERRIWEATHER_BOLD
-	button.Parent = parent
+	button.Parent = frame
 
 	button.Activated:Connect(function()
 		onClick(destination)

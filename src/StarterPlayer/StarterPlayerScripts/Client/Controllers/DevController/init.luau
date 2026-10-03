@@ -7,6 +7,7 @@
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService = game:GetService("TextChatService")
 local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
@@ -126,10 +127,21 @@ local function handleLocalCommand(text: string, reply: (string) -> ()): boolean
 		local MusicController = require(controllers.MusicController) :: any
 		local arg = string.lower(rest)
 		if arg == "" then
-			reply("now playing: " .. tostring(MusicController.CurrentTrack()))
+			reply("now playing: " .. tostring(MusicController.Current()))
 		elseif arg == "stop" then
 			MusicController.Stop()
-			reply("music stopped (until you change region)")
+			reply("music stopped (.music play to resume)")
+		elseif arg == "play" then
+			MusicController.Play()
+			reply("music resumed")
+		elseif string.match(arg, "^volume%s+") ~= nil then
+			local volume = tonumber(string.match(arg, "^volume%s+(%S+)"))
+			if volume == nil then
+				reply("usage: .music volume 0-1")
+			else
+				MusicController.SetVolume(volume)
+				reply(string.format("music volume %.2f", MusicController.Volume()))
+			end
 		elseif arg == "next" then
 			MusicController.Next()
 			reply("next track")
@@ -297,6 +309,14 @@ function DevController:Start()
 			table.remove(replyLines, 1)
 		end
 		replyText.Text = table.concat(replyLines, "\n")
+
+		-- BUG-52: the panel is hidden unless opened, so every reply (server
+		-- or local command) also shows as a local-only chat system message.
+		local channels = TextChatService:FindFirstChild("TextChannels")
+		local general = channels and channels:FindFirstChild("RBXGeneral")
+		if general ~= nil and general:IsA("TextChannel") then
+			general:DisplaySystemMessage(text)
+		end
 	end
 
 	Remotes.Client.On("DevReply", function(text: any)
