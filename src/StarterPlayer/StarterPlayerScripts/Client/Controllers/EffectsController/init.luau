@@ -28,11 +28,9 @@
 -- CombatController's private swing state -- for the interrupted case it
 -- finds the actual playing track itself, generically, by animation id.
 --
--- M3-FIX4 (Bryan, 2026-09-28): fighting styles. Hit{kind} ("Light" or
--- "Heavy") replaces the old Hit{finisher} for picking the reaction: a
--- Heavy plays the existing stagger, a Light doesn't (point 8 -- there's
--- no separate light-flinch animation asset, so "a brief flinch only if a
--- suitable track exists" is "nothing" in practice today). Two new
+-- M3-FIX4 (Bryan, 2026-09-28): fighting styles. M3-FIX7 (Bryan,
+-- 2026-10-02): every hit is a Light -- the ordinary hit sound, no stagger
+-- flinch (the stagger still plays for interrupts and block breaks). Two new
 -- CombatEvent kinds: Bleed{target, stacks} attaches/removes the old bleed
 -- particles and cut decal by stack count (also mirrored by the `Bleed`
 -- attribute directly, so a character that already has stacks when this
@@ -626,21 +624,10 @@ local function onHit(data: any)
 		return
 	end
 
-	-- M3-FIX4: `kind` ("Light" | "Heavy") replaces the old `finisher`
-	-- flag. A Heavy reuses the old finisher sound and the existing
-	-- stagger; a Light gets the ordinary hit sound and no animation --
-	-- "no knockback reaction, a brief flinch only if a suitable track
-	-- exists" (point 8), and there isn't one today.
-	local isHeavy = data.kind == "Heavy"
-	if isHeavy then
-		playSound(target, "LightHitSoundFin")
-	else
-		playSound(target, "LightHitSound" .. pickIndex(target, "hit", HIT_SOUND_COUNT))
-	end
+	-- M3-FIX7: every landed hit is a Light: the ordinary hit sound and
+	-- particle, no stagger animation.
+	playSound(target, "LightHitSound" .. pickIndex(target, "hit", HIT_SOUND_COUNT))
 	emitParticle(target, "HitParticle", 1)
-	if isHeavy then
-		playStagger(target)
-	end
 end
 
 -- M3-FIX4 point 9: a blocked feint is just a normal Blocked event -- the

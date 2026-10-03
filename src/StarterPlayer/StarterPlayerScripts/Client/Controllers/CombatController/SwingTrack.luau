@@ -11,9 +11,9 @@
 -- the moment a hit's marker plays, the track stops dead (AdjustSpeed(0))
 -- in the impact pose and waits for `continue()` - the player's next click,
 -- or the server's SwingContinue event for an NPC. continue() resumes it
--- into the follow-through and the next hit's wind-up (slowed by that hit's
--- windupSpeed from its wind-up marker on) until that punch, where it
--- freezes again. After the chain's LAST hit the track wraps back to its
+-- into the follow-through and the next hit's wind-up, all at the style's
+-- plain ComboSpeed (M3-FIX7: no wind-up slowdown; every hit is a Light),
+-- until that punch, where it freezes again. After the chain's LAST hit the track wraps back to its
 -- start, so hit 1 follows hit 2 follows hit 1 for as long as the clicks
 -- keep coming; a chain only ends when a click doesn't come in time (the
 -- server's "dropped" AttackCancelled fades the frozen pose out), or on a
@@ -44,8 +44,8 @@ export type Swing = {
 	track: AnimationTrack,
 	styleName: string,
 	hitCount: number,
-	-- Config.Combat.ComboSpeed for this style: the track's speed outside a
-	-- wind-up (restored after every unfreeze).
+	-- Config.Combat.ComboSpeed for this style: the track's one speed
+	-- (restored after every unfreeze).
 	comboSpeed: number,
 	-- How many hits have been thrown (started) so far: 1 from Play(), +1
 	-- per continue(). Only ever grows.
@@ -59,8 +59,7 @@ export type Swing = {
 	segmentStartedAt: number,
 	-- os.clock() when the latest hit marker fired; nil before hit 1.
 	lastHitAt: number?,
-	-- True once the live hit's wind-up marker has played (its cancel point
-	-- for a Light).
+	-- True once the live hit's wind-up marker has played.
 	windupSeen: boolean,
 	-- True once the live hit's marker has played: the track is frozen in
 	-- the punch pose, waiting for continue().
@@ -92,8 +91,8 @@ export type Params = {
 
 -- ==================== per-hit style data (M3-FIX4, read defensively) ====================
 
--- Combat.Styles[styleName].chain[hitIndex] (kind/windupAt/cancelUntil/
--- windupSpeed/...), or nil if the style/index isn't in it. Never errors.
+-- Combat.Styles[styleName].chain[hitIndex] (windupAt/cancelUntil/
+-- hitWindow/...), or nil if the style/index isn't in it. Never errors.
 function SwingTrack.StyleHitData(styleName: string, hitIndex: number): any
 	local styles = CombatData.Styles
 	if typeof(styles) ~= "table" then
@@ -120,18 +119,6 @@ function SwingTrack.LoopOffsetFor(styleName: string): number
 		return style.loopOffset
 	end
 	return 0
-end
-
--- The wind-up slowdown for a hit, as a MULTIPLIER on the style's
--- ComboSpeed (1 = no slowdown; Bryan 2026-09-30: "barely noticeable, but
--- sizable to punish"). Prefers the hit's own windupSpeed from Combat.luau;
--- Config.Combat.WindupSpeed is the fallback.
-function SwingTrack.WindupSpeedFor(styleName: string, hitIndex: number): number
-	local hitData = SwingTrack.StyleHitData(styleName, hitIndex)
-	if hitData and typeof(hitData.windupSpeed) == "number" then
-		return hitData.windupSpeed
-	end
-	return Config.Combat.WindupSpeed
 end
 
 -- ==================== the swing ====================
@@ -190,9 +177,9 @@ function SwingTrack.new(params: Params): Swing
 			conn:Disconnect()
 		end
 		table.clear(connections)
-		-- Restore full speed before stopping, so a wind-up slowdown (or a
-		-- freeze) never bleeds into the fade-out or, since this track is
-		-- reused next swing, sits at that speed while idle in between.
+		-- Restore full speed before stopping, so a freeze never bleeds into
+		-- the fade-out or, since this track is reused next swing, sits at
+		-- speed 0 while idle in between.
 		track:AdjustSpeed(1)
 		track:Stop(fadeTime)
 		if params.onStopped then
@@ -210,8 +197,7 @@ function SwingTrack.new(params: Params): Swing
 		swing.landed = false
 		swing.paused = false
 		swing.windupSeen = false
-		-- Follow-through at full speed; the next hit's own wind-up marker
-		-- applies its slowdown when it arrives.
+		-- Follow-through and the next wind-up at the style's ComboSpeed.
 		track:AdjustSpeed(comboSpeed)
 		if params.logMarkers then
 			log:Info(string.format("continue: hit %d (segment %d)", swing.liveHit, swing.segment))
@@ -240,10 +226,6 @@ function SwingTrack.new(params: Params): Swing
 			return
 		end
 		swing.windupSeen = true
-		-- Bryan (2026-09-28): slow the hit so it's readable -- and so the
-		-- loop (cancel to bait, interrupt to punish) has a window to react
-		-- in.
-		track:AdjustSpeed(comboSpeed * SwingTrack.WindupSpeedFor(styleName, windupIndex))
 		if character:GetAttribute("Stunned") == true or character:GetAttribute("Knocked") == true then
 			-- The server reaches the same conclusion and sends its own
 			-- AttackCancelled; stop is idempotent either way.
