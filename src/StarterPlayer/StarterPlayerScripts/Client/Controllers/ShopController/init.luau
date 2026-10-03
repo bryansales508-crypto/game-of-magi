@@ -60,7 +60,6 @@ type HoverTarget = {
 }
 
 local targets: { [BasePart]: HoverTarget } = {}
-local standConnections: { RBXScriptConnection } = {}
 local frameConnection: RBXScriptConnection? = nil
 local mouse = player:GetMouse()
 
@@ -196,7 +195,6 @@ local function registerTarget(part: BasePart)
 				registerTarget(part)
 			end
 		end)
-		table.insert(standConnections, waitConnection)
 		return
 	end
 
@@ -245,7 +243,7 @@ local function tryRegisterDescendant(instance: Instance)
 end
 
 local function watchStand(stand: Instance)
-	table.insert(standConnections, stand.DescendantAdded:Connect(tryRegisterDescendant))
+	stand.DescendantAdded:Connect(tryRegisterDescendant) -- the stand lives for the whole session
 	for _, descendant in stand:GetDescendants() do
 		tryRegisterDescendant(descendant)
 	end

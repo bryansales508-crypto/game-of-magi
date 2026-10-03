@@ -63,7 +63,7 @@ local function notifyChanged()
 end
 
 local function fadeOutAndDestroy(sound: Sound, seconds: number)
-	local running = fadeTweens[sound]
+	local running: Tween? = fadeTweens[sound]
 	if running ~= nil then
 		running:Cancel()
 		fadeTweens[sound] = nil
@@ -376,7 +376,7 @@ function MusicController.SetVolume(volume: number)
 	player:SetAttribute(VOLUME_ATTRIBUTE, userVolume)
 	local sound = current
 	if sound ~= nil then
-		local fade = fadeTweens[sound]
+		local fade: Tween? = fadeTweens[sound]
 		if fade ~= nil then
 			fade:Cancel()
 			fadeTweens[sound] = nil
@@ -460,7 +460,7 @@ local function buildPanel()
 
 	local slider = Instance.new("Frame")
 	slider.Name = "Slider"
-	slider.Position = UDim2.new(0, 10, 0, 44)
+	slider.Position = UDim2.fromOffset(10, 44)
 	slider.Size = UDim2.new(1, -20, 0, 6)
 	slider.BackgroundColor3 = Color3.fromRGB(40, 28, 18)
 	slider.BorderSizePixel = 0
