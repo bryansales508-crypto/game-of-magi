@@ -451,12 +451,8 @@ local function testDevService(results: { Check })
 	local cmdReply = DevService.Dispatch(fakePlayer, ".cmd")
 	expect(results, "DevService: .cmd from a dev returns the command list", cmdReply ~= nil and cmdReply:find("Dev commands:") ~= nil)
 
-	local unknownReply = DevService.Dispatch(fakePlayer, ".notarealcommand")
-	expect(
-		results,
-		"DevService: an unknown command still replies with help",
-		unknownReply ~= nil and unknownReply:find("Unknown command") ~= nil
-	)
+	local helpReply = DevService.Dispatch(fakePlayer, ".cmd")
+	expect(results, "DevService: .cmd lists the client-local commands", helpReply ~= nil and helpReply:find(".region, .music, .lights", 1, true) ~= nil)
 
 	local notACommand = DevService.Dispatch(fakePlayer, "just chatting")
 	expect(results, "DevService: a non-command chat line gets no reply", notACommand == nil)
@@ -473,6 +469,31 @@ local function testDevService(results: { Check })
 	local ok, nonDevReply = pcall(DevService.Dispatch, fakePlayer, ".cmd")
 	DevService.IsDev = realIsDev
 	expect(results, "DevService: Dispatch gives a non-dev no reply", ok and nonDevReply == nil)
+
+	-- BUG-47: an unknown command from a dev is forwarded to their client
+	-- (DevLocalCommand) with no server reply; a non-dev gets nothing.
+	do
+		local realForward = DevService.ForwardLocal
+		local forwarded: { string } = {}
+		DevService.ForwardLocal = function(_player: Player, text: string)
+			table.insert(forwarded, text)
+		end
+
+		local devReply = DevService.Dispatch(fakePlayer, ".music next")
+		expect(results, "DevService (BUG-47): a dev's unknown command forwards the text without the dot", forwarded[1] == "music next")
+		expect(results, "DevService (BUG-47): a forwarded command gets no server reply", devReply == nil)
+
+		local countBefore = #forwarded
+		local realIsDevForward = DevService.IsDev
+		DevService.IsDev = function(_player: Player): boolean
+			return false
+		end
+		local okForward, nonDevForwardReply = pcall(DevService.Dispatch, fakePlayer, ".music next")
+		DevService.IsDev = realIsDevForward
+		expect(results, "DevService (BUG-47): a non-dev's unknown command forwards nothing", okForward and nonDevForwardReply == nil and #forwarded == countBefore)
+
+		DevService.ForwardLocal = realForward
+	end
 
 	-- BUG-20: .mortal on|off flips the runtime flag, mirroring .timescale.
 	local realMortal = DevService.IsMortal()
@@ -2860,6 +2881,25 @@ end
 -- IsOnRoute) - no Player, Instance or remote involved, same as every other
 -- service's self-test in this file.
 local function testMissionService(results: { Check })
+	-- BUG-46: each city's destination position is its own `<key>Delivery`
+	-- part; two cities never share one; a missing part refuses (nil).
+	do
+		local missionFolder = game:GetService("Workspace"):FindFirstChild("MAP")
+		missionFolder = if missionFolder then missionFolder:FindFirstChild("MISSION") else nil
+		local posA = MissionService.DestinationPositionFor("Qarzin")
+		local posB = MissionService.DestinationPositionFor("Saleh")
+		local partA = if missionFolder then missionFolder:FindFirstChild("QarzinDelivery") else nil
+		local partB = if missionFolder then missionFolder:FindFirstChild("SalehDelivery") else nil
+		if partA and partA:IsA("BasePart") and partB and partB:IsA("BasePart") then
+			expect(results, "MissionService (BUG-46): Qarzin's destination is QarzinDelivery's position", posA == partA.Position)
+			expect(results, "MissionService (BUG-46): Saleh's destination is SalehDelivery's position", posB == partB.Position)
+			expect(results, "MissionService (BUG-46): two cities give two different destination positions", posA ~= posB)
+		else
+			expect(results, "MissionService (BUG-46): with the drop-off parts missing, destinations are refused (nil)", posA == nil and posB == nil)
+		end
+		expect(results, "MissionService (BUG-46): an unknown city has no destination position", MissionService.DestinationPositionFor("Nope") == nil)
+	end
+
 	-- H7: route validation rejects an off-route city.
 	expect(results, "MissionService: IsOnRoute accepts a real route destination", MissionService.IsOnRoute("Qarzin", "Saleh"))
 	expect(results, "MissionService: IsOnRoute rejects a destination not on that city's route", not MissionService.IsOnRoute("Qarzin", "Rathole"))

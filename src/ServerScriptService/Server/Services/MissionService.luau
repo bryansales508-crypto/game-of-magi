@@ -420,6 +420,23 @@ local function getDeliveryPart(cityKey: string): BasePart?
 	return part
 end
 
+-- BUG-46: the one place a city key becomes a world position. Each city's own
+-- `<key>Delivery` part, never a shared fallback; a missing part is logged
+-- once per city and the caller refuses the run.
+local missingPartLogged: { [string]: boolean } = {}
+
+function MissionService.DestinationPositionFor(cityKey: string): Vector3?
+	local part = getDeliveryPart(cityKey)
+	if part == nil then
+		if not missingPartLogged[cityKey] then
+			missingPartLogged[cityKey] = true
+			log:Warn(string.format("Workspace.MAP.MISSION.%s is missing - refusing deliveries to %s", Cities.DeliveryPartName(cityKey), cityKey))
+		end
+		return nil
+	end
+	return part.Position
+end
+
 -- ==================== attributes ====================
 
 local function initAttributes(player: Player)
@@ -1024,8 +1041,8 @@ local function onMissionStart(player: Player, destinationKey: string)
 		return
 	end
 
-	local destPart = getDeliveryPart(destinationKey)
-	if destPart == nil then
+	local destinationPosition = MissionService.DestinationPositionFor(destinationKey)
+	if destinationPosition == nil then
 		return
 	end
 
@@ -1045,7 +1062,7 @@ local function onMissionStart(player: Player, destinationKey: string)
 	local originPosition = board.part.Position
 	closeBoard(player)
 	clearCachedRoll(player, destinationKey) -- M3: used up - the next board open re-rolls this destination
-	startRun(player, character, originPosition, destinationKey, destPart.Position, dest.modifiers, dest.baseAmount, offerMultiplier)
+	startRun(player, character, originPosition, destinationKey, destinationPosition, dest.modifiers, dest.baseAmount, offerMultiplier)
 
 	if missionLogEnabled then
 		log:Info(
@@ -1282,13 +1299,13 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	if data == nil then
 		return string.format("%s has no save loaded", target.Name)
 	end
-	local destPart = getDeliveryPart(cityKey)
-	if destPart == nil then
+	local destinationPosition = MissionService.DestinationPositionFor(cityKey)
+	if destinationPosition == nil then
 		return string.format("Workspace.MAP.MISSION.%s is missing", Cities.DeliveryPartName(cityKey))
 	end
 
 	local root = character:FindFirstChild("HumanoidRootPart")
-	local originPosition = if root and root:IsA("BasePart") then (root :: BasePart).Position else destPart.Position
+	local originPosition = if root and root:IsA("BasePart") then (root :: BasePart).Position else destinationPosition
 
 	-- A one-off roll, deliberately not routed through the board cache (M3) -
 	-- this bypasses the board/proximity check entirely already, same spirit
@@ -1297,7 +1314,7 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
 
 	closeBoard(target)
-	startRun(target, character, originPosition, cityKey, destPart.Position, dest.modifiers, dest.baseAmount, offerMultiplier)
+	startRun(target, character, originPosition, cityKey, destinationPosition, dest.modifiers, dest.baseAmount, offerMultiplier)
 
 	return string.format(
 		"%s's delivery to %s started: %d Copper, modifiers: %s",

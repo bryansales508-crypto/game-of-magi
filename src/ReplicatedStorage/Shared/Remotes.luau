@@ -62,6 +62,15 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 1, per = 10 },
 	},
+	-- BUG-47 (M7-03): server -> client only. A dev's chat command that is
+	-- not a registered server command is forwarded here (`text` = the full
+	-- command line without the leading dot, e.g. "music next") so the
+	-- client-local commands (.region/.music/.lights) work from chat too.
+	DevLocalCommand = {
+		kind = "Event",
+		args = {},
+		rate = { count = 1, per = 10 },
+	},
 	-- M2-01: character creation. The server only acts on this while the
 	-- save's Character.Gender == 0; see CharacterService.
 	CreateCharacter = {

@@ -239,6 +239,8 @@ Wire: `MissionBoard` gains `intercepted` (the player's current stack count) and 
 
 **Dev commands (section 16):** `.mission start <city> [player]`, `.mission finish [player]`, `.mission fail [player]`, `.mission streak <n> [player]`, `.mission mark [n] [player]`, `.mission intercept`, `.mission log on|off`.
 
+**BUG-46 (M7-03, destination position).** The server side was already correct: `destinationPosition` is read per destination from that city's own `Workspace.MAP.MISSION.<key>Delivery` part (the old MissionHandler drop-off, e.g. `SalehDelivery`), and `originPosition` is the board part the run started from, so two cities cannot share a position. It now goes through one function, `MissionService.DestinationPositionFor(cityKey)`; a missing part is logged once per city and the run is refused (the dev `.mission start` says so in its reply). Self-test: Qarzin and Saleh give different positions matching their parts. If the tracker still points to one place, the cause is the client anchor (M7-04).
+
 **Depends on:** `EconomyService` (`GiveCopperValue`), `RankService` (`GetRank`, `AddMagoi`, `AddDeed`), `MovementService` (`SetModifier`/`ClearModifier`), `StatusService` (`Changed`/`Get`, the `Knocked` status), `CombatService` (`HitLanded`), `DataService`, `DevService`.
 
 ---
@@ -543,6 +545,8 @@ Every stat-editing command writes through the `DataService` table, never a Value
 **The state snapshot** (`DevState`, also what `.watch` streams every second), a flat table in a fixed key order: `name, userId, joinState, age, magoi, rank, goldRukh, blackRukh, epithet, bounty, copper, silver, gold, walkSpeed, health, maxHealth, position {x,y,z}, saveScope, freshSave, timeScale, mortal, sessionSeconds`. **⚠** `rank` still always sends `"n/a"` — `DevService`'s own snapshot code was written before rank existed (M1-05) and hasn't been pointed at `RankService.GetRank` yet; the player's `Rank`/`RankIndex`/`Alignment`/`EpithetPending` attributes (M4-01) are the live source until a follow-up wires this up.
 
 **Remotes:** `Net.DevCommand` (client → server, one string, 5/s), `Net.DevReply` (server → client, one string), `Net.DevState` (server → client, one table).
+
+**BUG-47 (M7-03, client-local commands from chat).** New server -> client remote `DevLocalCommand` (one string: the command line without the leading dot, e.g. `"music next"`). When a dev-permitted caller's chat/remote command is not a registered server command, `DevService.Dispatch` forwards it to that caller via `DevService.ForwardLocal` instead of replying "Unknown command", and returns no server reply (the client runs it and answers the usual way). Permission is still checked first, so a non-dev gets nothing, as before. `.cmd` ends with a line saying `.region`, `.music`, `.lights` run on your own client. No save change.
 
 **Removed:** `SSS/DevCommandHandler.luau` and `SSS/DevCommandChatListener.server.luau` (TRIAGE #21) — the old offline path wrote to DataStores named `"Mainstore2"`/`"OnCharacterStore2"`, which never matched the real save name, so offline edits never worked; the new tools only ever write through `DataService`.
 
