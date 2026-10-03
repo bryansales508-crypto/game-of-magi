@@ -405,25 +405,101 @@ local function hasModifier(modifiers: { ModifierRoll }, key: string): boolean
 	return false
 end
 
+-- BUG-59 (Bryan, 2026-10-03): a city with no `<key>Delivery` part gets a
+-- server-side placeholder instead of refusing the run, so every route can be
+-- tested end to end. Position, in order: the centre of that city's
+-- `<key>REGION` part under Workspace.Regions (dropped onto the ground below
+-- it when a raycast finds any), else Config.Missions.PlaceholderDeliveryPoints,
+-- else nil (the run is refused, as before).
+local PLACEHOLDER_SUFFIX = "_PLACEHOLDER"
+local PLACEHOLDER_COLOR = Color3.fromRGB(255, 0, 200)
+local placeholderLogged: { [string]: boolean } = {}
+
+local function findRegionPart(cityKey: string): BasePart?
+	local regions = Workspace:FindFirstChild("Regions")
+	local part = regions and regions:FindFirstChild(cityKey .. "REGION", true)
+	if part and part:IsA("BasePart") then
+		return part
+	end
+	return nil
+end
+
+-- Pure: where a city's placeholder goes - the region part's centre if there
+-- is one, else the configured point, else nil.
+function MissionService.PlaceholderPosition(cityKey: string, regionPart: BasePart?): Vector3?
+	if regionPart then
+		return regionPart.Position
+	end
+	return Config.Missions.PlaceholderDeliveryPoints[cityKey]
+end
+
+local function groundBelow(position: Vector3, regionPart: BasePart): Vector3
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { regionPart }
+	local top = Vector3.new(position.X, position.Y + regionPart.Size.Y / 2, position.Z)
+	local hit = Workspace:Raycast(top, Vector3.new(0, -(regionPart.Size.Y + 1000), 0), params)
+	if hit then
+		return hit.Position + Vector3.new(0, 3, 0)
+	end
+	return position
+end
+
+-- The part a city's deliveries go to: the real part under `parent` if it
+-- exists, else (reusing or creating) the placeholder in the same parent, else
+-- nil. `parent` is Workspace.MAP.MISSION in play; the self-test passes a temp
+-- folder.
+function MissionService.ResolveDeliveryPart(cityKey: string, parent: Instance): BasePart?
+	local name = Cities.DeliveryPartName(cityKey)
+	local real = parent:FindFirstChild(name)
+	if real and real:IsA("BasePart") then
+		return real
+	end
+
+	local existing = parent:FindFirstChild(name .. PLACEHOLDER_SUFFIX)
+	if existing and existing:IsA("BasePart") then
+		return existing
+	end
+
+	local regionPart = findRegionPart(cityKey)
+	local position = MissionService.PlaceholderPosition(cityKey, regionPart)
+	if position == nil then
+		return nil
+	end
+	if regionPart then
+		position = groundBelow(position, regionPart)
+	end
+
+	local placeholder = Instance.new("Part")
+	placeholder.Name = name .. PLACEHOLDER_SUFFIX
+	placeholder.Size = Vector3.new(8, 8, 8)
+	placeholder.Shape = Enum.PartType.Ball
+	placeholder.Anchored = true
+	placeholder.CanCollide = false
+	placeholder.CanTouch = false
+	placeholder.CanQuery = false
+	placeholder.Color = PLACEHOLDER_COLOR
+	placeholder.Material = Enum.Material.Neon
+	placeholder.Transparency = 0.5
+	placeholder.Position = position
+	placeholder.Parent = parent
+
+	if not placeholderLogged[cityKey] then
+		placeholderLogged[cityKey] = true
+		log:Warn(string.format("Workspace.MAP.MISSION.%s is missing - using a placeholder drop-off for %s at %s", name, cityKey, tostring(position)))
+	end
+	return placeholder
+end
+
 local function getDeliveryPart(cityKey: string): BasePart?
 	local map = Workspace:FindFirstChild("MAP")
-	if map == nil then
-		return nil
-	end
-	local missionFolder = map:FindFirstChild("MISSION")
-	if missionFolder == nil then
-		return nil
-	end
-	local part = missionFolder:FindFirstChild(Cities.DeliveryPartName(cityKey))
-	if part == nil or not part:IsA("BasePart") then
-		return nil
-	end
-	return part
+	local missionFolder = map and map:FindFirstChild("MISSION")
+	return MissionService.ResolveDeliveryPart(cityKey, missionFolder or Workspace)
 end
 
 -- BUG-46: the one place a city key becomes a world position. Each city's own
--- `<key>Delivery` part, never a shared fallback; a missing part is logged
--- once per city and the caller refuses the run.
+-- `<key>Delivery` part (or its BUG-59 placeholder), never a shared fallback;
+-- a city with neither is logged once and the caller refuses the run.
 local missingPartLogged: { [string]: boolean } = {}
 
 function MissionService.DestinationPositionFor(cityKey: string): Vector3?
@@ -431,7 +507,7 @@ function MissionService.DestinationPositionFor(cityKey: string): Vector3?
 	if part == nil then
 		if not missingPartLogged[cityKey] then
 			missingPartLogged[cityKey] = true
-			log:Warn(string.format("Workspace.MAP.MISSION.%s is missing - refusing deliveries to %s", Cities.DeliveryPartName(cityKey), cityKey))
+			log:Warn(string.format("Workspace.MAP.MISSION.%s is missing and no placeholder point exists - refusing deliveries to %s", Cities.DeliveryPartName(cityKey), cityKey))
 		end
 		return nil
 	end

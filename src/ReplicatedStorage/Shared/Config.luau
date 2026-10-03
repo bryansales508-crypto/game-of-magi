@@ -419,6 +419,20 @@ Config.Missions = {
 	-- (Model:ScaleTo when it's attached; gone with the package on run end).
 	HeavyCargoPackScale = 1.5,
 	MagoiPerDelivery = 10,
+	-- BUG-59: where a city's placeholder drop-off goes when its
+	-- `<key>Delivery` part is missing AND Workspace.Regions has no
+	-- `<key>REGION` part. These are the old marker positions from
+	-- docs/reference/m5c-studio-dump.md, so a placeholder lands where the real
+	-- part will be. A city with neither refuses runs.
+	PlaceholderDeliveryPoints = {
+		Qarzin = Vector3.new(1761.86, 199.22, -7571.19),
+		Saleh = Vector3.new(-2459.5, 197.41, -8458.78),
+		Rathole = Vector3.new(-5064, 97.05, -6700.53),
+		JaddatysHut = Vector3.new(-6364.55, 197.41, -8423.13),
+		IllegalPort = Vector3.new(-159.21, 295.15, -5313.41),
+		Sahraqin = Vector3.new(7400.8, 186.67, -7302),
+		AinJamala = Vector3.new(3779.3, 197.41, -8866.13),
+	} :: { [string]: Vector3 },
 	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch
 	-- expiry, the beacon) - not a per-frame loop (AUDIT H9).
 	Tick = 0.5,
@@ -504,6 +518,7 @@ table.freeze(Config.Rukh.Emitters.GoldBlack)
 table.freeze(Config.Rukh.Emitters)
 table.freeze(Config.Rukh)
 table.freeze(Config.Missions.Beacon)
+table.freeze(Config.Missions.PlaceholderDeliveryPoints)
 table.freeze(Config.Missions)
 
 -- M6 (docs/M6-PLAN.md, Bryan approved 2026-09-29): the world. Music, the
