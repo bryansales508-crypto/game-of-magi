@@ -2895,10 +2895,81 @@ local function testMissionService(results: { Check })
 			expect(results, "MissionService (BUG-46): Saleh's destination is SalehDelivery's position", posB == partB.Position)
 			expect(results, "MissionService (BUG-46): two cities give two different destination positions", posA ~= posB)
 		else
-			expect(results, "MissionService (BUG-46): with the drop-off parts missing, destinations are refused (nil)", posA == nil and posB == nil)
+			-- BUG-59: a missing part now yields a placeholder, not a refusal.
+			expect(results, "MissionService (BUG-59): with the drop-off parts missing, destinations come from placeholders", posA ~= nil and posB ~= nil)
+		end
+		for _, root in { game:GetService("Workspace"), missionFolder } do
+			if root then
+				for _, city in { "Qarzin", "Saleh" } do
+					local leftover = root:FindFirstChild(Cities.DeliveryPartName(city) .. "_PLACEHOLDER")
+					if leftover then
+						leftover:Destroy()
+					end
+				end
+			end
 		end
 		expect(results, "MissionService (BUG-46): an unknown city has no destination position", MissionService.DestinationPositionFor("Nope") == nil)
 	end
+
+	-- BUG-59: placeholder drop-offs, against a temp folder (never the real map).
+	do
+		local folder = Instance.new("Folder")
+		local city = "Rathole"
+		local placeholder = MissionService.ResolveDeliveryPart(city, folder)
+		local expected = MissionService.PlaceholderPosition(city, nil)
+		expect(results, "MissionService (BUG-59): a missing Delivery part yields a placeholder part", placeholder ~= nil)
+		if placeholder then
+			expect(results, "MissionService (BUG-59): the placeholder is named <DeliveryPart>_PLACEHOLDER", placeholder.Name == "RatholeDelivery_PLACEHOLDER" and placeholder.Parent == folder)
+			expect(results, "MissionService (BUG-59): the placeholder is anchored, non-collidable and half transparent", placeholder.Anchored and not placeholder.CanCollide and placeholder.Transparency == 0.5)
+			local regionPart = game:GetService("Workspace"):FindFirstChild("Regions") and (game:GetService("Workspace").Regions:FindFirstChild("RatholeREGION", true))
+			if regionPart == nil then
+				expect(results, "MissionService (BUG-59): with no region part, the placeholder sits at Config.Missions.PlaceholderDeliveryPoints", expected ~= nil and placeholder.Position == expected)
+			end
+			expect(results, "MissionService (BUG-59): asking again reuses the same placeholder", MissionService.ResolveDeliveryPart(city, folder) == placeholder)
+		end
+		local fakeRegion = Instance.new("Part")
+		fakeRegion.Position = Vector3.new(10, 20, 30)
+		expect(results, "MissionService (BUG-59): a region part's centre wins over the configured point", MissionService.PlaceholderPosition(city, fakeRegion) == Vector3.new(10, 20, 30))
+		fakeRegion:Destroy()
+		folder:Destroy()
+
+		local folder2 = Instance.new("Folder")
+		local real = Instance.new("Part")
+		real.Name = "SalehDelivery"
+		real.Parent = folder2
+		expect(results, "MissionService (BUG-59): a present Delivery part is used untouched", MissionService.ResolveDeliveryPart("Saleh", folder2) == real and #folder2:GetChildren() == 1)
+		folder2:Destroy()
+	end
+
+	-- BUG-50: a replaced save re-publishes the purse. ResetToTemplate +
+	-- RefreshAttributes on a stand-in instance (SetAttribute works on any).
+	do
+		local stand: any = Instance.new("Folder")
+		local data = ({
+			Version = Config.Data.SchemaVersion,
+			Economy = { Copper = 999, Silver = 9, Gold = 9 },
+			Meta = { Created = 111, LastSeen = 0, Lives = 3, Unlocks = { Combat = true } },
+		} :: any) :: SaveSchema.Data
+		EconomyService.RefreshAttributes(stand, data)
+		DataService.ResetToTemplate(data)
+		EconomyService.RefreshAttributes(stand, data)
+		expect(
+			results,
+			"EconomyService (BUG-50): after a template reset the coin attributes equal the template's coins",
+			stand:GetAttribute("Copper") == SaveSchema.Template.Economy.Copper
+				and stand:GetAttribute("Silver") == SaveSchema.Template.Economy.Silver
+				and stand:GetAttribute("Gold") == SaveSchema.Template.Economy.Gold
+		)
+		stand:Destroy()
+		expect(results, "DataService (BUG-50): exposes the Replaced signal", DataService.Replaced ~= nil)
+	end
+
+	-- BUG-60: every Rukh gain fires the flutter signal (AlignmentChanged),
+	-- the same one a `.rukh` dev grant fires - both go through AddDeed.
+	expect(results, "RankService (BUG-60): a +1 Gold deed with no alignment flip still flutters Gold", RankService.FlutterAlignment("White", "White", "Gold", 1) == "Gold Rukh")
+	expect(results, "RankService (BUG-60): a Black deed flutters Black", RankService.FlutterAlignment("Gold", "Gold", "Black", 2) == "Black Rukh")
+	expect(results, "RankService (BUG-60): an alignment flip announces the new alignment", RankService.FlutterAlignment("White", "Gold", "Gold", 5) == "Gold Rukh")
+	expect(results, "RankService (BUG-60): a loss or zero grant stays silent", RankService.FlutterAlignment("Gold", "Gold", "Gold", 0) == nil and RankService.FlutterAlignment("Gold", "Gold", "Gold", -3) == nil)
 
 	-- H7: route validation rejects an off-route city.
 	expect(results, "MissionService: IsOnRoute accepts a real route destination", MissionService.IsOnRoute("Qarzin", "Saleh"))

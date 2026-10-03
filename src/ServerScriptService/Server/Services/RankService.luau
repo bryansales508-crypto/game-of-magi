@@ -239,6 +239,20 @@ function RankService.AddMagoi(player: Player, amount: number, reason: string)
 	end
 end
 
+-- Pure (BUG-60): the alignment label AlignmentChanged should carry for a
+-- deed, or nil for none. A flip to a non-White alignment announces the new
+-- alignment (as before); otherwise any Rukh GAIN flutters in the deed's own
+-- colour (Gold deed -> "Gold Rukh"). Losses and zero grants stay silent.
+function RankService.FlutterAlignment(oldAlignment: RukhAlignment, newAlignment: RukhAlignment, kind: DeedKind, amount: number): string?
+	if newAlignment ~= oldAlignment and newAlignment ~= "White" then
+		return Alignment.label(newAlignment)
+	end
+	if amount > 0 then
+		return Alignment.label(kind :: RukhAlignment)
+	end
+	return nil
+end
+
 function RankService.AddDeed(player: Player, kind: DeedKind, amount: number)
 	local data = DataService.Get(player)
 	if data == nil then
@@ -257,9 +271,13 @@ function RankService.AddDeed(player: Player, kind: DeedKind, amount: number)
 	)
 	refreshRankAttributes(player, data)
 
-	if newAlignment ~= oldAlignment and newAlignment ~= "White" then
-		Remotes.Server.Fire("AlignmentChanged", player, { alignment = Alignment.label(newAlignment) })
-		log:Info(string.format("%s: AlignmentChanged -> %s", player.Name, Alignment.label(newAlignment)))
+	-- BUG-60: the client's Rukh flutter listens to AlignmentChanged, which used
+	-- to fire only when the alignment itself flipped - so a normal delivery's
+	-- +1 Gold Rukh never fluttered. Every Rukh gain now fires it.
+	local flutter = RankService.FlutterAlignment(oldAlignment, newAlignment, kind, amount)
+	if flutter then
+		Remotes.Server.Fire("AlignmentChanged", player, { alignment = flutter })
+		log:Info(string.format("%s: AlignmentChanged -> %s", player.Name, flutter))
 	end
 end
 
