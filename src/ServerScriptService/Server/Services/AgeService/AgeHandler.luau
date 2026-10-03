@@ -1,8 +1,7 @@
 --!strict
--- Growth-curve maths: height and "fatness" (build) over a life (13-18),
--- and the versioned profile string Character.GrowthProfile round-trips
--- through ("v1|startHeight|adultHeight|spurtAge|fatEnd"). Same numbers and
--- format as the old Character/AgeHandler.luau; only the typing changed.
+-- Growth-curve maths: height and "fatness" (build) over a life (13-18), and the
+-- versioned profile string Character.GrowthProfile round-trips through
+-- ("v1|startHeight|adultHeight|spurtAge|fatEnd").
 
 export type Profile = {
 	startHeight: number,
@@ -93,9 +92,8 @@ function AgeHandler.fatAt(profile: Profile, age: number): number
 	return FAT_START + (profile.fatEnd - FAT_START) * f
 end
 
--- Rolls a brand-new profile for a first spawn. `_race` is accepted (old
--- signature) but unused, same as before: every race but Human is parked
--- (DESIGN.md section 4). Returns (packed profile string, height at `age`).
+-- Rolls a brand-new profile for a first spawn. `_race` is unused: every race but Human
+-- is parked. Returns (packed profile string, height at `age`).
 function AgeHandler.start(age: number, _race: number, gender: number): (string, number)
 	local startHeight = MIN_START + math.random() * START_GENE
 	local totalGain = GAIN_MIN + math.random() * (GAIN_MAX - GAIN_MIN)

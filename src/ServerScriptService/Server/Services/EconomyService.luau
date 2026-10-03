@@ -1,18 +1,11 @@
 --!strict
--- The wallet (M5A-01, M5-PLAN.md Phase 5A, Bryan's rules 2026-09-29):
--- Copper/Silver/Gold on the save, exact-coin payment (no automatic
--- change-making - that's the Bank milestone), CanAfford/Pay/Give, and the
--- Currency (Copper/Silver/Gold) player attributes the purse HUD reads.
---
--- Paying is EXACT COIN ONLY: Pay(player, "Silver", 1, ...) only ever
--- spends Silver, even if the player is holding enough Copper+Gold to
--- cover the same price converted - 120 Copper can't pay a 1-Silver price.
--- On failure it fires CoinMessage with one of the old MarketHandler
--- flavour lines (ForcedChat, generalized to any coin): "I need more
--- money" when the player's total wealth (converted to Copper) doesn't
--- reach the price at all, or "I need to convert" when it does, just not
--- in that one coin - exchanging coins is the Bank's job, a later
--- milestone; nothing here converts.
+-- The wallet: Copper/Silver/Gold on the save, CanAfford/Pay/Give, and the Currency player
+-- attributes the purse HUD reads.
+-- Paying is EXACT COIN ONLY: Pay(player, "Silver", 1, ...) only spends Silver, even if the
+-- player holds enough Copper+Gold to cover it; nothing here converts coins (that is the Bank's
+-- job). On failure it fires CoinMessage with a flavour line: "I need more money" when total
+-- wealth (in Copper) doesn't reach the price, or "I need to convert" when it does but not in
+-- that coin.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -34,10 +27,7 @@ export type PayFailure = "no" | "convert"
 local EconomyService = {}
 
 -- ==================== flavour lines (old MarketHandler, generalized) ====================
--- The old MarketHandler/ForcedChat pools (SYSTEMS.md section 6), kept for
--- the feel; Convert only ever had a Copper version there (its only coin
--- was Copper-priced goods), so these are the same lines generalized to
--- name whichever coin the price actually needed.
+-- Flavour lines (ForcedChat pools), generalized to name whichever coin the price needed.
 
 local NEED_MONEY_LINES = {
 	"I need more money...",
@@ -69,11 +59,9 @@ local function flavourLine(failure: PayFailure, coin: Coin): string
 end
 
 -- ==================== pure core (self-tested directly) ====================
--- Every field access below is an explicit branch, not data.Economy[coin]:
--- SaveSchema.Data.Economy is a fixed-field record (Copper/Silver/Gold), not
--- an indexable one, so a dynamic string key doesn't type-check under
--- --!strict the way it does against Economy.Value (which IS declared
--- {[Coin]: number}) - see getCoin/setCoin below.
+-- Every field access is an explicit branch, not data.Economy[coin]: SaveSchema.Data.Economy is
+-- a fixed-field record, so a dynamic string key doesn't type-check under --!strict (see
+-- getCoin/setCoin).
 
 local function getCoin(data: Data, coin: Coin): number
 	if coin == "Copper" then
@@ -94,38 +82,29 @@ local function setCoin(data: Data, coin: Coin, value: number)
 	end
 end
 
--- Pure: whether the wallet already holds at least `amount` of `coin` -
--- exact coin only, never converted from the other two.
+-- Pure: whether the wallet holds at least `amount` of `coin` (exact coin, never converted).
 function EconomyService.Affords(data: Data, coin: Coin, amount: number): boolean
 	return getCoin(data, coin) >= amount
 end
 
--- Pure: the dev `.coins` set form - every coin at once, clamped at 0 and
--- floored to an integer. The wallet is never negative or fractional.
+-- Pure: the dev `.coins` set form: every coin at once, clamped at 0 and floored to an integer.
 function EconomyService.ApplySet(data: Data, copper: number, silver: number, gold: number)
 	data.Economy.Copper = math.max(0, math.floor(copper))
 	data.Economy.Silver = math.max(0, math.floor(silver))
 	data.Economy.Gold = math.max(0, math.floor(gold))
 end
 
--- Pure: adds `amount` of one coin, clamped at 0 - a negative Give (e.g. a
--- dev `.coins+` with a negative number) can empty a coin but never push it
--- below 0.
+-- Pure: adds `amount` of one coin, clamped at 0 (a negative Give can empty a coin, never go
+-- below 0).
 function EconomyService.ApplyGive(data: Data, coin: Coin, amount: number)
 	setCoin(data, coin, math.max(0, math.floor(getCoin(data, coin) + amount)))
 end
 
--- Pure: exact-coin payment against `coin` only - never looks at the other
--- two to make change. On failure, tells the caller which flavour line
--- fits: "no" (total wealth across all three coins, converted to Copper,
--- doesn't reach the price either) or "convert" (it does, just not in this
--- coin).
---
--- REVIEW-M5A-01 L1: a bad `amount` (less than 1, or not a whole number -
--- an exploit sending Pay(player, "Copper", 0.5, ...) or a negative amount
--- from a bad caller) is rejected as "no" before anything else runs, and
--- never touches the wallet - a price is always at least 1 whole coin, so
--- there's no real purchase a bad amount could ever legitimately be.
+-- Pure: exact-coin payment against `coin` only, never making change. On failure says which
+-- flavour line fits: "no" (total wealth in Copper doesn't reach the price) or "convert" (it
+-- does, just not in this coin).
+-- A bad `amount` (below 1 or not a whole number) is rejected as "no" before touching the
+-- wallet.
 function EconomyService.ApplyPay(data: Data, coin: Coin, amount: number): (boolean, PayFailure?)
 	if amount < 1 or amount ~= math.floor(amount) then
 		return false, "no"
@@ -210,24 +189,17 @@ function EconomyService.Give(player: Player, coin: Coin, amount: number, reason:
 	log:Info(string.format("%s given %d %s (%s), now %d", player.Name, amount, coin, reason, getCoin(data, coin)))
 end
 
--- Pays out a reward/payout given as a Copper amount. Copper only for now
--- (Bryan's refinement, 2026-09-29): rewards don't round into Silver/Gold
--- until the Bank milestone makes those reachable without the dev `.coins`
--- command - Economy.roundReward is ready for that switch (call it here
--- instead of always giving Copper), unused until then.
+-- Pays out a reward given as a Copper amount. Copper only until the Bank makes Silver/Gold
+-- reachable; Economy.roundReward is ready for that switch.
 function EconomyService.GiveCopperValue(player: Player, copper: number, reason: string)
 	EconomyService.Give(player, "Copper", copper, reason)
 end
 
 -- ==================== dev commands ====================
--- `.coins`/`.coins+` are re-registered here under their existing names
--- (same DevService.Register overwrite trick RankService uses for
--- `.magoi`/`.rukh`) so they route through EconomyService instead of
--- writing data.Economy directly. `.price`/`.pay` are new.
+-- `.coins`/`.coins+` are re-registered here (DevService.Register overwrite) so they route
+-- through EconomyService. `.price`/`.pay` are new.
 
--- Mirrors DevService's own splitTrailingPlayer (not exported): every value
--- before an optional trailing player name is a number, so a non-numeric
--- last token is unambiguously the player name.
+-- Mirrors DevService's splitTrailingPlayer: a non-numeric last token is the player name.
 local function splitTrailingPlayer(args: { string }): ({ string }, string?)
 	if #args == 0 then
 		return args, nil
@@ -303,10 +275,8 @@ local function priceCommand(_caller: Player, args: { string }): string
 	if copper == nil then
 		return "usage: .price <copper>"
 	end
-	-- Explicit annotations, not decoration: luau-lsp 1.54.0 widens a
-	-- required module's returned union type to plain `string` when it's
-	-- read back through a module boundary without one (same reproduction as
-	-- RankService.ApplyDeed's own comment).
+	-- Explicit annotations: luau-lsp 1.54.0 widens a required module's union type to `string`
+	-- across a module boundary without one.
 	local coin: Coin, amount: number = Economy.toPrice(copper)
 	return string.format("%d Copper -> %s", copper, Economy.format(coin, amount))
 end
@@ -342,8 +312,8 @@ function EconomyService:Start()
 		end
 	end)
 
-	-- BUG-50: a Wipe (`.fresh`) / NewLife swaps the save's contents in place
-	-- without a new Loaded, so the purse attributes must be re-published.
+	-- A Wipe/NewLife swaps the save in place without a new Loaded, so re-publish the purse
+	-- attributes.
 	DataService.Replaced:Connect(function(player: Player)
 		local data = DataService.Get(player)
 		if data then
@@ -351,9 +321,7 @@ function EconomyService:Start()
 		end
 	end)
 
-	-- Catches a player whose DataService.Loaded already fired before this
-	-- connection was made (the same race RankService/PlayerService's own
-	-- catch-up loops guard against).
+	-- Catches a player whose Loaded fired before this connection.
 	for _, player in Players:GetPlayers() do
 		if DataService.IsLoaded(player) then
 			local data = DataService.Get(player)

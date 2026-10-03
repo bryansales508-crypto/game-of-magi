@@ -1,29 +1,15 @@
 --!strict
--- The one owner of WalkSpeed (M3-02, TRIAGE #9, fixes AUDIT H10/M4/M5/M6/D2).
--- Keyed by the combatant's character Model, never by Player, same as
--- StatusService: NPCs move exactly like players. Players are registered
--- automatically on PlayerService.Ready; NPCs will be registered by
--- M3-04's NpcService.
+-- The one owner of WalkSpeed. Keyed by the combatant's character Model (players and NPCs
+-- alike).
 --
--- A single named-multiplier stack per combatant (AUDIT M6: the old code
--- updated its "stable" base speeds but never re-applied WalkSpeed until
--- something else touched it; this writes WalkSpeed immediately on every
--- change). Effective multiplier = the SMALLEST active modifier (0 means
--- frozen); with none active, 1.0. `Run` isn't in that min-pool the same
--- way: it picks the baseline (walk 16 or run 16*Combat.Run.speedMult)
--- BEFORE the stack is applied, since "half of run speed" and "a quarter
--- of walk speed" (LowHealth, old SYSTEMS 8 numbers) are two different
--- final speeds for the exact same low multiplier, not one flat scalar a
--- pure min() could express.
+-- One named-multiplier stack per combatant; WalkSpeed is rewritten immediately on every change.
+-- Effective multiplier = the smallest active modifier (0 = frozen), 1.0 with none. Run picks
+-- its baseline (walk 16 or run 16*Combat.Run.speedMult) BEFORE the stack applies, since
+-- LowHealth gives different final speeds per baseline.
 --
--- Bridge: character.IntFold.MovementSpeed keeps one child per active
--- modifier (old readers watched ChildAdded/ChildRemoved there), and
--- IntFold["Running?"] mirrors the run flag, so MissionHandler's heavy
--- cargo slow, EffectsService's TrueStun freeze (both via the
--- RS/Modules/SpeedHandler.luau shim), and M3-03's FootstepService (reads
--- Running? verbatim from the old footstep code) keep working. Unlike
--- StatusService's Effects folder, MovementService creates IntFold itself
--- if it's missing (InteractionsDesign used to, but M3-03 deletes it).
+-- Bridge: character.IntFold.MovementSpeed has one child per active modifier and
+-- IntFold["Running?"] mirrors the run flag, for older readers (MissionHandler, EffectsService
+-- via the SpeedHandler shim, FootstepService). IntFold is created here if missing.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -40,10 +26,8 @@ local log = Log.new("MovementService")
 local WALK_SPEED = 16
 local RUN_SPEED = WALK_SPEED * Combat.Run.speedMult
 
--- Statuses that cancel/forbid Run and Dash (StatusService names, not the
--- client-facing attribute names). M3-FIX4-S: Recovery (a punished feint)
--- also forbids a dash, same as the three that already did; LightStun does
--- NOT (rule 1: "they CAN attack and dash" while light-stunned).
+-- Statuses that cancel/forbid Run and Dash (StatusService names). LightStun does not:
+-- light-stunned combatants can still attack and dash.
 local BLOCKS_RUN: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true }
 local BLOCKS_DASH: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Recovery = true }
 
@@ -52,14 +36,9 @@ type Entry = {
 	modifiers: { [string]: number },
 	running: boolean,
 	lastDashAt: number?,
-	-- M3-FIX4-S: the equipped style's own traits (Combat.Style.speedMult/
-	-- dashCooldownMult), set by SetStyle. Kept OUTSIDE the `modifiers` min-
-	-- pool (below) since a style can be a genuine speed BOOST (Dagger's
-	-- 1.10) - EffectiveMultiplier's "smallest active modifier wins" is a
-	-- debuff-stacking rule, not something a boost should ever have to beat;
-	-- these multiply the walk/run baseline directly instead, same as
-	-- `running` already picking walk vs. run baseline before the stack
-	-- applies. 1.0/1.0 (Fist's own numbers) until SetStyle says otherwise.
+	-- The equipped style's own speedMult/dashCooldownMult (set by SetStyle). Kept outside the
+	-- `modifiers` min-pool because a style can be a speed boost; these multiply the walk/run
+	-- baseline directly. 1.0/1.0 for Fist.
 	styleSpeedMult: number,
 	styleDashCooldownMult: number,
 	intFold: Folder?,
@@ -90,23 +69,9 @@ function MovementService.CanDash(now: number, lastDashAt: number?, cooldown: num
 	return lastDashAt == nil or (now - lastDashAt) >= cooldown
 end
 
--- Old SYSTEMS 8: health scales the "stable" base speed between a floor
--- (0 health) and the full baseline (full health) - half of run, a
--- quarter of walk. `ratio` is Health/MaxHealth, clamped to [0, 1].
---
--- BUG-23 (M3-FIX-S): the floor used to be a flat 0.5/0.25 constant, not
--- derived from `top` - correct by coincidence while walking (top is 1.0,
--- so a quarter of it IS 0.25), but wrong while running: half of
--- Combat.Run.speedMult (1.75) is 0.875, not the old hardcoded 0.5. The
--- self-test caught this (LowHealthMult(true, 0) was 0.5, not 0.875).
---
--- BUG-36 (M3-C playtest, Bryan 2026-10-02): this is a MULTIPLIER on the
--- baseline that applyWalkSpeed already picks (walk 16 or run 16 *
--- Combat.Run.speedMult), so it must be relative: 1.0 at full health down
--- to 0.5 (running) or 0.25 (walking) at 0 health. BUG-23's version scaled
--- the running case by Combat.Run.speedMult a SECOND time (1.75 at full
--- health, 0.875 at 0), so a hurt runner went up to 28 * 1.75 = 49 instead
--- of down toward 14.
+-- Health scales speed: a MULTIPLIER on the baseline applyWalkSpeed picks, 1.0 at full health
+-- down to 0.5 (running) or 0.25 (walking) at 0 health. `ratio` is Health/MaxHealth, clamped to
+-- [0, 1].
 function MovementService.LowHealthMult(running: boolean, ratio: number): number
 	local clamped = math.clamp(ratio, 0, 1)
 	local floor = if running then 0.5 else 0.25
@@ -183,8 +148,7 @@ local function resolveIntFold(character: Model, entry: Entry)
 			end
 		end
 
-		-- Backfill: modifiers already applied before the bridge resolved
-		-- never got a legacy child.
+		-- Backfill: modifiers applied before the bridge resolved have no child yet.
 		for name, mult in entry.modifiers do
 			local hasChild = entry.bridgeChildren[name]
 			if not hasChild and entry.movementSpeed then
@@ -256,14 +220,9 @@ end
 
 -- ==================== public API ====================
 
--- M3-FIX4-S: applies a fighting style's own speedMult/dashCooldownMult
--- traits (Shared/Data/Combat.luau). Unknown style name: a no-op, logged,
--- so a bad `.weapon` argument or a data typo can't silently strand a
--- combatant on stale multipliers. Safe to call before MovementService.
--- Register has run for `character` (a no-op then too, matching every other
--- setter here) - CombatService.Register calls this right after its own
--- registration, whichever order the two services' PlayerService.Ready
--- listeners happen to fire in.
+-- Applies a fighting style's speedMult/dashCooldownMult (Shared/Data/Combat.luau). Unknown
+-- style: logged no-op. Safe to call before Register has run (also a no-op), so the order of
+-- services' Ready listeners doesn't matter.
 function MovementService.SetStyle(character: Model, styleName: string)
 	local entry = registered[character]
 	if entry == nil then
@@ -299,9 +258,8 @@ function MovementService.ClearModifier(character: Model, name: string)
 	applyWalkSpeed(character, entry)
 end
 
--- Ignored while stunned/knocked/blocking (M3-05's CombatController is
--- expected to not even send Run(true) then, but the server decides).
--- Returns whether it actually applied.
+-- Ignored while stunned/knocked/blocking; the server decides whatever the client sends. Returns
+-- whether it applied.
 function MovementService.SetRunning(character: Model, on: boolean): boolean
 	local entry = registered[character]
 	if entry == nil then
@@ -328,9 +286,8 @@ function MovementService.SetRunning(character: Model, on: boolean): boolean
 	return true
 end
 
--- Server cooldown (AUDIT M4), rejected while stunned/knocked, no first-
--- punch requirement (H10); x/z are in the character's own local space and
--- need not be pre-normalised (diagonals fine). Returns whether it dashed.
+-- Server cooldown; rejected while stunned/knocked. x/z are in the character's local space and
+-- need not be normalised. Returns whether it dashed.
 function MovementService.Dash(character: Model, x: number, z: number): boolean
 	local entry = registered[character]
 	if entry == nil then
@@ -343,16 +300,14 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		end
 	end
 
-	-- M3-FIX4-S: the equipped style's own dashCooldownMult scales the
-	-- cooldown (Dagger's 0.75 = a quarter shorter); Fist's 1.0 leaves it
-	-- unchanged.
+	-- The style's dashCooldownMult scales the cooldown.
 	local cooldown = Combat.Dash.cooldown * entry.styleDashCooldownMult
 	local now = Workspace:GetServerTimeNow()
 	if not MovementService.CanDash(now, entry.lastDashAt, cooldown) then
 		return false
 	end
 
-	-- Bryan (2026-09-30): no dashing out of a swing - the chain commits you.
+	-- No dashing out of a swing.
 	if character:GetAttribute("Attacking") == true then
 		return false
 	end
@@ -368,16 +323,10 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 	end
 	local worldDir = (hrp :: BasePart).CFrame:VectorToWorldSpace(localDir).Unit
 
-	-- Bryan (2026-09-30): no flinging off walls. The dash is a LinearVelocity
-	-- at unlimited force; against a wall that force used to shove the
-	-- character up and over it. Sweep a sphere along the path first and
-	-- shorten the dash to stop Combat.Dash.wallMargin short of whatever it
-	-- hits; nothing to dash into at all = no dash and no cooldown spent.
-	-- BUG-37 / BUG-56 (Bryan, 2026-10-02/03): a dash shortens by the same
-	-- modifiers walk and run already use - LowHealth (1.0 at full health,
-	-- 0.25 at none) and HeavyCargo (Config.Missions.HeavyCargoSpeedMult) -
-	-- so every movement reads the same wound and the same load. Combined
-	-- the same way applyWalkSpeed combines them.
+	-- No flinging off walls: sweep a sphere along the path and shorten the dash to stop
+	-- Combat.Dash.wallMargin short of what it hits; nothing to dash into = no dash and no
+	-- cooldown spent. The dash also shortens with LowHealth and HeavyCargo
+	-- (Config.Missions.HeavyCargoSpeedMult), combined as applyWalkSpeed does.
 	local distance = Combat.Dash.distance * MovementService.EffectiveMultiplier(entry.modifiers)
 	local castParams = RaycastParams.new()
 	castParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -418,13 +367,9 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 		log:Warn(string.format("%s's dash impulse failed: %s", character.Name, tostring(err)))
 	end
 
-	-- Transient bridge child (PhysicalHandler.client.luau cancels its own
-	-- swing on ChildAdded "Dash"; M3-05 replaces that file, but until then
-	-- this keeps the cancel working). REVIEW-M3-02 #3: routed through the
-	-- real SetModifier/ClearModifier (not a direct writeBridgeModifier
-	-- call) so entry.modifiers actually has a "Dash" key for
-	-- ClearModifier to find - a value of 1.0 never wins the
-	-- EffectiveMultiplier min anyway, so this never slows the dash itself.
+	-- Transient bridge child (PhysicalHandler.client.luau cancels its swing on ChildAdded
+	-- 'Dash'). Goes through SetModifier/ClearModifier so entry.modifiers has a 'Dash' key to
+	-- clear; 1.0 never wins the min, so it doesn't slow the dash.
 	MovementService.SetModifier(character, "Dash", 1.0)
 	task.delay(Combat.Dash.duration, function()
 		if registered[character] == entry then
@@ -463,8 +408,6 @@ function MovementService.Register(character: Model, owner: Player?)
 		owner = owner,
 		modifiers = {},
 		running = false,
-		-- Fist's own numbers (1.0/1.0, i.e. "no change") until SetStyle says
-		-- otherwise - the common case, since every combatant starts on Fist.
 		styleSpeedMult = 1.0,
 		styleDashCooldownMult = 1.0,
 		bridgeChildren = {},

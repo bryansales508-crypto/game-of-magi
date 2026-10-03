@@ -4,7 +4,7 @@ local LimbTree          = require(script:WaitForChild("LimbTree"))
 
 local Ragdoll = {}
 
-local APPEARANCE_TIMEOUT = 5 -- seconds to wait for a player's AppearenceLoaded
+local APPEARANCE_TIMEOUT = 5
 
 function Ragdoll.RagdollCharacter(Character : Model)
 	local Humanoid = Character:FindFirstChild("Humanoid")
@@ -29,7 +29,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 		local RightLeg         = Character:FindFirstChild("Right Leg")
 		local LeftLeg          = Character:FindFirstChild("Left Leg")
 
-		--Neck
 
 		if Torso and not Torso:FindFirstChild("NeckJoint") then
 			local NeckAttachment = Instance.new("Attachment")
@@ -51,7 +50,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 			NeckJoint.Attachment1        = TorsoNeckAttachment
 			NeckJoint:SetAttribute("Ragdoll", true)
 
-			--Right Arm
 			
 			local RightArmAtt = Instance.new("Attachment")
 			RightArmAtt.Name = "RightArmAttachment"
@@ -72,7 +70,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 			RightArmJoint.Attachment1   = RightArmAtt
 			RightArmJoint:SetAttribute("Ragdoll", true)
 
-			--Left Arm
 			
 			local LeftArmAtt = Instance.new("Attachment")
 			LeftArmAtt.Name = "LeftArmAttachment"
@@ -93,7 +90,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 			LeftArmJoint.Attachment1   = LeftArmAtt
 			LeftArmJoint:SetAttribute("Ragdoll", true)
 			
-			--Right Leg
 			
 			local RightLegAttachment       = Instance.new("Attachment")
 			RightLegAttachment.Parent      = RightLeg
@@ -114,7 +110,6 @@ function Ragdoll.RagdollCharacter(Character : Model)
 			RightLegJoint.Attachment1        = TorsoRightLegAttachment
 			RightLegJoint:SetAttribute("Ragdoll", true)
 
-			--Left Leg
 
 			local LeftLegAttachment       = Instance.new("Attachment")
 			LeftLegAttachment.Parent      = LeftLeg

@@ -1,22 +1,14 @@
 --!strict
--- Behavior-tree NPCs (M3-04, TRIAGE #20, fixes AUDIT M19). "Man was bad.
--- Use behavior trees if at all possible. NPCs should be treated like
--- normal players but with obvious AI controllers." (Bryan, 2026-09-27)
+-- Behavior-tree NPCs: NPCs are treated like normal players with AI controllers.
 --
--- Every NPC registers with StatusService, MovementService and
--- CombatService exactly the way a player's character does on
--- PlayerService.Ready (M3-01/02/03's own design rule) - it takes hits,
--- blocks, staggers, gets knocked and recovers through the identical code
--- path, keyed by its character Model, never a Player. One shared loop
--- ticks every NPC's tree (not a thread per NPC), same reasoning as
--- StatusService's shared expiry loop: nothing to leak on respawn.
+-- Every NPC registers with StatusService, MovementService and CombatService exactly the
+-- way a player's character does on PlayerService.Ready, so it takes hits, blocks,
+-- staggers, gets knocked and recovers through the identical code path, keyed by its
+-- character Model, never a Player. One shared loop ticks every NPC's tree (not a thread
+-- per NPC), so nothing leaks on respawn.
 --
--- Dummy models stay in Workspace as art, untouched; this service only
--- finds and drives them. AUDIT M19's actual bugs (comp() using
--- connections before they exist, failureProtection never resetting,
--- wayp[2] indexed unchecked) don't carry over: the old NPCFetch/
--- NPController design isn't ported, just its numbers (chase/give-up/
--- attack range, TRIAGE #20's own instruction).
+-- Dummy models stay in Workspace as art, untouched; this service only finds and drives
+-- them.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
@@ -43,17 +35,14 @@ local controllers: { [Model]: AiController.AiController } = {}
 local templatesFolder: Folder? = nil
 local trainersFolder: Folder? = nil
 
--- M3B-02: every currently-spawned training dummy, keyed by its own
--- character Model (so `.dummy clear`/list and the knockout-reset
--- subscriber below can tell a trainer apart from a Dummy/Target NPC without
--- another attribute round-trip). Never auto-discovered/respawned the way
--- Workspace.NPC's own children are - `.dummy spawn`/`clear` own their
--- lifetime outright.
+-- Every currently-spawned training dummy, keyed by its character Model, so `.dummy
+-- clear`/list and the knockout-reset subscriber can tell a trainer from a Dummy/Target
+-- NPC. Never auto-discovered/respawned like Workspace.NPC's children; `.dummy spawn`/
+-- `clear` own their lifetime.
 local trainers: { [Model]: { key: string } } = {}
 
 local NpcService = {}
 
--- ==================== helpers ====================
 
 local function getTemplatesFolder(): Folder
 	if templatesFolder then
@@ -80,10 +69,9 @@ local function getTemplatesFolder(): Folder
 	return folder
 end
 
--- M3B-02: trainers live in their own Workspace folder, never Workspace.NPC -
--- that folder's own ChildAdded (watchForNew below) would otherwise
--- auto-register a spawned trainer a second time, as a plain Dummy, clobbering
--- the trainer controller/tree this module just built for it.
+-- Trainers live in their own Workspace folder, never Workspace.NPC: that folder's
+-- ChildAdded (watchForNew) would otherwise auto-register a spawned trainer a second
+-- time as a plain Dummy, clobbering its trainer controller/tree.
 local function getTrainersFolder(): Folder
 	if trainersFolder then
 		return trainersFolder
@@ -109,10 +97,9 @@ local function getTrainersFolder(): Folder
 	return folder
 end
 
--- "the one under ServerStorage.NpcTemplates from M3-04; if two templates
--- exist use the Dummy one" - templates are keyed by the source model's own
--- Name (setupNpc below), so this prefers one literally named "Dummy" and
--- falls back to whatever else got templated first.
+-- Templates under ServerStorage.NpcTemplates are keyed by the source model's Name
+-- (setupNpc), so this prefers one literally named "Dummy" and falls back to whatever
+-- else got templated first.
 local function findDummyTemplate(): Model?
 	local templates = getTemplatesFolder()
 	local named = templates:FindFirstChild("Dummy")
@@ -154,10 +141,8 @@ local function unregisterNpc(model: Model)
 	CombatService.Unregister(model)
 end
 
--- ==================== training dummies (M3B-02) ====================
 
--- Bryan's menu style (docs/TINKER.md: name (255,224,152), Merriweather) on
--- a dark card, over the head - same read as any other name tag.
+-- Name tag over the head: dark card, name colour (255,224,152), Merriweather.
 local function addTrainerNameTag(model: Model, displayName: string)
 	local head = model:FindFirstChild("Head")
 	local attachTo = if head and head:IsA("BasePart") then head else model:FindFirstChild("HumanoidRootPart")
@@ -194,12 +179,10 @@ local function addTrainerNameTag(model: Model, displayName: string)
 	gui.Parent = attachTo :: BasePart
 end
 
--- Clones the Dummy template 6 studs in front of `targetPlayer`, facing
--- them, registers it through the exact same HealthService/StatusService/
--- MovementService/CombatService.Register calls setupNpc uses for any other
--- NPC (so it takes hits, blocks and gets knocked identically), but with
--- Trees.BuildTrainer(key)'s own tree instead of buildTree's Dummy/Target
--- pick, and never auto-respawns.
+-- Clones the Dummy template 6 studs in front of `targetPlayer`, facing them, and
+-- registers it through the same HealthService/StatusService/MovementService/
+-- CombatService.Register calls setupNpc uses, but with Trees.BuildTrainer(key)'s tree
+-- instead of buildTree's Dummy/Target pick, and never auto-respawns.
 local function spawnTrainer(caller: Player, key: string, targetPlayer: Player): (Model?, string?)
 	local cfg = Config.Npc.Trainers[key]
 	if cfg == nil then
@@ -262,9 +245,8 @@ local function spawnTrainer(caller: Player, key: string, targetPlayer: Player): 
 	controller.blackboard.engageRadius = cfg.engageRadius or 12
 	controllers[model] = controller
 	trainers[model] = { key = key }
-	-- Tagged AFTER controllers[model] is set, so watchForNew's own tag
-	-- listener sees it as already registered. The client's
-	-- NpcAnimController animates every tagged NPC.
+	-- Tagged AFTER controllers[model] is set, so watchForNew's tag listener sees it as
+	-- already registered. The client's NpcAnimController animates every tagged NPC.
 	CollectionService:AddTag(model, NPC_TAG)
 
 	addTrainerNameTag(model, cfg.displayName or key)
@@ -283,8 +265,8 @@ local function spawnTrainer(caller: Player, key: string, targetPlayer: Player): 
 	return model, nil
 end
 
--- Forward-declared: setupNpc's own AncestryChanged handler re-clones from
--- the template and calls back into setupNpc for the fresh copy.
+-- Forward-declared: setupNpc's AncestryChanged handler re-clones from the template and
+-- calls back into setupNpc for the fresh copy.
 local setupNpc: (model: Model) -> ()
 
 setupNpc = function(model: Model)
@@ -313,17 +295,13 @@ setupNpc = function(model: Model)
 		end
 	end
 
-	-- REVIEW-M3-04 H1: an NPC takes the identical health path as a player
-	-- now - HealthService.Register sets MaxHealth/Health itself (from
-	-- Config.Npc.MaxHealth, not the rank ladder a player's own
-	-- HealthService.Ready path uses).
+	-- HealthService.Register sets MaxHealth/Health itself (from Config.Npc.MaxHealth, not
+	-- the rank ladder a player's HealthService.Ready path uses).
 	HealthService.Register(model, { maxHealth = maxHealth })
 	StatusService.Register(model, nil)
 	MovementService.Register(model, nil)
 	CombatService.Register(model, nil, "Fist")
-	-- M3B-01: NPCs don't earn or toggle the combat stance - they're always
-	-- in it, so CombatService.Attack/SetBlocking work for them exactly as
-	-- before the stance existed.
+	-- NPCs don't earn or toggle the combat stance; they're always in it.
 	pcall(function()
 		model:SetAttribute("InCombat", true)
 	end)
@@ -332,17 +310,13 @@ setupNpc = function(model: Model)
 	if controller then
 		controllers[model] = controller
 	end
-	-- Every registered NPC carries the tag (the template clone above was
-	-- taken before this, so a re-clone starts untagged and gets it here
-	-- again). Set after controllers[model], so watchForNew's own tag
-	-- listener sees it as already registered. The client's
-	-- NpcAnimController animates every tagged NPC.
+	-- Every registered NPC carries the tag (a re-clone starts untagged and gets it here
+	-- again). Set after controllers[model] so watchForNew's tag listener sees it as already
+	-- registered. The client's NpcAnimController animates every tagged NPC.
 	CollectionService:AddTag(model, NPC_TAG)
 
-	-- AUDIT M19's actual bug was giving up forever after one bad chase;
-	-- here, losing the model entirely just respawns a fresh one from its
-	-- template at the same spot, with a brand-new AiController (Wander
-	-- re-acquires on its own - no permanent "gave up" flag to get stuck in).
+	-- Losing the model entirely respawns a fresh one from its template at the same spot,
+	-- with a brand-new AiController (Wander re-acquires on its own).
 	local spawnCFrame = (rootPart :: BasePart).CFrame
 	local spawnParent = model.Parent
 
@@ -422,7 +396,6 @@ local function watchForNew()
 	end)
 end
 
--- ==================== dev commands ====================
 
 local function registerDevCommands()
 	DevService.Register("npc", "list|reset|type <name> Dummy|Target", function(_caller, args)
@@ -475,7 +448,6 @@ local function registerDevCommands()
 		return "usage: .npc list|reset|type <name> Dummy|Target"
 	end)
 
-	-- M3B-02.
 	DevService.Register("dummy", "spawn <name> [player] | clear | list", function(caller, args)
 		local sub = args[1]
 		if sub == "spawn" then
@@ -527,7 +499,6 @@ local function registerDevCommands()
 	end)
 end
 
--- ==================== service ====================
 
 function NpcService:Init()
 	registerDevCommands()
@@ -537,12 +508,10 @@ function NpcService:Start()
 	discoverExisting()
 	watchForNew()
 
-	-- M3B-02: trainers reset after a knockout - full health, Bleed cleared,
-	-- HitCount back to 0 - instead of the general Combat.Knockout.
-	-- healthOnGetUp partial heal every other combatant gets, so a lesson
-	-- doesn't stay half-broken for the next player to try it. One shared
-	-- subscriber, same reasoning as CombatService's own single onStatusChanged
-	-- owner: it fires for every combatant, `trainers` is just the filter.
+	-- Trainers reset after a knockout (full health, Bleed cleared, HitCount 0) instead of
+	-- the general Combat.Knockout.healthOnGetUp partial heal, so a lesson doesn't stay
+	-- half-broken for the next player. One shared subscriber: it fires for every combatant,
+	-- `trainers` is just the filter.
 	StatusService.Changed:Connect(function(character: Model, status: string, active: boolean)
 		if status ~= "Knocked" or active or trainers[character] == nil then
 			return

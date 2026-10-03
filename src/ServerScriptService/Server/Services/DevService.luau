@@ -1,8 +1,6 @@
 --!strict
--- Dev tools: chat commands (the old `.field player value` style, kept) plus
--- the same commands over the DevCommand remote for the M1-05C dev panel.
--- Every command writes through DataService; nothing here touches a Value
--- directly.
+-- Dev tools: chat commands (`.field player value`) and the same commands over the DevCommand
+-- remote for the dev panel. Every command writes through DataService.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -30,16 +28,10 @@ local Commands: { [string]: CommandSpec } = {}
 
 local DevService = {}
 
--- ==================== Age-change hooks (BUG-15) ====================
--- `.age`/`.age+` only changed the number; height, hair and max health
--- waited for the next birthday to catch up. AgeService and HealthService
--- each register a hook here instead of DevService requiring either back
--- (Roblox errors on a cyclic ModuleScript require, and both already
--- require DevService for Register/GetTimeScale).
-
--- Typed as variadic (not `()`) so pcall(hook, ...) below type-checks as
--- (boolean, ...any) instead of just (boolean); a real hook still isn't
--- expected to return anything meaningful (same trick Remotes.luau uses).
+-- ==================== Age-change hooks ====================
+-- AgeService and HealthService register hooks here so `.age`/`.age+` also update height, hair
+-- and max health, without DevService requiring either back (cyclic require).
+-- Typed as variadic so pcall(hook, ...) type-checks.
 export type AgeChangeHook = (player: Player, data: SaveSchema.Data) -> ...any
 local ageChangeHooks: { AgeChangeHook } = {}
 
@@ -58,9 +50,8 @@ end
 
 -- ==================== Permission ====================
 
--- The admin-list half of IsDev, pure and independent of Config.Debug.Enabled
--- (which is always true wherever SelfTestService runs, so it's the only
--- half of IsDev a self-test can actually exercise a rejection through).
+-- The admin-list half of IsDev, pure and independent of Config.Debug.Enabled, so a self-test
+-- can exercise a rejection.
 function DevService.IsAdminUserId(userId: number): boolean
 	for _, adminId in Config.Dev.Admins do
 		if userId == adminId then
@@ -90,9 +81,8 @@ local function warnNonDev(player: Player)
 end
 
 -- ==================== Time scale ====================
--- Config is frozen, so a runtime-adjustable TimeScale lives here instead.
--- Later milestones (aging, day/night) should read DevService.GetTimeScale()
--- rather than Config.Debug.TimeScale once they need to speed up for tests.
+-- Config is frozen, so the runtime-adjustable TimeScale lives here; read
+-- DevService.GetTimeScale() rather than Config.Debug.TimeScale.
 
 local timeScale = Config.Debug.TimeScale
 local timeScaleChangedBindable = Instance.new("BindableEvent")
@@ -102,11 +92,9 @@ function DevService.GetTimeScale(): number
 	return timeScale
 end
 
--- ==================== Mortality (BUG-20) ====================
--- Same reasoning as TimeScale: Config is frozen, so the runtime-adjustable
--- override lives here. Off by default in Studio (Config.Debug.DeathRolls)
--- so dev aging can't accidentally kill a test character; AgeService reads
--- this instead of the frozen Config value once it needs to roll a death.
+-- ==================== Mortality ====================
+-- Runtime-adjustable override of Config.Debug.DeathRolls (Config is frozen). Off by default in
+-- Studio so dev aging can't kill a test character; AgeService reads this.
 
 local mortal = Config.Debug.DeathRolls
 
@@ -180,14 +168,12 @@ local function resolvePlayer(caller: Player, nameArg: string?): (Player?, string
 	return nil, string.format("ambiguous player %q: %s", nameArg, table.concat(names, ", "))
 end
 
--- Exposed so another service's own dev commands (registered via
--- DevService.Register below) can resolve a trailing player-name argument
--- the same way every built-in command does.
+-- Exposed so other services' dev commands can resolve a trailing player-name argument the same
+-- way built-ins do.
 DevService.ResolvePlayer = resolvePlayer
 
--- Numeric commands (.coins, .age, .rukh, .bounty, .magoi) put an optional
--- player name in the LAST slot; since every value before it is a number,
--- a non-numeric trailing token is unambiguously the player name.
+-- Numeric commands put an optional player name in the LAST slot; a non-numeric trailing token
+-- is unambiguously the player name.
 local function splitTrailingPlayer(args: { string }): ({ string }, string?)
 	if #args == 0 then
 		return args, nil
@@ -207,10 +193,8 @@ local function register(name: string, help: string, run: (Player, { string }) ->
 	Commands[name] = { help = help, run = run }
 end
 
--- Exposed so another service can add its own dev commands (e.g. AgeService's
--- .birthday/.heart) without DevService having to require that service back
--- (Roblox errors on a cyclic ModuleScript require, and several services
--- already require DevService for GetTimeScale/permission checks).
+-- Exposed so other services can add dev commands without DevService requiring them back (cyclic
+-- require).
 function DevService.Register(name: string, help: string, run: (Player, { string }) -> string)
 	register(name, help, run)
 end
@@ -270,9 +254,8 @@ local function buildSnapshot(target: Player): { [string]: any }
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local hrp = character and character:FindFirstChild("HumanoidRootPart")
 
-	-- "n/a" (not {0,0,0}) when there's no character/HumanoidRootPart, so the
-	-- overlay can tell "no character yet" apart from actually being at the
-	-- map's origin (REVIEW-M1-05S #2).
+	-- "n/a" (not {0,0,0}) with no character/HumanoidRootPart, so the overlay can tell that from
+	-- the map origin.
 	local position: any = "n/a"
 	if hrp and hrp:IsA("BasePart") then
 		local p = hrp.Position
@@ -287,7 +270,7 @@ local function buildSnapshot(target: Player): { [string]: any }
 		joinState = PlayerService.GetState(target) or "n/a",
 		age = if data then data.Age.Years else "n/a",
 		magoi = if data then data.Progress.Magoi else "n/a",
-		rank = "n/a", -- rank titles aren't built until M4 (#25)
+		rank = "n/a",
 		goldRukh = if data then data.Progress.GoldRukh else "n/a",
 		blackRukh = if data then data.Progress.BlackRukh else "n/a",
 		epithet = if data and data.Progress.Epithet ~= "" then data.Progress.Epithet else "n/a",
@@ -303,8 +286,8 @@ local function buildSnapshot(target: Player): { [string]: any }
 		freshSave = Config.Debug.FreshSave,
 		timeScale = DevService.GetTimeScale(),
 		mortal = DevService.IsMortal(),
-		-- M3B-05: Character.LivesLeft (this character's own remaining lives),
-		-- not Meta.Lives (the incarnation count, still "n/a" here like rank).
+		-- Character.LivesLeft is this character's remaining lives; Meta.Lives (incarnation
+		-- count) stays "n/a" like rank.
 		livesLeft = if data then data.Character.LivesLeft else "n/a",
 		sessionSeconds = if started then math.floor(os.clock() - started) else "n/a",
 	}
@@ -418,8 +401,6 @@ local function ageCommand(mode: "set" | "add"): (Player, { string }) -> string
 
 		local old = data.Age.Years
 		data.Age.Years = if mode == "add" then old + years else years
-		-- BUG-15: resize, grey hair and refresh max health right away
-		-- instead of waiting for the next birthday.
 		runAgeChangeHooks(target, data)
 
 		return string.format("%s's age: %d -> %d", target.Name, old, data.Age.Years)
@@ -499,8 +480,8 @@ register("bounty", "<n> [player] - set bounty", function(caller, args)
 	return string.format("%s's bounty: %d -> %d", target.Name, old, n)
 end)
 
--- Positional (not trailing-numeric-detected): quote a multi-word epithet so
--- it arrives as one token, e.g. .epithet "The Bold" PlayerName.
+-- Positional: quote a multi-word epithet so it arrives as one token, e.g. .epithet "The Bold"
+-- PlayerName.
 register("epithet", '<text> [player] - set epithet, quote multi-word text', function(caller, args)
 	local text = args[1]
 	if text == nil then
@@ -543,12 +524,11 @@ local function findSpawnPart(cityArg: string): (BasePart?, string?)
 	return nil, string.format("no spawn matching %q", cityArg)
 end
 
--- Bryan (2026-10-03): `.tp saleh` must work for every city, built or not. A
--- city with no `Workspace.MAP.Spawns.<City>Spawn` part falls back to, in
--- order: its delivery part (`Workspace.MAP.MISSION.<City>Delivery`, or the
--- BUG-59 placeholder under `Workspace.MissionPlaceholders`), then its
--- `<City>REGION` part under `Workspace.Regions` (dropped to the ground below
--- its centre). Matching is case-insensitive on the city key.
+-- `.tp <city>` works for every city, built or not. With no Workspace.MAP.Spawns.<City>Spawn
+-- part it falls back to the delivery part (Workspace.MAP.MISSION.<City>Delivery, or the
+-- placeholder under Workspace.MissionPlaceholders), then the <City>REGION part under
+-- Workspace.Regions (dropped to the ground below its centre). Matching is case-insensitive on
+-- the city key.
 local function findCityFallback(cityArg: string): (CFrame?, string?)
 	local needle = cityArg:lower()
 
@@ -678,17 +658,16 @@ end)
 
 -- ==================== Dispatch ====================
 
--- Fires DevLocalCommand at the caller. A field so SelfTestService can swap
--- it (same stub trick as IsDev) without a real client.
+-- Fires DevLocalCommand at the caller. A field so SelfTestService can swap it without a real
+-- client.
 function DevService.ForwardLocal(player: Player, text: string)
 	Remotes.Server.Fire("DevLocalCommand", player, text)
 end
 
--- The parse-and-run core, split out from Run so SelfTestService can call it
--- directly and check the reply text without a real remote or client on the
--- other end. Returns nil for "nothing to reply to": not a command line at
--- all, or a non-dev (who gets warnNonDev's side effect instead, and never a
--- reply, so a non-dev can't tell a real command from an unknown one).
+-- The parse-and-run core, split out so SelfTestService can check reply text without a real
+-- remote. Returns nil for nothing to reply to: not a command line, or a non-dev (who gets
+-- warnNonDev's side effect, never a reply, so they can't tell a real command from an unknown
+-- one).
 function DevService.Dispatch(player: Player, line: string): string?
 	local tokens = tokenize(line)
 	if #tokens == 0 or tokens[1]:sub(1, 1) ~= "." then
@@ -705,8 +684,7 @@ function DevService.Dispatch(player: Player, line: string): string?
 
 	local spec = Commands[commandName]
 	if spec == nil then
-		-- BUG-47: not a server command, so hand it to the dev's own client
-		-- (permission was checked above). The client replies for itself.
+		-- Not a server command: hand it to the dev's own client, which replies for itself.
 		DevService.ForwardLocal(player, string.sub(table.concat(tokens, " "), 2))
 		return nil
 	end

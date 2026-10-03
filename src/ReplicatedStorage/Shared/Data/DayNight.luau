@@ -1,29 +1,19 @@
 --!strict
--- The look of the day (M6 Phase 6B, docs/M6-PLAN.md, Bryan approved
--- 2026-09-29). Pure data for the client LightingController: the palette
--- the world blends to at each moment of the shared clock. Timing (day and
--- night length, dawn and dusk hours, blend time) is Config.World.DayNight.
---
--- Day is the place's own Lighting exactly as it was on 2026-09-29
--- (docs/reference/m6-studio-dump.md section 3), so nothing changes by day.
--- Dusk, Night and Dawn are the lead's first guesses; Bryan tunes them here.
+-- The look of the day: pure data for the client LightingController, the palette the world blends to at each moment of the shared clock. Timing (day and night length, dawn and dusk hours, blend time) is Config.World.DayNight. Day is the place's own Lighting, so nothing changes by day.
 
 export type Palette = {
 	Brightness: number,
 	Ambient: Color3,
 	OutdoorAmbient: Color3,
-	-- Lighting.Atmosphere
 	AtmosphereDensity: number,
 	AtmosphereColor: Color3,
 	AtmosphereDecay: Color3,
 	AtmosphereGlare: number,
 	AtmosphereHaze: number,
-	-- Lighting.ColorCorrection
 	TintColor: Color3,
 	ColorBrightness: number,
 	Contrast: number,
 	Saturation: number,
-	-- Lighting.Bloom
 	BloomIntensity: number,
 }
 

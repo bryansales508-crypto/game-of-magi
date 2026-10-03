@@ -1,7 +1,6 @@
 --!strict
--- Resizes a character's body parts, joints, attachments and accessories to
--- a height/build ratio. Same numbers, offsets and behaviour as the old
--- Character/HeightHandler.luau; only the typing changed, plus FIX L5.
+-- Resizes a character's body parts, joints, attachments and accessories to a
+-- height/build ratio.
 
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local Lighting = game:GetService("Lighting")
@@ -93,10 +92,8 @@ local function getOrCreateCFrameValue(parent: Instance, name: string, value: CFr
 	return value
 end
 
--- Is `part` a hair accessory's part (its Handle, or a descendant of one)?
--- L5: hair used to fall into the generic BasePart branch below and scale
--- by the full body ratio; it should follow the head instead, like the
--- Head/FalseHead parts do, so hair doesn't stretch with the torso.
+-- Is `part` a hair accessory's part (its Handle, or a descendant of one)? Hair follows
+-- the head's scale, not the full body ratio.
 local function isHairPart(part: Instance): boolean
 	local accessory = part:FindFirstAncestorWhichIsA("Accessory")
 	return accessory ~= nil and accessory.AccessoryType == Enum.AccessoryType.Hair
@@ -182,23 +179,20 @@ function HeightHandler.resize(
 	end
 
 	for _, part in partsToResize :: { Instance } do
-		-- Hats/cloaks are resized through hatResize (called directly by
-		-- ItemHandler.equip and AgeService's rebuildAccessories), not
-		-- picked up from this generic GetDescendants() pass.
+		-- Hats/cloaks are resized through hatResize (called by ItemHandler.equip and
+		-- AgeService's rebuildAccessories), not this generic pass.
 		if part:IsA("Accessory") then
 			continue
 		end
 
 		if part:IsA("BasePart") and part.Name ~= "Head" and part.Name ~= "FalseHead" then
-			-- L5: hair follows the head's (smaller) scale, not the body's.
+			-- Hair follows the head's (smaller) scale, not the body's.
 			local partRatio = if isHairPart(part) then headScale else ratio
 
 			local originalSize = getOrCreateVector3Value(part, "OriginalSize", part.Size)
 			part.Size = originalSize * partRatio
 
-			-- R9: any DataModelMesh subclass (SpecialMesh, BlockMesh,
-			-- FileMesh, CylinderMesh), not only SpecialMesh - the old code
-			-- scaled any child named "Mesh" regardless of its exact class.
+			-- Any DataModelMesh subclass (SpecialMesh, BlockMesh, FileMesh, CylinderMesh).
 			local mesh = part:FindFirstChild("Mesh")
 			if mesh and mesh:IsA("DataModelMesh") then
 				local originalScale = getOrCreateVector3Value(mesh, "OriginalScale", mesh.Scale)
@@ -220,10 +214,7 @@ function HeightHandler.resize(
 			local originalC0 = getOrCreateCFrameValue(joint, "OriginalC0", joint.C0)
 			local originalC1 = getOrCreateCFrameValue(joint, "OriginalC1", joint.C1)
 
-			-- R8: a hair accessory's own AccessoryWeld (its Handle's joint)
-			-- follows the head's scale too, same as its parts above -
-			-- otherwise the weld itself still offsets by the full body
-			-- ratio and the hair sits wrong on a tall/short adult.
+			-- A hair accessory's AccessoryWeld follows the head's scale too.
 			if isHairPart(joint) then
 				joint.C0 = scaleOffset(originalC0, headScale)
 				joint.C1 = scaleOffset(originalC1, headScale)
@@ -236,7 +227,7 @@ function HeightHandler.resize(
 			end
 		elseif part:IsA("Attachment") and not part:FindFirstAncestor("Head") and not part:FindFirstAncestor("FalseHead") then
 			local attachment = part
-			-- R8: same reasoning as the joint branch above.
+			-- Same as the joint branch above.
 			local attachmentRatio = if isHairPart(attachment) then headScale else ratio
 			local originalPosition = getOrCreateVector3Value(attachment, "OriginalPosition", attachment.Position)
 			attachment.Position = originalPosition * attachmentRatio

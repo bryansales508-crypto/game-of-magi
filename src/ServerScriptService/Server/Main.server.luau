@@ -5,9 +5,7 @@
 
 local Services = script.Parent.Services
 
--- Returns are typed as variadic (not `()`) so pcall(service.Init, service)
--- below type-checks as (boolean, ...any) instead of just (boolean); a real
--- Init/Start still isn't expected to return anything meaningful.
+-- Returns are typed as variadic so pcall(service.Init, service) type-checks.
 type ServiceModule = {
 	Init: ((self: any) -> ...any)?,
 	Start: ((self: any) -> ...any)?,

@@ -53,14 +53,8 @@ local function expect(results: { Check }, name: string, condition: boolean)
 	table.insert(results, { name = name, pass = condition })
 end
 
--- BUG-26 (M3-FIX2-S): polls `predicate` instead of asserting right after a
--- fixed `task.wait(n)` - Studio runs with Deferred signal behavior (a
--- BindableEvent connection doesn't run until the firing thread's next
--- resumption point, not synchronously) and task.wait can genuinely take
--- longer than requested under load, so no fixed wait is ever provably
--- enough. Returns true as soon as `predicate()` does, otherwise keeps
--- yielding (never busy-loops without a wait) until `timeoutSeconds` have
--- passed, then makes one final check.
+-- Polls `predicate` until it holds or `timeoutSeconds` pass. Studio uses Deferred signal behavior and
+-- task.wait is only a lower bound, so no fixed wait is reliably enough.
 local function pollUntil(timeoutSeconds: number, predicate: () -> boolean): boolean
 	local deadline = os.clock() + timeoutSeconds
 	while os.clock() < deadline do
@@ -117,10 +111,8 @@ local function testValidators(results: { Check })
 end
 
 local function testRemoteWrapper(results: { Check })
-	-- No real player is needed: CheckCall only uses it as a rate-limit key.
-	-- Each scenario gets its own fake player so their rate windows don't
-	-- interfere with each other; every one is cleared at the end (a fake
-	-- player never fires PlayerRemoving, so nothing else will clear it).
+	-- CheckCall only uses the player as a rate-limit key, so each scenario gets its own fake one,
+	-- cleared at the end (a fake never fires PlayerRemoving).
 	local fakePlayers: { Player } = {}
 	local function newFakePlayer(): Player
 		local player = ({} :: any) :: Player
@@ -157,8 +149,7 @@ local function testRemoteWrapper(results: { Check })
 		expect(results, "remote: call over rate limit rejected", not overLimit)
 	end
 
-	-- H2: bad calls must still count against the rate limit, otherwise an
-	-- attacker floods the server for free by never sending a valid call.
+	-- Bad calls count against the rate limit too, so flooding with invalid calls is not free.
 	do
 		local player = newFakePlayer()
 		local allRejectedForType = true
@@ -172,8 +163,7 @@ local function testRemoteWrapper(results: { Check })
 		expect(results, "remote (H2): rate limit still trips after only bad calls", not ok and reason == "rate limit exceeded")
 	end
 
-	-- M1: argument counting must use table.pack's .n, not #args, so a nil
-	-- hole or an omitted trailing optional argument is handled correctly.
+	-- Argument counting uses table.pack's .n, so nil holes and omitted trailing optionals are handled.
 	do
 		local def: RemoteDef = {
 			kind = "Event",
@@ -203,11 +193,7 @@ local function testRemoteWrapper(results: { Check })
 		)
 	end
 
-	-- BUG-25/BUG-04 (M3-FIX-S): confirms Validate.number's NaN rejection
-	-- actually reaches a real remote through the full CheckCall wrapper
-	-- (not just Validate.number in isolation, already self-tested
-	-- elsewhere) - the reported "no warning" turned out to be BUG-04's
-	-- per-window throttle hiding a real drop, not a validation gap.
+	-- Validate.number's NaN rejection reaches a real remote through the full CheckCall wrapper.
 	do
 		local player = newFakePlayer()
 		local okNaN, reasonNaN = Remotes.Server.CheckCall("Dash", player, table.pack(0 / 0, 1))
@@ -219,21 +205,18 @@ local function testRemoteWrapper(results: { Check })
 	end
 end
 
--- M1-03: a fake Data table exercises SaveSchema.Migrate's version bump, and
--- a temporary Folder stands in for a Player.
+-- A fake Data table exercises SaveSchema.Migrate's version bumps.
 local function testDataService(results: { Check })
 	do
-		-- BUG-30: Migrations[3] writes Meta.Unlocks.Combat and
-		-- Character.LivesLeft, so the fake needs those tables (as Reconcile
-		-- would have backfilled them) or the whole self-test errors out
-		-- here, before any later check runs.
+		-- Migrations[3] writes Meta.Unlocks.Combat and Character.LivesLeft, so the fake needs those
+		-- tables (as Reconcile would have backfilled them).
 		local data = ({ Version = 0, Meta = { Unlocks = {} }, Character = {} } :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
 		expect(results, "SaveSchema: Migrate bumps Version to the current schema version", data.Version == Config.Data.SchemaVersion)
 	end
 
-	-- M4-01: schema v2 only adds Progress.PendingEpithet, an optional field
-	-- a v1 save (missing the key entirely) already reads the same as nil.
+	-- Schema v2 only adds the optional Progress.PendingEpithet; a v1 save already reads the same as
+	-- nil.
 	do
 		local data = ({
 			Version = 1,
@@ -244,10 +227,8 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v1 -> v2 migration leaves PendingEpithet nil (nothing to fill)", data.Progress.PendingEpithet == nil)
 	end
 
-	-- M3B-01: schema v3 adds Meta.Unlocks.Combat. The fake input already has
-	-- Unlocks pre-populated (simulating what Profile:Reconcile() would have
-	-- already backfilled in production, before Migrate ever runs - same
-	-- reasoning as Migrations[3]'s own comment).
+	-- Schema v3 adds Meta.Unlocks.Combat; Unlocks is pre-populated as Profile:Reconcile() would have
+	-- done before Migrate.
 	do
 		local data = ({
 			Version = 2,
@@ -258,11 +239,8 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
 	end
 
-	-- M5C-01: schema v4 adds Progress.DeliveryStreak, Progress.Routes and
-	-- (the intercepted mark, added later while still unmerged) Progress.
-	-- Intercepted - an intentional no-op migration (same reasoning as
-	-- v1 -> v2 above - all three new fields already read the same as their
-	-- template default before Migrate ever runs).
+	-- Schema v4 adds DeliveryStreak, Routes and Intercepted; the migration is a no-op because the
+	-- template defaults already apply.
 	do
 		local data = ({
 			Version = 3,
@@ -287,14 +265,8 @@ local function testDataService(results: { Check })
 		)
 	end
 
-	-- REVIEW-M3B-01 C1: a brand-new profile follows exactly this path
-	-- (ProfileStore's own deep copy of SaveSchema.Template, then
-	-- Profile:Reconcile(), then SaveSchema.Migrate - DataService.luau's
-	-- onPlayerAdded). Migrate must be a no-op for it now that the
-	-- template's own Version is already current - before the fix, this
-	-- walked a fresh profile through Migrations[3] too, which grandfathered
-	-- it into Meta.Unlocks.Combat = true even though nothing was ever
-	-- "existing" to grandfather.
+	-- A brand-new profile (template deep copy, Reconcile, then Migrate) must pass through Migrate
+	-- unchanged, so it is not grandfathered into the combat unlock.
 	do
 		local function deepCopy(value: any): any
 			if type(value) ~= "table" then
@@ -314,11 +286,8 @@ local function testDataService(results: { Check })
 		expect(results, "SaveSchema: a brand-new profile starts with a full Character.LivesLeft", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
 	end
 
-	-- M3B-01 (Bryan's refinement, 2026-09-28): the combat unlock is
-	-- per-player forever, not per-life - DataService.ResetToTemplate is the
-	-- exact reset both Wipe and NewLife build on, so exercising it directly
-	-- proves what each of them actually does to Meta.Unlocks.Combat, with no
-	-- Player/ProfileStore involved.
+	-- The combat unlock is per-player forever, not per-life; ResetToTemplate is the reset both Wipe
+	-- and NewLife build on.
 	do
 		local data = ({
 			Version = Config.Data.SchemaVersion,
@@ -328,11 +297,9 @@ local function testDataService(results: { Check })
 		local keepCombatUnlocked = data.Meta.Unlocks.Combat
 
 		DataService.ResetToTemplate(data)
-		data.Meta.Unlocks.Combat = keepCombatUnlocked -- NewLife's own restore step
+		data.Meta.Unlocks.Combat = keepCombatUnlocked
 
 		expect(results, "DataService: NewLife's reset carries Meta.Unlocks.Combat over (per-player forever, not per-life)", data.Meta.Unlocks.Combat == true)
-		-- M3B-05: a brand-new character always starts with a full life count,
-		-- regardless of how many the character it replaces had left (0 here).
 		expect(results, "DataService: NewLife's reset gives the new character a full Character.LivesLeft again", data.Character.LivesLeft == Config.Life.LivesPerCharacter)
 	end
 
@@ -347,16 +314,8 @@ local function testDataService(results: { Check })
 		expect(results, "DataService: Wipe's reset (no restore step) clears Meta.Unlocks.Combat back to the template's false", data.Meta.Unlocks.Combat == false)
 	end
 
-	-- REVIEW-M5C-01B F1: DataService.RunReleasing must run every registered
-	-- OnReleasing handler BEFORE `endSession` - profile:EndSession() fires
-	-- ProfileStore's own OnSessionEnd synchronously, which nils
-	-- `profiles[player]` before onPlayerRemoving even returns, so a plain
-	-- Players.PlayerRemoving connection made by another service (however
-	-- early) can never see the save before it's released. This is the
-	-- mechanism M5C-01's "leaving mid-run" fix relies on - see
-	-- MissionService's own DataService.OnReleasing registration, and
-	-- TrySettle/ApplyFailure below for the actual "zeroes the streak" math
-	-- this now runs in time for.
+	-- RunReleasing must run every OnReleasing handler BEFORE endSession: EndSession nils the profile
+	-- synchronously, so a plain PlayerRemoving connection cannot see the save.
 	do
 		local order: { string } = {}
 		DataService.OnReleasing(function()
@@ -375,10 +334,7 @@ local function testDataService(results: { Check })
 		standIn:Destroy()
 	end
 
-	-- REVIEW-M5C-01C L1: a single misbehaving OnReleasing handler must not
-	-- block the release - RunReleasing pcalls each handler individually, so
-	-- one that errors still lets every later handler run AND still lets
-	-- endSession run.
+	-- One erroring OnReleasing handler must not block later handlers or the release.
 	do
 		local ranAfterError = false
 		local released = false
@@ -407,8 +363,7 @@ local function testDataService(results: { Check })
 	end
 end
 
--- M1-04S: the join state machine is pure (no Player needed), so every
--- transition is exercised directly.
+-- The join state machine is pure, so every transition is exercised directly.
 local function testPlayerService(results: { Check })
 	local NextJoinState = PlayerService.NextJoinState
 
@@ -438,10 +393,8 @@ local function testPlayerService(results: { Check })
 	)
 end
 
--- M1-05S: DevService.IsDev is always true in Studio (where self-tests run),
--- so the admin-list check is tested directly via IsAdminUserId instead.
--- Dispatch itself is exercised with a fake player table, the same trick
--- used by the Remotes self-test above.
+-- IsDev is always true in Studio, so the admin-list check goes through IsAdminUserId; Dispatch is
+-- driven with a fake player table.
 local function testDevService(results: { Check })
 	expect(results, "DevService: Bryan's UserId is an admin", DevService.IsAdminUserId(27938432))
 	expect(results, "DevService: an unlisted UserId is not an admin", not DevService.IsAdminUserId(1))
@@ -457,11 +410,7 @@ local function testDevService(results: { Check })
 	local notACommand = DevService.Dispatch(fakePlayer, "just chatting")
 	expect(results, "DevService: a non-command chat line gets no reply", notACommand == nil)
 
-	-- IsDev is always true in Studio (Config.Debug.Enabled short-circuits
-	-- it), so a real non-dev Dispatch call can't happen here; stub IsDev
-	-- itself for one assertion instead (REVIEW-M1-05S #1), then restore it
-	-- so the checks above (and every other service) keep seeing the real
-	-- permission check.
+	-- IsDev is always true in Studio, so stub it to test a non-dev Dispatch, then restore it.
 	local realIsDev = DevService.IsDev
 	DevService.IsDev = function(_player: Player): boolean
 		return false
@@ -470,8 +419,8 @@ local function testDevService(results: { Check })
 	DevService.IsDev = realIsDev
 	expect(results, "DevService: Dispatch gives a non-dev no reply", ok and nonDevReply == nil)
 
-	-- BUG-47: an unknown command from a dev is forwarded to their client
-	-- (DevLocalCommand) with no server reply; a non-dev gets nothing.
+	-- An unknown command from a dev is forwarded to their client (DevLocalCommand) with no server
+	-- reply; a non-dev gets nothing.
 	do
 		local realForward = DevService.ForwardLocal
 		local forwarded: { string } = {}
@@ -495,7 +444,7 @@ local function testDevService(results: { Check })
 		DevService.ForwardLocal = realForward
 	end
 
-	-- BUG-20: .mortal on|off flips the runtime flag, mirroring .timescale.
+	-- `.mortal on|off` flips the runtime flag.
 	local realMortal = DevService.IsMortal()
 	DevService.Dispatch(fakePlayer, ".mortal on")
 	expect(results, "DevService: .mortal on sets IsMortal true", DevService.IsMortal() == true)
@@ -505,8 +454,7 @@ local function testDevService(results: { Check })
 	DevService.Dispatch(fakePlayer, restoreCommand)
 end
 
--- M2-06: the shared rank/alignment/epithet data modules are pure, so
--- they're exercised directly without any Player or save table.
+-- The shared rank/alignment/epithet data modules are pure and tested directly.
 local function testData(results: { Check })
 	do
 		local _, streetRat = Ranks.rankFor(299)
@@ -556,8 +504,7 @@ local function testData(results: { Check })
 	end
 end
 
--- M2-01: CharacterService's pure helpers, exercised with a fake save table
--- (no Player, no DataService, no Remotes involved).
+-- CharacterService's pure helpers, tested with a fake save table.
 local function fakeCharacterData(): SaveSchema.Data
 	return {
 		Version = 1,
@@ -608,11 +555,8 @@ local function testCharacterService(results: { Check })
 		)
 	end
 
-	-- BUG-10: StatShim must expose every key RF/Assets reads via
-	-- stat["X"].Value (it was missing HairColor, which crashed
-	-- buildFalseHead and aborted the whole build). Exercised against the
-	-- real Assets functions, not just a key-presence check, with two
-	-- genders and both the human/magician EyeColor branches (L2).
+	-- StatShim must expose every key Assets reads via stat["X"].Value; tested against the real Assets
+	-- functions with both genders and the human/magician EyeColor branches.
 	do
 		local function checkShim(label: string, data: SaveSchema.Data)
 			local stat = CharacterService.StatShim(data)
@@ -678,7 +622,7 @@ local function testCharacterService(results: { Check })
 	end
 end
 
--- M2-02: AgeService's pure helpers and AgeHandler's pack/unpack round-trip.
+-- AgeService's pure helpers and AgeHandler's pack/unpack round-trip.
 local function testAgeService(results: { Check })
 	do
 		expect(results, "AgeService: 10 days away at 13 -> 33", AgeService.OfflineAgingYears(13, 10) == 20)
@@ -715,16 +659,12 @@ local function testAgeService(results: { Check })
 	end
 end
 
--- M2-03: HealthService's pure helpers.
 local function testHealthService(results: { Check })
 	do
 		expect(results, "HealthService: MaxHealthFor height 1.0 / rank 1", HealthService.MaxHealthFor(1.0, 1) == 53)
 		expect(results, "HealthService: MaxHealthFor height 1.3 / rank 4", math.abs(HealthService.MaxHealthFor(1.3, 4) - 88.9) < 1e-9)
-		-- REVIEW-M2-03 finding 1: the shared regen loop recomputes MaxHealth
-		-- from the current height/rank every tick (not only at spawn), so a
-		-- live AgeService birthday resize actually moves it. This confirms
-		-- the formula it recomputes from really is height-sensitive at a
-		-- fixed rank, same as a birthday would change under it.
+		-- The regen loop recomputes MaxHealth from the current height/rank each tick, so a birthday
+		-- resize moves it.
 		expect(
 			results,
 			"HealthService: MaxHealthFor tracks a live height change at a fixed rank",
@@ -738,10 +678,8 @@ local function testHealthService(results: { Check })
 		expect(results, "HealthService: RegenAmount Knocked over 5s", HealthService.RegenAmount("Knocked", 5) == 5)
 	end
 
-	-- REVIEW-M3-04 H1: an NPC registered with HealthService takes damage
-	-- through TakeDamage (not a direct Humanoid.Health write) and is
-	-- knocked at 0 exactly like a player - the identical CombatService.
-	-- ApplyHit path, just with a Model instead of a Player behind it.
+	-- An NPC registered with HealthService takes damage through TakeDamage and is knocked at 0 like a
+	-- player (same CombatService.ApplyHit path).
 	do
 		local scratch = Instance.new("Folder")
 		scratch.Name = "SelfTestHealthServiceNpc"
@@ -773,7 +711,7 @@ local function testHealthService(results: { Check })
 		CombatService.Register(npc, nil, "Fist")
 
 		local fistStyle = Combat.styleFor("Fist") :: Combat.Style
-		local hit = fistStyle.chain[1] -- 4 damage
+		local hit = fistStyle.chain[1]
 		CombatService.ApplyHit(attacker, npc, fistStyle, hit, 1)
 		expect(
 			results,
@@ -781,7 +719,7 @@ local function testHealthService(results: { Check })
 			npcHumanoid.Health == 16 and npc:GetAttribute("Health") == 16
 		)
 
-		npcHumanoid.Health = 3 -- less than the next hit's damage
+		npcHumanoid.Health = 3
 		CombatService.ApplyHit(attacker, npc, fistStyle, hit, 1)
 		expect(
 			results,
@@ -797,9 +735,6 @@ local function testHealthService(results: { Check })
 	end
 end
 
--- M4-01: RankService's pure helpers, exercised with fake Data tables - no
--- Player or DataService needed for any of these (ApplyMagoi/ApplyDeed/
--- ApplyChooseEpithet/ShouldOfferOrigin only ever touch data.Progress).
 local function fakeRankData(magoi: number, gold: number, black: number, epithet: string): SaveSchema.Data
 	return ({
 		Progress = { Magoi = magoi, GoldRukh = gold, BlackRukh = black, Epithet = epithet, PendingEpithet = nil },
@@ -809,11 +744,11 @@ end
 local function testRankService(results: { Check })
 	do
 		local data = fakeRankData(250, 0, 0, "")
-		local oldIndex, newIndex = RankService.ApplyMagoi(data, 100) -- 250 -> 350: crosses the 300 Wanderer threshold
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 100)
 		expect(results, "RankService: ApplyMagoi detects a rank-up across a threshold", newIndex > oldIndex)
 		expect(results, "RankService: ApplyMagoi actually moved Magoi", data.Progress.Magoi == 350)
 
-		local sameOld, sameNew = RankService.ApplyMagoi(data, 10) -- 350 -> 360: still Wanderer
+		local sameOld, sameNew = RankService.ApplyMagoi(data, 10)
 		expect(results, "RankService: ApplyMagoi doesn't report a rank-up within the same rank", sameNew == sameOld)
 
 		local downOld, downNew = RankService.ApplyMagoi(data, -1000)
@@ -882,14 +817,13 @@ local function testRankService(results: { Check })
 		expect(results, "RankService: TitleForIndex resolves King/Queen for a known gender", RankService.TitleForIndex(7, 1) == "King")
 	end
 
-	-- H1 (REVIEW-M4-01): a rank-up must never overwrite a choice that's
-	-- still pending, and a grant crossing several thresholds at once must
-	-- walk the player through every rank one card at a time.
+	-- A rank-up never overwrites a pending choice; a grant crossing several thresholds walks through
+	-- every rank one card at a time.
 	do
 		local data = fakeRankData(0, 0, 0, "")
 		data.Progress.PendingEpithet = { rank = 1, choices = { "The Merchant's Child", "The Sand-Born", "The Unwanted" } }
 
-		local oldIndex, newIndex = RankService.ApplyMagoi(data, 300) -- 0 -> 300: crosses into Wanderer
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 300)
 		expect(
 			results,
 			"RankService H1: Magoi crossing a threshold while origin is pending still reports a rank-up",
@@ -908,10 +842,10 @@ local function testRankService(results: { Check })
 	end
 
 	do
-		local data = fakeRankData(300, 0, 0, "") -- already at Wanderer's threshold
+		local data = fakeRankData(300, 0, 0, "")
 		data.Progress.PendingEpithet = { rank = 1, choices = { "The Merchant's Child", "The Sand-Born", "The Unwanted" } }
 
-		local ok = RankService.ApplyChooseEpithet(data, 2) -- chooses "The Sand-Born"
+		local ok = RankService.ApplyChooseEpithet(data, 2)
 		expect(results, "RankService H1: choosing the origin epithet succeeds", ok and data.Progress.Epithet == "The Sand-Born")
 
 		local announceIndex = RankService.NextRankAfterChoice(data, 1)
@@ -923,8 +857,8 @@ local function testRankService(results: { Check })
 	end
 
 	do
-		local data = fakeRankData(0, 0, 0, "The Sand-Born") -- origin already answered
-		local oldIndex, newIndex = RankService.ApplyMagoi(data, 1500) -- 0 -> 1500: Street Rat -> Renowned in one grant
+		local data = fakeRankData(0, 0, 0, "The Sand-Born")
+		local oldIndex, newIndex = RankService.ApplyMagoi(data, 1500)
 		expect(results, "RankService H1: a big grant reaches Renowned (index 4) in one step", oldIndex == 1 and newIndex == 4)
 
 		local first = RankService.NextRankToAnnounce(data, oldIndex, newIndex)
@@ -947,9 +881,6 @@ local function testRankService(results: { Check })
 	end
 end
 
--- M5A-01: Economy's rounding rule and EconomyService's pure core, both
--- exercised with no Player/DataService involved - Affords/ApplyPay/
--- ApplyGive/ApplySet only ever touch data.Economy.
 local function fakeEconomyData(copper: number, silver: number, gold: number): SaveSchema.Data
 	return ({
 		Economy = { Copper = copper, Silver = silver, Gold = gold },
@@ -957,11 +888,7 @@ local function fakeEconomyData(copper: number, silver: number, gold: number): Sa
 end
 
 local function testEconomy(results: { Check })
-	-- Bryan's price-band table (M5-PLAN.md Phase 5A, replaced 2026-09-29:
-	-- bands, not rounding). 200/201 and 10,000/10,001 are the sharpest
-	-- cases - one Copper past a full 100/10,000 is what actually crosses
-	-- into the next band, not a rounding midpoint (see Economy.toPrice's
-	-- own comment).
+	-- Price bands: one Copper past a full 100/10,000 crosses into the next band (see Economy.toPrice).
 	for _, example in Economy.PriceExamples do
 		local coin, amount = Economy.toPrice(example.copper)
 		expect(
@@ -973,15 +900,12 @@ local function testEconomy(results: { Check })
 
 	expect(results, "Economy: format renders \"N Coin\"", Economy.format("Silver", 3) == "3 Silver")
 
-	-- roundReward is the same rule as toPrice (kept for the Bank milestone,
-	-- unused today - see its own comment and GiveCopperValue below).
 	do
 		local coin, amount = Economy.roundReward(5000)
 		expect(results, "Economy: roundReward follows the same banding rule as toPrice", coin == "Silver" and amount == 49)
 	end
 
-	-- CanAfford/Pay are exact-coin only: 120 Copper can't pay a 1-Silver
-	-- price, even though 120 Copper is worth more than 1 Silver converted.
+	-- Affords/Pay are exact-coin only: 120 Copper cannot pay a 1-Silver price.
 	do
 		local data = fakeEconomyData(120, 0, 0)
 		expect(results, "EconomyService: Affords is exact-coin only (120 Copper can't afford 1 Silver)", not EconomyService.Affords(data, "Silver", 1))
@@ -995,17 +919,14 @@ local function testEconomy(results: { Check })
 		expect(results, "EconomyService: a failed Pay leaves the wallet untouched", data.Economy.Copper == 120 and data.Economy.Silver == 0)
 	end
 
-	-- Not enough wealth in ANY coin fails as "no" instead (the old
-	-- MarketHandler NeedMoney line, not the Convert one).
+	-- Not enough wealth in any coin fails as "no".
 	do
 		local data = fakeEconomyData(0, 0, 0)
 		local ok, failure = EconomyService.ApplyPay(data, "Silver", 1)
 		expect(results, "EconomyService: ApplyPay against an empty wallet fails as \"no\" (not enough money at all)", not ok and failure == "no")
 	end
 
-	-- REVIEW-M5A-01 L1: a bad amount (less than 1, or not a whole number)
-	-- is rejected as "no" before it ever touches the wallet, even against a
-	-- wallet that could otherwise afford it.
+	-- A bad amount (below 1 or non-integer) is rejected as "no" before touching the wallet.
 	do
 		local data = fakeEconomyData(0, 5, 0)
 		local okZero, failureZero = EconomyService.ApplyPay(data, "Silver", 0)
@@ -1020,23 +941,19 @@ local function testEconomy(results: { Check })
 		expect(results, "EconomyService (L1): none of the rejected amounts touched the wallet", data.Economy.Silver == 5)
 	end
 
-	-- A payment that CAN be made in the exact coin succeeds and only moves
-	-- that one coin.
 	do
 		local data = fakeEconomyData(0, 5, 0)
 		local ok = EconomyService.ApplyPay(data, "Silver", 2)
 		expect(results, "EconomyService: ApplyPay succeeds when the exact coin covers the price", ok and data.Economy.Silver == 3)
 	end
 
-	-- Give never goes negative: a dev `.coins+` with a negative number can
-	-- empty a coin but not push it below 0.
+	-- Give never goes negative.
 	do
 		local data = fakeEconomyData(20, 0, 0)
 		EconomyService.ApplyGive(data, "Copper", -1000)
 		expect(results, "EconomyService: ApplyGive clamps the wallet at 0", data.Economy.Copper == 0)
 	end
 
-	-- ApplySet (the dev `.coins` set form) clamps and floors every coin.
 	do
 		local data = fakeEconomyData(0, 0, 0)
 		EconomyService.ApplySet(data, -5, 2.7, 10)
@@ -1047,10 +964,7 @@ local function testEconomy(results: { Check })
 		)
 	end
 
-	-- Bryan's refinement (2026-09-29): rewards pay Copper only for now -
-	-- GiveCopperValue is exactly ApplyGive(data, "Copper", copper), which
-	-- never rounds into Silver/Gold the way Economy.roundReward would (a
-	-- 5,000-Copper reward stays 5,000 Copper, not 50 Silver).
+	-- Rewards pay Copper only: a 5,000-Copper reward does not round into Silver/Gold.
 	do
 		local data = fakeEconomyData(0, 0, 0)
 		EconomyService.ApplyGive(data, "Copper", 5000)
@@ -1062,12 +976,8 @@ local function testEconomy(results: { Check })
 	end
 end
 
--- M5B-01: Shop's colour rolls/prices and ItemService/ShopService's pure
--- decision core, all exercised with no Instance/Player/DataService involved.
 local function testShop(results: { Check })
-	-- Colour roll: StandardColors is White(80)/Tan(25)/Black(10), a
-	-- deterministic `roll` (1..115) picks a bucket without touching
-	-- math.random.
+	-- StandardColors is White(80)/Tan(25)/Black(10); a deterministic `roll` (1..115) picks a bucket.
 	expect(results, "Shop: colour roll picks White at the bottom of its 80-wide band (roll 1)", Shop.RollColor(Shop.StandardColors, 1).name == "White")
 	expect(results, "Shop: colour roll picks White at the top of its band (roll 80)", Shop.RollColor(Shop.StandardColors, 80).name == "White")
 	expect(results, "Shop: colour roll picks Tan at the bottom of its band (roll 81)", Shop.RollColor(Shop.StandardColors, 81).name == "Tan")
@@ -1075,11 +985,9 @@ local function testShop(results: { Check })
 	expect(results, "Shop: colour roll picks Black at the bottom of its band (roll 106)", Shop.RollColor(Shop.StandardColors, 106).name == "Black")
 	expect(results, "Shop: colour roll picks Black at the top of the pool (roll 115)", Shop.RollColor(Shop.StandardColors, 115).name == "Black")
 
-	-- Prices: base 80 Copper (Qarzin's Clothing resource, ratio 1), *1.2 for
-	-- hats and *1.5 for cloaks (old MarketHandler numbers), then the rolled
-	-- colour's own multiplier (White x1, Tan x1.25, Black x1.5) - see
-	-- Shop.luau's own derivation comment. Shirts always roll from
-	-- VarietyColors, which never carries a multiplier.
+	-- Prices: base 80 Copper, x1.2 for hats and x1.5 for cloaks, then the rolled colour's multiplier
+	-- (White x1, Tan x1.25, Black x1.5; see Shop.luau). Shirts roll from VarietyColors, which has no
+	-- multiplier.
 	local white, tan, black = Shop.StandardColors[1], Shop.StandardColors[2], Shop.StandardColors[3]
 	expect(results, "Shop: hat price, White = 96 Copper", Shop.PriceFor("H", white) == 96)
 	expect(results, "Shop: hat price, Tan = 120 Copper", Shop.PriceFor("H", tan) == 120)
@@ -1092,16 +1000,13 @@ local function testShop(results: { Check })
 	expect(results, "Shop: pants price, Black = 120 Copper", Shop.PriceFor("P", black) == 120)
 	expect(results, "Shop: shirt price never carries a colour multiplier (Variety pool)", Shop.PriceFor("S", Shop.VarietyColors[1]) == 80)
 
-	-- Every price above bands through Economy.toPrice the same as any other
-	-- price in the game (Bryan 2026-09-29: shown through the 5A band rule).
+	-- Every price bands through Economy.toPrice.
 	do
 		local coin: Economy.Coin, amount: number = Economy.toPrice(Shop.PriceFor("C", black))
 		expect(results, "Shop: a 180-Copper cloak bands to 1 Silver", coin == "Silver" and amount == 1)
 	end
 
-	-- Pools exclude the rags (docs/reference/m5b-studio-dump.md #4): the
-	-- starter shirt/pants stay out of the shop via forSale = false, not a
-	-- separate pool.
+	-- Pools exclude the rags: the starter shirt/pants stay out of the shop via forSale = false.
 	local shirtRagsExcluded, pantsRagsExcluded = true, true
 	for _, item in Shop.Shirts do
 		if item.name == "Short Sleeve Rags" and item.forSale then
@@ -1130,16 +1035,14 @@ local function fakeGearData(shirt: string, pants: string, hats: { string }): Sav
 end
 
 local function testItemService(results: { Check })
-	-- Encode/decode round-trips the "type|name|r,g,b" format unchanged from
-	-- the old ItemHandler.
+	-- Encode/decode round-trips the "type|name|r,g,b" format.
 	local code = ItemService.Encode("S", "Vest", "255,0,0")
 	local itemType, name, colorCode = ItemService.Decode(code)
 	expect(results, "ItemService: encode/decode round-trips", itemType == "S" and name == "Vest" and colorCode == "255,0,0")
 	expect(results, "ItemService: ClothingId finds a real shirt id", ItemService.ClothingId("S", "Vest") ~= nil)
 	expect(results, "ItemService: ClothingId returns nil for an unknown name", ItemService.ClothingId("S", "Nonexistent") == nil)
 
-	-- Owns is colour-aware (REVIEW/AUDIT fix, M5-PLAN.md Phase 5B): owning a
-	-- Black Vest must not match a White Vest of the same item.
+	-- Owns is colour-aware: owning a Black Vest does not match a White Vest.
 	local worn = fakeGearData(ItemService.Encode("S", "Vest", "35,35,35"), "", { "", "", "" })
 	expect(results, "ItemService: Owns matches the exact item+colour worn", ItemService.Owns(worn, ItemService.Encode("S", "Vest", "35,35,35")))
 	expect(
@@ -1149,8 +1052,8 @@ local function testItemService(results: { Check })
 	)
 	expect(results, "ItemService: Owns is false for an item never worn", not ItemService.Owns(worn, ItemService.Encode("P", "Standard", "35,35,35")))
 
-	-- HasFreeHatSlot - hats and cloaks share the same 3-slot Gear.Hats
-	-- array; ShopService checks this BEFORE EconomyService.Pay ever runs.
+	-- Hats and cloaks share the 3-slot Gear.Hats array; ShopService checks it before
+	-- EconomyService.Pay.
 	local emptySlots = fakeGearData("", "", { "", "", "" })
 	expect(results, "ItemService: HasFreeHatSlot is true with 3 empty slots", ItemService.HasFreeHatSlot(emptySlots))
 	local fullSlots = fakeGearData("", "", { "H|Cowl|1,1,1", "C|Torn Cloak|1,1,1", "H|Feather|1,1,1" })
@@ -1159,13 +1062,8 @@ local function testItemService(results: { Check })
 end
 
 local function testShopService(results: { Check })
-	-- ShopService.Decide is the pure gate every purchase runs through
-	-- BEFORE EconomyService.Pay is ever called (M5-PLAN.md Phase 5B: "all
-	-- checks run BEFORE any charge"). Proving Decide returns "slotsFull"/
-	-- "owned" here, with no EconomyService involved at all, is exactly
-	-- "Pay is not called when slots are full/the item is already owned" -
-	-- the Triggered handler only reaches EconomyService.Pay once Decide
-	-- returns "ok".
+	-- ShopService.Decide gates every purchase before EconomyService.Pay runs; "slotsFull"/"owned" here
+	-- means Pay is never called.
 	local fullSlots = fakeGearData("", "", { "H|Cowl|1,1,1", "C|Torn Cloak|1,1,1", "H|Feather|1,1,1" })
 	expect(
 		results,
@@ -1194,13 +1092,8 @@ local function testShopService(results: { Check })
 	expect(results, "ShopService: Decide allows a legitimate new purchase", ShopService.Decide(fresh, "P", "P|Standard|255,255,255") == "ok")
 end
 
--- M3-01: StatusService's Apply/Remove/Has/expiry and bridge/attribute
--- mirroring, exercised against plain (never PlayerService.Ready'd) Model
--- instances rather than a real character. REVIEW-M3-01 H2: the test
--- models are parented under a scratch ServerStorage folder (destroyed at
--- the end) instead of left with no Parent at all, so the shared expiry
--- loop (which unregisters anything with Parent == nil) doesn't yank them
--- out from under the test mid-way through.
+-- StatusService tests use plain Models parented under a scratch ServerStorage folder, since the shared
+-- expiry loop unregisters anything with no Parent.
 local function testStatusService(results: { Check })
 	local scratch = Instance.new("Folder")
 	scratch.Name = "SelfTestStatusService"
@@ -1223,22 +1116,8 @@ local function testStatusService(results: { Check })
 
 		StatusService.Register(character)
 
-		-- BUG-26 (M3-FIX2-S): the M3-FIX-S rewrite still asserted right
-		-- after a FIXED task.wait(n) - correct in spirit (a Deferred
-		-- signal handler needs a yield to actually run at all, and a real
-		-- duration needs real time to pass before it can expire), but a
-		-- fixed wait can never be PROVEN long enough: Studio's own
-		-- task.wait is only a lower bound (it can overshoot under load,
-		-- especially right when the self-test runs, just after server
-		-- start), so "one task.wait() always flushes the deferred queue"
-		-- and "0.1s of wait never overshoots a 1.0s+0.3s budget" were both
-		-- still schedule-dependent guesses, not proofs. `pollUntil` (above)
-		-- removes the guess: each assertion below only runs once the
-		-- condition it checks is actually true, or a generous multi-second
-		-- deadline is reached - so it passes or fails on what the code
-		-- did, not on how fast this particular tick ran. StatusService's
-		-- Apply/Remove/shared expiry loop are unchanged and correct; every
-		-- fix in this block is test-side.
+		-- Assertions poll (pollUntil) instead of waiting a fixed time: Deferred signal handlers need a
+		-- yield to run, and task.wait can overshoot.
 		local DURATION = 2
 
 		StatusService.Apply(character, "Stun", DURATION)
@@ -1253,13 +1132,8 @@ local function testStatusService(results: { Check })
 		)
 		expect(results, "StatusService: Changed fires exactly once on Apply", activeFires == 1)
 
-		-- Refresh immediately (DURATION is generous enough that even the
-		-- poll above, worst case, can't have eaten into it): re-Apply
-		-- before expiry must push the expiry back out, and must not
-		-- re-fire Changed (the active state didn't change). There's
-		-- nothing to poll FOR here (no state transition to wait on), so a
-		-- few bare yields just give any wrongly-fired deferred event a
-		-- chance to show up before the "still 1" check.
+		-- Re-Apply before expiry pushes the expiry out without re-firing Changed; a few bare yields
+		-- let a wrongly-fired deferred event show up.
 		StatusService.Apply(character, "Stun", DURATION)
 		task.wait()
 		task.wait()
@@ -1267,11 +1141,8 @@ local function testStatusService(results: { Check })
 		expect(results, "StatusService: re-Apply refreshes the duration", StatusService.Has(character, "Stun"))
 		expect(results, "StatusService: a refreshing re-Apply doesn't re-fire Changed", activeFires == 1)
 
-		-- "a window that ends only after the loop has ticked at least
-		-- once past expiry": poll for Has actually clearing (which can
-		-- only happen once the shared expiry loop has run at least one
-		-- tick past the refreshed expiresAt), not a fixed wait sized to
-		-- guess when that tick will have happened.
+		-- Poll for Has clearing, which only happens once the shared expiry loop ticks past the
+		-- refreshed expiresAt.
 		pollUntil(DURATION + 2, function()
 			return not StatusService.Has(character, "Stun")
 		end)
@@ -1288,8 +1159,7 @@ local function testStatusService(results: { Check })
 
 		conn:Disconnect()
 
-		-- REVIEW-M3-01 L4: Block's parry window (value 1) flips itself to
-		-- the block hold (value 0) on the shared loop, without anything
+		-- Block's parry window (value 1) flips to the block hold (value 0) on the shared loop without
 		-- re-Applying.
 		StatusService.Apply(character, "Block", nil, { value = 1 })
 		expect(results, "StatusService: Has is true right after Apply", StatusService.Has(character, "Block"))
@@ -1309,8 +1179,7 @@ local function testStatusService(results: { Check })
 		character:Destroy()
 	end
 
-	-- AUDIT M18: applying to (or removing from, or querying) a character
-	-- that's already gone must never error.
+	-- Applying to, removing from or querying a gone character never errors.
 	do
 		local character = Instance.new("Model")
 		character.Parent = scratch
@@ -1333,9 +1202,6 @@ local function testStatusService(results: { Check })
 	scratch:Destroy()
 end
 
--- M3-02: MovementService's pure helpers (stack math, dash cooldown,
--- low-health thresholds), the same "test the math directly" approach as
--- HealthService's self-test.
 local function testMovementService(results: { Check })
 	do
 		expect(results, "MovementService: no modifiers is 1.0 (full speed)", MovementService.EffectiveMultiplier({}) == 1.0)
@@ -1402,12 +1268,8 @@ local function testMovementService(results: { Check })
 		)
 	end
 
-	-- REVIEW-M3-02 #3: the Dash bridge marker used to never clear
-	-- (ClearModifier bailed on a missing entry.modifiers entry, since the
-	-- marker was written directly through writeBridgeModifier instead of
-	-- SetModifier). IntFold/IntFold.MovementSpeed are pre-created here so
-	-- MovementService's own background bridge resolution (normally a
-	-- bounded real-time wait) resolves synchronously inside Register.
+	-- IntFold/IntFold.MovementSpeed are pre-created so MovementService's background bridge resolution
+	-- (normally a bounded real-time wait) resolves synchronously in Register.
 	do
 		local scratch = Instance.new("Folder")
 		scratch.Name = "SelfTestMovementServiceDash"
@@ -1451,15 +1313,10 @@ local function testMovementService(results: { Check })
 	end
 end
 
--- M3-03/M3-FIX3-S/M3-FIX4-S: CombatService's pure facing/block-decision
--- helpers, the hit-check geometry against fake models parented in
--- Workspace (spatial queries only find parts actually in the DataModel),
--- knockout at 0 HP, the AttackStart/AttackHit/AttackCancel chain-hit
--- sequence (window/order checks, per-hit cancel),
--- feints, bleed and the count-based knockback, and the NPC server-timed
--- sequence. Block's meter-drain (HealthService.SpendBlock) needs a real
--- Player and is exercised by the playtester instead - ResolveBlock's own
--- pure test below covers the decision logic that path feeds into.
+-- Covers pure facing/block helpers, hit geometry against fake models parented in Workspace (spatial
+-- queries only find parts in the DataModel), knockout, the AttackStart/AttackHit/AttackCancel
+-- sequence, feints, bleed, knockback and NPC timing. Block's meter drain needs a real Player and is
+-- left to the playtester.
 local function testCombatService(results: { Check })
 	do
 		expect(
@@ -1525,7 +1382,7 @@ local function testCombatService(results: { Check })
 		local outOfRange = buildFakeCombatant("SelfTestOutOfRange", Vector3.new(500, 5, 50), Vector3.new(500, 5, 51))
 		local behind = buildFakeCombatant("SelfTestBehind", Vector3.new(500, 5, -3), Vector3.new(500, 5, -4))
 
-		-- REVIEW-M3-03 M5: only a registered combatant can be hit.
+		-- Only a registered combatant can be hit.
 		CombatService.Register(inRange, nil, "Fist")
 		CombatService.Register(outOfRange, nil, "Fist")
 		CombatService.Register(behind, nil, "Fist")
@@ -1564,7 +1421,7 @@ local function testCombatService(results: { Check })
 		StatusService.Register(target)
 
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
-		targetHumanoid.Health = 3 -- less than the Jab's 4 damage
+		targetHumanoid.Health = 3
 
 		local hit = fist.chain[1]
 		CombatService.ApplyHit(attacker, target, fist, hit, 1)
@@ -1603,14 +1460,9 @@ local function testCombatService(results: { Check })
 		character:Destroy()
 	end
 
-	-- REVIEW-M3-03 L8 / REVIEW-M3-04 L1: the full parry-window -> cooldown
-	-- -> held -> broken sequence, against a fake (no-Player) blocker - which
-	-- only works at all because a target with no real Player gets its own
-	-- HealthService-backed block meter now (via HealthService.Register, the
-	-- same as NpcService gives a real NPC). Uses Fist hit 1's blockDrain
-	-- (per-hit, not the old flat Combat.Block.drainPerHit), and derives the
-	-- hit count from Config.Health.MaxBlock: a parry costs nothing, then
-	-- floor(MaxBlock / drain) hits are held and the next one breaks.
+	-- Full parry window -> cooldown -> held -> broken sequence against a fake blocker (which gets a
+	-- HealthService-backed block meter via Register). Uses Fist hit 1's blockDrain: a parry is free,
+	-- floor(Config.Health.MaxBlock / drain) hits are held, the next one breaks.
 	do
 		local attacker = buildFakeCombatant("SelfTestParryAttacker", Vector3.new(800, 5, 0), Vector3.new(800, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestParryBlocker", Vector3.new(800, 5, 2), Vector3.new(800, 5, 0))
@@ -1634,7 +1486,7 @@ local function testCombatService(results: { Check })
 		)
 
 		StatusService.Remove(attacker, "Stun")
-		CombatService.ApplyHit(attacker, blocker, fist, jab, 1) -- drains blockDrain
+		CombatService.ApplyHit(attacker, blocker, fist, jab, 1)
 		expect(
 			results,
 			"CombatService: a second hit right after a parry can't parry again (AUDIT H5 cooldown) and drains the meter instead",
@@ -1649,11 +1501,10 @@ local function testCombatService(results: { Check })
 			blockInfoAfter ~= nil and (blockInfoAfter.data :: any).value == 0
 		)
 
-		CombatService.ApplyHit(attacker, blocker, fist, jab, 1) -- drains again
+		CombatService.ApplyHit(attacker, blocker, fist, jab, 1)
 		expect(results, "CombatService: the block still holds while the meter lasts", StatusService.Has(blocker, "Block"))
 
-		-- Keep hitting until it breaks: at most heldHits more (one drain
-		-- already spent above, plus slack for regen during the wait).
+		-- At most heldHits more hits (one drain already spent, plus slack for regen).
 		for _ = 1, heldHits + 2 do
 			if not StatusService.Has(blocker, "Block") then
 				break
@@ -1672,13 +1523,9 @@ local function testCombatService(results: { Check })
 		blocker:Destroy()
 	end
 
-	-- M3-FIX3-S/M3-FIX4-S: the animation-marker chain-hit sequence -
-	-- order/window checks. Nothing here asserts an UPPER bound on how much
-	-- time has passed right after a task.wait (BUG-23/BUG-26: task.wait is
-	-- a lower bound only, and Studio can overshoot it) - only that "clearly
-	-- too early" and "clearly too late" reports get dropped, with wide
-	-- margins either side, and that index-mismatch rejections (duplicate/
-	-- out-of-order) are timing-independent altogether.
+	-- Chain-hit sequence checks. task.wait is only a lower bound, so only "clearly too early" and
+	-- "clearly too late" reports are asserted dropped, with wide margins; duplicate/out-of-order
+	-- rejections are timing-independent.
 	do
 		local attacker = buildFakeCombatant("SelfTestHitAttacker", Vector3.new(900, 5, 0), Vector3.new(900, 5, 1))
 		StatusService.Register(attacker)
@@ -1688,11 +1535,8 @@ local function testCombatService(results: { Check })
 		local started = CombatService.AttackStart(attacker)
 		expect(results, "CombatService: AttackStart begins an attack and sets Attacking", started == true and attacker:GetAttribute("Attacking") == true)
 
-		-- REVIEW-M3-FIX3-S M1: waits are measured against CombatService's OWN
-		-- clock (Workspace:GetServerTimeNow(), matching attack.startedAt) and
-		-- top up to a target ELAPSED time rather than chaining fixed waits, so
-		-- an earlier task.wait's overshoot (BUG-23/BUG-26: it's a lower bound
-		-- only) can't push a later check past the watchdog by surprise.
+		-- Waits target an elapsed time on CombatService's own clock (Workspace:GetServerTimeNow())
+		-- instead of chaining fixed waits, so overshoot cannot push a later check past the watchdog.
 		local function waitUntilElapsed(targetElapsed: number)
 			local remaining = targetElapsed - (Workspace:GetServerTimeNow() - startedAt)
 			if remaining > 0 then
@@ -1700,30 +1544,27 @@ local function testCombatService(results: { Check })
 			end
 		end
 
-		CombatService.AttackHit(attacker, 1) -- reported immediately: well before hit 1's window opens
+		CombatService.AttackHit(attacker, 1)
 		expect(
 			results,
 			"CombatService: an AttackHit reported too early is dropped (hit 1 not consumed)",
 			attacker:GetAttribute("Attacking") == true
 		)
 
-		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2) -- safely inside hit 1's window
-		CombatService.AttackHit(attacker, 1) -- the real, accepted report
-		CombatService.AttackHit(attacker, 1) -- a duplicate report for the same, now-landed hit
+		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
+		CombatService.AttackHit(attacker, 1)
+		CombatService.AttackHit(attacker, 1)
 		expect(
 			results,
 			"CombatService: a duplicate AttackHit for a landed hit is dropped, not double-counted",
 			attacker:GetAttribute("Attacking") == true
 		)
 
-		CombatService.AttackHit(attacker, 5) -- wildly out of order
+		CombatService.AttackHit(attacker, 5)
 		expect(results, "CombatService: an out-of-order AttackHit index is dropped", attacker:GetAttribute("Attacking") == true)
 
-		-- M3-FIX4-S: cancel is per-hit now - hit 1 (Jab) already landed, but
-		-- hit 2 (Cross) is the new "next unlanded hit", and elapsed so far
-		-- (~hit 1's own window midpoint) is still well inside hit 2's own
-		-- cancelUntil - so this is accepted, unlike the old flat
-		-- "only before hit 1 lands" rule.
+		-- Cancel is per-hit: hit 2 is the next unlanded hit and elapsed time is still inside its
+		-- cancelUntil, so it is accepted.
 		CombatService.AttackCancel(attacker)
 		expect(
 			results,
@@ -1753,11 +1594,10 @@ local function testCombatService(results: { Check })
 		end
 
 		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
-		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2; the chain now waits for a click
+		CombatService.AttackHit(attacker, 1)
 
-		-- M3-FIX5: the second click. Too soon (inside Chain.HitGap) is
-		-- dropped; an AttackHit(2) while waiting is dropped too; after the
-		-- gap the continue is accepted and hit 2's own segment starts.
+		-- Second click: too soon (inside Chain.HitGap) is dropped, as is AttackHit(2) while waiting;
+		-- after the gap the continue is accepted and hit 2's segment starts.
 		local continuedTooSoon = CombatService.AttackContinue(attacker, 2)
 		expect(results, "CombatService: AttackContinue inside Chain.HitGap is dropped (too soon)", continuedTooSoon == false)
 		CombatService.AttackHit(attacker, 2)
@@ -1775,11 +1615,8 @@ local function testCombatService(results: { Check })
 			continued == true and attacker:GetAttribute("CurrentHitIndex") == 2
 		)
 
-		-- Just past hit 2's window (measured from the continue: max +
-		-- tolerance + 0.1), but well short of that segment's watchdog (max +
-		-- tolerance + Chain.WatchdogMargin) - late enough to be rejected, not
-		-- so late the watchdog has already ended the attack out from under
-		-- this check.
+		-- Just past hit 2's window but short of its watchdog: late enough to be rejected, not so late
+		-- the attack already ended.
 		local remaining = (fist.chain[2].hitWindow.max + tolerance + 0.1) - (Workspace:GetServerTimeNow() - continuedAt)
 		if remaining > 0 then
 			task.wait(remaining)
@@ -1805,8 +1642,8 @@ local function testCombatService(results: { Check })
 		CombatService.AttackCancel(attacker)
 		expect(results, "CombatService: AttackCancel inside the cancel window ends the attack", attacker:GetAttribute("Attacking") == false)
 
-		-- Fist's cancelInto is "Any": free to act again immediately, no
-		-- extra cooldown - clearAttack always uses a 0 delay on a cancel.
+		-- Fist's cancelInto is "Any": free to act again immediately (clearAttack uses a 0 delay on
+		-- cancel).
 		local restarted = CombatService.AttackStart(attacker)
 		expect(
 			results,
@@ -1827,7 +1664,7 @@ local function testCombatService(results: { Check })
 		local tolerance = Config.Combat.HitTolerance
 
 		CombatService.AttackStart(attacker)
-		task.wait(fist.chain[1].cancelUntil + tolerance + 0.3) -- run well past hit 1's own cancelUntil
+		task.wait(fist.chain[1].cancelUntil + tolerance + 0.3)
 		CombatService.AttackCancel(attacker)
 		expect(
 			results,
@@ -1840,11 +1677,9 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- REVIEW-M3-FIX4-S H3: cancelling is free only before any hit in the
-	-- chain has landed (the block right above this one). Cancelling AFTER a
-	-- hit already landed costs the same cooldown a full chain would
-	-- (NextAttackAt = startedAt + Chain.Recovery + chain[1].hitWindow.min),
-	-- so "land hit 1, cancel, restart" can't out-DPS a full chain.
+	-- Cancelling is free only before any hit has landed; after one lands it costs the full-chain
+	-- cooldown (NextAttackAt = startedAt + Chain.Recovery + chain[1].hitWindow.min), so land-cancel-
+	-- restart cannot out-DPS a full chain.
 	do
 		local attacker = buildFakeCombatant("SelfTestCancelAfterHitAttacker", Vector3.new(980, 5, 0), Vector3.new(980, 5, 1))
 		StatusService.Register(attacker)
@@ -1861,9 +1696,9 @@ local function testCombatService(results: { Check })
 		end
 
 		waitUntilElapsed((fist.chain[1].hitWindow.min + fist.chain[1].hitWindow.max) / 2)
-		CombatService.AttackHit(attacker, 1) -- lands, nextHit becomes 2
+		CombatService.AttackHit(attacker, 1)
 
-		CombatService.AttackCancel(attacker) -- still well inside hit 2's own cancelUntil
+		CombatService.AttackCancel(attacker)
 		expect(results, "CombatService: AttackCancel after hit 1 landed still ends the attack", attacker:GetAttribute("Attacking") == false)
 
 		local restartedTooSoon = CombatService.AttackStart(attacker)
@@ -1882,9 +1717,8 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- M3-FIX7-S (Bryan, 2026-10-02): ANY landed hit interrupts a target
-	-- that is mid-attack - a hit still unlanded, or the chain waiting for
-	-- its next click. The check runs synchronously inside ApplyHit.
+	-- Any landed hit interrupts a mid-attack target (unlanded hit, or chain waiting for its next
+	-- click), synchronously inside ApplyHit.
 	do
 		local attacker = buildFakeCombatant("SelfTestInterruptLightAttacker", Vector3.new(1000, 5, 0), Vector3.new(1000, 5, 3))
 		local target = buildFakeCombatant("SelfTestInterruptLightTarget", Vector3.new(1000, 5, 3), Vector3.new(1000, 5, 0))
@@ -1911,8 +1745,7 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- The same interrupt applies while the chain is frozen on a punch waiting
-	-- for the next click (between segments).
+	-- The same interrupt applies while the chain is frozen waiting for the next click.
 	do
 		local attacker = buildFakeCombatant("SelfTestInterruptWaitAttacker", Vector3.new(1005, 5, 0), Vector3.new(1005, 5, 3))
 		local target = buildFakeCombatant("SelfTestInterruptWaitTarget", Vector3.new(1005, 5, 3), Vector3.new(1005, 5, 0))
@@ -1927,7 +1760,7 @@ local function testCombatService(results: { Check })
 		if remaining > 0 then
 			task.wait(remaining)
 		end
-		CombatService.AttackHit(target, 1) -- lands (or whiffs); the chain now waits for the next click
+		CombatService.AttackHit(target, 1)
 		expect(
 			results,
 			"CombatService: interrupt setup - the chain is waiting for a click",
@@ -1949,10 +1782,8 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- A Stun/TrueStun turning on (block break, parry, dev command)
-	-- interrupts an attack in progress. That path is a deferred
-	-- BindableEvent (StatusService.Changed), so this polls for it instead of
-	-- asserting immediately (BUG-26's own fix pattern).
+	-- A Stun/TrueStun turning on interrupts an attack; that path is a deferred BindableEvent
+	-- (StatusService.Changed), so poll for it.
 	do
 		local target = buildFakeCombatant("SelfTestInterruptStunTarget", Vector3.new(1010, 5, 3), Vector3.new(1010, 5, 0))
 		StatusService.Register(target)
@@ -1972,8 +1803,8 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- M3-FIX7-S: the authored timings are track seconds, divided once by
-	-- Config.Combat.ComboSpeed at load (Combat.luau).
+	-- Authored timings are track seconds, divided once by Config.Combat.ComboSpeed at load
+	-- (Combat.luau).
 	do
 		local trackMin = 0.35
 		expect(
@@ -1983,9 +1814,8 @@ local function testCombatService(results: { Check })
 		)
 	end
 
-	-- M3-FIX4-S rule 3/4: Dagger's cancelInto is "Jab" - a successful cancel
-	-- immediately throws chain[1] as a new, feint-flagged attack; if THAT
-	-- gets blocked (not parried), the attacker eats Recovery.
+	-- Dagger's cancelInto is "Jab": a successful cancel throws chain[1] as a new feint-flagged attack;
+	-- if that is blocked (not parried) the attacker eats Recovery.
 	do
 		local attacker = buildFakeCombatant("SelfTestFeintAttacker", Vector3.new(1040, 5, 0), Vector3.new(1040, 5, 1))
 		StatusService.Register(attacker)
@@ -2004,12 +1834,8 @@ local function testCombatService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- REVIEW-M3-FIX4-S H2: a blocked feint doesn't just punish with Recovery -
-	-- it ends the feinter's WHOLE chain outright, so a later chain hit can
-	-- never sneak through once Recovery's own (short) duration runs out.
-	-- Drives a REAL in-progress attack (AttackStart, not just a bare
-	-- ApplyHit call) so entry.attack is genuinely live when the blocked hit
-	-- resolves, exercising the actual clearAttack path.
+	-- A blocked feint ends the feinter's whole chain, not just Recovery. Drives a real in-progress
+	-- attack so entry.attack is live when the blocked hit resolves.
 	do
 		local attacker = buildFakeCombatant("SelfTestFeintBlockedAttacker", Vector3.new(1060, 5, 0), Vector3.new(1060, 5, 1))
 		local blocker = buildFakeCombatant("SelfTestFeintBlockedBlocker", Vector3.new(1060, 5, 2), Vector3.new(1060, 5, 0))
@@ -2024,11 +1850,10 @@ local function testCombatService(results: { Check })
 		CombatService.AttackStart(attacker)
 		expect(results, "CombatService: feint-block setup - the attacker has a real attack in progress", attacker:GetAttribute("Attacking") == true)
 
-		-- Not parrying (past the parry window, still holding): resolves to
-		-- a plain Blocked outcome, not a Parried one.
+		-- Not parrying (past the parry window, still holding) resolves to a plain Blocked outcome.
 		StatusService.Apply(blocker, "Block", nil, { value = 0 })
 
-		CombatService.ApplyHit(attacker, blocker, dagger, dagger.chain[1], 1, true) -- feint = true
+		CombatService.ApplyHit(attacker, blocker, dagger, dagger.chain[1], 1, true)
 		expect(
 			results,
 			"CombatService: a blocked (not parried) feint hit punishes the attacker with Recovery",
@@ -2040,7 +1865,7 @@ local function testCombatService(results: { Check })
 			attacker:GetAttribute("Attacking") == false
 		)
 
-		CombatService.AttackHit(attacker, 2) -- the chain's own hit 2, reported anyway
+		CombatService.AttackHit(attacker, 2)
 		expect(
 			results,
 			"CombatService: a hit-2 report after a blocked feint is dropped - there's no attack left to advance",
@@ -2056,8 +1881,8 @@ local function testCombatService(results: { Check })
 		blocker:Destroy()
 	end
 
-	-- M3-FIX4-S rule 6: HitCount +1 per landed hit from any source; the
-	-- `everyHits`th (6th) hit knocks back and resets the count to 0.
+	-- HitCount +1 per landed hit from any source; every `everyHits`th (6th) hit knocks back and resets
+	-- the count.
 	do
 		local attacker = buildFakeCombatant("SelfTestHitCountAttacker", Vector3.new(1080, 5, 0), Vector3.new(1080, 5, 1))
 		local target = buildFakeCombatant("SelfTestHitCountTarget", Vector3.new(1080, 5, 3), Vector3.new(1080, 5, 0))
@@ -2071,7 +1896,7 @@ local function testCombatService(results: { Check })
 			expect(results, string.format("CombatService: HitCount is %d after %d landed hit(s)", i, i), target:GetAttribute("HitCount") == i)
 		end
 
-		CombatService.ApplyHit(attacker, target, fist, jab, 1) -- the 6th
+		CombatService.ApplyHit(attacker, target, fist, jab, 1)
 		expect(
 			results,
 			"CombatService: HitCount resets to 0 once it reaches Combat.Knockback.everyHits (a knockback fired)",
@@ -2085,9 +1910,8 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- M3-FIX4-S rule 7: Bleed stacks (refreshing, not extending, its own
-	-- duration on a new stack) and HealthService ticks it once a second,
-	-- floored at 1 HP so it never knocks out by itself.
+	-- Bleed stacks refresh (not extend) their duration; HealthService ticks it once a second, floored
+	-- at 1 HP.
 	do
 		local attacker = buildFakeCombatant("SelfTestBleedAttacker", Vector3.new(1100, 5, 0), Vector3.new(1100, 5, 1))
 		local target = buildFakeCombatant("SelfTestBleedTarget", Vector3.new(1100, 5, 3), Vector3.new(1100, 5, 0))
@@ -2098,16 +1922,14 @@ local function testCombatService(results: { Check })
 		CombatService.Register(target, nil, "Dagger")
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
 
-		local stab = dagger.chain[1] -- Light, bleedStacks = 1
+		local stab = dagger.chain[1]
 		for i = 1, (dagger.bleed :: Combat.BleedTrait).maxStacks do
 			CombatService.ApplyHit(attacker, target, dagger, stab, 1)
 			expect(results, string.format("CombatService: Bleed stacks to %d", i), target:GetAttribute("Bleed") == i)
 		end
 
-		-- HealthService's own shared regen/bleed loop (Config.Health.Tick)
-		-- does the actual ticking, not CombatService - 3 stacks x 1 dmg/s
-		-- outpaces Idle's 2/s regen, net -1 HP/tick, so this reaches (and
-		-- then holds at) the floor within a couple of real ticks.
+		-- HealthService's shared loop (Config.Health.Tick) does the ticking: 3 stacks x 1 dmg/s
+		-- outpaces Idle's 2/s regen, so HP reaches and holds at the floor within a couple of ticks.
 		targetHumanoid.Health = 2
 		local flooredAlive = pollUntil(4, function()
 			return targetHumanoid.Health == 1
@@ -2127,8 +1949,7 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- M3-FIX4-S rule 1: LightStun blocks Block (and parry) but the target
-	-- CAN still attack (and dash).
+	-- LightStun blocks Block (and parry) but the target can still attack and dash.
 	do
 		local attacker = buildFakeCombatant("SelfTestLightStunAttacker", Vector3.new(1120, 5, 0), Vector3.new(1120, 5, 1))
 		local target = buildFakeCombatant("SelfTestLightStunTarget", Vector3.new(1120, 5, 3), Vector3.new(1120, 5, 0))
@@ -2162,10 +1983,8 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- CombatService.Attack (the NPC entry point) starts a swing and
-	-- schedules every AttackHit report itself, at each hit's window
-	-- midpoint - polled with a deadline (BUG-26's own fix pattern), not a
-	-- fixed wait, since the scheduling itself uses task.delay.
+	-- CombatService.Attack (NPC entry point) schedules every AttackHit itself at each window midpoint
+	-- via task.delay, so poll with a deadline.
 	do
 		local attacker = buildFakeCombatant("SelfTestNpcAttacker", Vector3.new(1150, 5, 0), Vector3.new(1150, 5, 1))
 		local target = buildFakeCombatant("SelfTestNpcTarget", Vector3.new(1150, 5, 3), Vector3.new(1150, 5, 0))
@@ -2175,7 +1994,7 @@ local function testCombatService(results: { Check })
 		CombatService.Register(target, nil, "Fist")
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
 
-		CombatService.Attack(attacker) -- the NPC entry point: schedules every hit itself
+		CombatService.Attack(attacker)
 
 		local expectedDamage = fist.chain[1].damage + fist.chain[2].damage
 		local lastWindow = fist.chain[#fist.chain].hitWindow
@@ -2193,9 +2012,7 @@ local function testCombatService(results: { Check })
 		target:Destroy()
 	end
 
-	-- REVIEW-M5C-01 M5: HitLanded fires for EVERY landed hit, with the
-	-- hit's name (M3-FIX7-S: nothing applies the bridged `Hit` status any
-	-- more, so this is the signal FragilePackage/VIP rely on).
+	-- HitLanded fires for every landed hit with the hit's name (FragilePackage/VIP rely on it).
 	do
 		local attacker = buildFakeCombatant("SelfTestHitLandedAttacker", Vector3.new(1200, 5, 0), Vector3.new(1200, 5, 3))
 		local target = buildFakeCombatant("SelfTestHitLandedTarget", Vector3.new(1200, 5, 3), Vector3.new(1200, 5, 0))
@@ -2235,8 +2052,8 @@ local function testCombatService(results: { Check })
 	scratch:Destroy()
 end
 
--- M3B-01: the combat stance - SetStance gating (locked/knocked), AttackStart
--- rejected outside the stance, and the tool -> style mapping.
+-- Combat stance: SetStance gating (locked/knocked), AttackStart rejected outside the stance, tool ->
+-- style mapping.
 local function testCombatStance(results: { Check })
 	local scratch = Instance.new("Folder")
 	scratch.Name = "SelfTestCombatStance"
@@ -2288,9 +2105,8 @@ local function testCombatStance(results: { Check })
 			startedUnlocked == true and character:GetAttribute("InCombat") == true
 		)
 
-		-- REVIEW-M3B-01 H1: still InCombat (from the SetStance(true) just
-		-- above) when the knockout lands - onStatusChanged's Knocked branch
-		-- has to be what drops it, not a caller remembering to leave first.
+		-- Still InCombat from the SetStance(true) above when the knockout lands; onStatusChanged's
+		-- Knocked branch must drop it.
 		StatusService.Apply(character, "Knocked", 5)
 		expect(results, "CombatService: a knockout drops a player out of the combat stance on its own", character:GetAttribute("InCombat") ~= true)
 
@@ -2306,13 +2122,12 @@ local function testCombatStance(results: { Check })
 		character:Destroy()
 	end
 
-	-- REVIEW-M3B-01 H1's own guard: an NPC (owner == nil) is always
-	-- InCombat by design and a knockout must never touch that.
+	-- An NPC (owner == nil) is always InCombat by design; a knockout must never touch that.
 	do
 		local character = buildFakeCombatant("SelfTestStanceNpc", Vector3.new(1210, 5, 0), Vector3.new(1210, 5, 1))
 		StatusService.Register(character)
 		CombatService.Register(character, nil, "Fist")
-		character:SetAttribute("InCombat", true) -- NpcService's own job normally, not CombatService's
+		character:SetAttribute("InCombat", true)
 
 		StatusService.Apply(character, "Knocked", 5)
 		expect(results, "CombatService: a knockout never drops an NPC out of InCombat", character:GetAttribute("InCombat") == true)
@@ -2326,7 +2141,7 @@ local function testCombatStance(results: { Check })
 		local character = buildFakeCombatant("SelfTestToolAttacker", Vector3.new(1220, 5, 0), Vector3.new(1220, 5, 1))
 		StatusService.Register(character)
 		CombatService.Register(character, nil, "Fist")
-		character:SetAttribute("InCombat", true) -- no stance gating needed for this check
+		character:SetAttribute("InCombat", true)
 
 		local tool = Instance.new("Tool")
 		tool:SetAttribute("Weapon", "Dagger")
@@ -2339,7 +2154,7 @@ local function testCombatStance(results: { Check })
 		CombatService.AttackStart(character)
 		expect(results, "CombatService: tool-equip setup - an attack is in progress", character:GetAttribute("Attacking") == true)
 
-		tool:Destroy() -- unequip
+		tool:Destroy()
 		local unequipped = pollUntil(1, function()
 			return character:GetAttribute("WeaponSet") == "Fist" and character:GetAttribute("Attacking") == false
 		end)
@@ -2353,9 +2168,7 @@ local function testCombatStance(results: { Check })
 	scratch:Destroy()
 end
 
--- M3-04: BehaviorTree node semantics (Selector short-circuit, Sequence
--- failure, Running propagation, Cooldown), pure and self-contained - no
--- Roblox instances needed, just counters and canned statuses.
+-- BehaviorTree node semantics, pure and self-contained (counters and canned statuses).
 local function testBehaviorTree(results: { Check })
 	local function counted(status: BehaviorTree.Status): (BehaviorTree.Node, () -> number)
 		local calls = 0
@@ -2417,11 +2230,8 @@ local function testBehaviorTree(results: { Check })
 	end
 end
 
--- M3-04: the Target tree's give-up transition, driven with a fake
--- blackboard (a plain table, not even a real AiController) and fake
--- Model/Humanoid/HumanoidRootPart instances - StatusService.Has on an
--- unregistered character is just false, so "IsKnocked" never gets in the
--- way here.
+-- The Target tree's give-up transition, driven with a fake blackboard and fake
+-- Model/Humanoid/HumanoidRootPart.
 local function testNpcService(results: { Check })
 	local scratch = Instance.new("Folder")
 	scratch.Name = "SelfTestNpcService"
@@ -2474,12 +2284,8 @@ local function testNpcService(results: { Check })
 	scratch:Destroy()
 end
 
--- M3B-02: each trainer tree ticks without error through its main branch,
--- against a real registered trainer (so CombatService.Attack/AttackCancel/
--- SetBlocking and MovementService.Dash have live state to act on) and a
--- plain fake target Model whose Attacking/CurrentHitIndex attributes are set
--- directly (a trainer only ever reads those two off its target, so there's
--- nothing for the target to be registered with).
+-- Each trainer tree ticks through its main branch against a real registered trainer and a fake target
+-- Model whose Attacking/CurrentHitIndex attributes are set directly (the only two a trainer reads).
 local function testTrainers(results: { Check })
 	local scratch = Instance.new("Folder")
 	scratch.Name = "SelfTestTrainers"
@@ -2527,7 +2333,7 @@ local function testTrainers(results: { Check })
 		MovementService.Register(trainer, nil)
 		CombatService.Register(trainer, nil, "Fist")
 		pcall(function()
-			trainer:SetAttribute("InCombat", true) -- a live trainer is always in the stance, same as any NPC
+			trainer:SetAttribute("InCombat", true)
 		end)
 	end
 
@@ -2634,10 +2440,9 @@ local function testTrainers(results: { Check })
 		tree.Tick(bb)
 		expect(results, "Trainers: Feinting Mohammed throws its Fist chain", trainer:GetAttribute("Attacking") == true)
 
-		-- He cancels hit 2 on the first tick that sees it. Tick at the real AI
-		-- cadence (Config.Npc.TickSeconds) so a cancel the server would
-		-- refuse as too late is caught: a refused cancel lets hit 2 land, so
-		-- the target would lose more than hit 1's damage.
+		-- He cancels hit 2 on the first tick that sees it. Ticking at the real AI cadence
+		-- (Config.Npc.TickSeconds) catches a cancel the server would refuse as too late, which would
+		-- let hit 2 land.
 		local targetHumanoid = target:FindFirstChildOfClass("Humanoid") :: Humanoid
 		local cancelled = false
 		local deadline = os.clock() + 2
@@ -2679,10 +2484,8 @@ local function testTrainers(results: { Check })
 		teardown(trainer, target)
 	end
 
-	-- REVIEW-M3B-02: the non-reacting branch is a lone jab, not the full
-	-- Sam-style chain - with the target idle, she should throw (Attacking
-	-- true) and then self-cancel at her own hit 2 (Attacking false again,
-	-- before hit 2's own hitWindow would resolve it naturally).
+	-- The non-reacting branch is a lone jab: with the target idle she throws (Attacking true) then
+	-- self-cancels at hit 2 before its window resolves.
 	do
 		local trainer = buildFakeCombatant("SelfTestDalilaRhythm", Vector3.new(2085, 5, 0), Vector3.new(2085, 5, 1))
 		local target = buildFakeCombatant("SelfTestDalilaRhythmTarget", Vector3.new(2085, 5, 3), Vector3.new(2085, 5, 4))
@@ -2731,10 +2534,8 @@ local function testTrainers(results: { Check })
 	scratch:Destroy()
 end
 
--- M3B-05: LifeService.HandleDeath's own branch logic (a live Humanoid.Died
--- round-trip needs a real Player - Player.Character/:LoadCharacter() aren't
--- fakeable the way DataService.ResetToTemplate's plain data table is, same
--- limitation as DataService.Wipe/.NewLife above).
+-- LifeService.HandleDeath's branch logic; a live Humanoid.Died round-trip needs a real Player, so it
+-- is not tested here.
 local function testLifeService(results: { Check })
 	do
 		local data = ({ Character = { LivesLeft = 3 } } :: any) :: SaveSchema.Data
@@ -2764,12 +2565,8 @@ local function testLifeService(results: { Check })
 		)
 	end
 
-	-- REVIEW-M3B-05 M2(a): a combat knockout never reaches Humanoid.Died in
-	-- the first place - CombatService.ApplyHit floors a lethal hit at 1 HP
-	-- and applies Knocked instead of ever letting Health hit 0, so
-	-- LifeService.onDied is never even invoked. No Player/DataService is
-	-- involved in this scratch rig at all, which is itself the point: this
-	-- combat path has no LivesLeft to touch.
+	-- A combat knockout never reaches Humanoid.Died: CombatService.ApplyHit floors a lethal hit at 1
+	-- HP and applies Knocked, so LifeService.onDied is not invoked and no LivesLeft is touched.
 	do
 		local attacker = Instance.new("Model")
 		attacker.Name = "SelfTestLifeKnockoutAttacker"
@@ -2789,7 +2586,7 @@ local function testLifeService(results: { Check })
 		targetHrp.Parent = target
 		local targetHumanoid = Instance.new("Humanoid")
 		targetHumanoid.MaxHealth = 100
-		targetHumanoid.Health = 3 -- less than the Jab's damage
+		targetHumanoid.Health = 3
 		targetHumanoid.Parent = target
 		target.Parent = Workspace
 
@@ -2809,13 +2606,10 @@ local function testLifeService(results: { Check })
 		attacker:Destroy()
 	end
 
-	-- REVIEW-M3B-05 M2(b): a fatal heart attack calls AgeService.
-	-- StartDeathSequence with cause = "heartAttack" unconditionally (see
-	-- AgeService.onBirthday/.ForceHeartAttack) - it never reads
-	-- Character.LivesLeft at all, so it still wipes even with a full 4 left.
-	-- DataService.NewLife's own reset pattern (capture Meta.Lives/keep the
-	-- combat unlock, ResetToTemplate, restore them) is exactly what that
-	-- path runs into.
+	-- A fatal heart attack calls AgeService.StartDeathSequence with cause = "heartAttack"
+	-- unconditionally, never reading Character.LivesLeft, so it wipes even with a full 4. NewLife's
+	-- reset pattern (capture Meta.Lives / keep the combat unlock, ResetToTemplate, restore) is what
+	-- that path runs.
 	do
 		local data = ({
 			Version = Config.Data.SchemaVersion,
@@ -2859,9 +2653,8 @@ local function fakeMissionData(routes: { [string]: number }?, streak: number?, i
 	} :: any) :: SaveSchema.Data
 end
 
--- A canned nextRoll sequence for Cities.RollModifiers's self-test: returns
--- the queued values in order, so a modifier draw is fully deterministic
--- with no math.random involved.
+-- Canned nextRoll sequence for Cities.RollModifiers: returns the queued values in order, so draws are
+-- deterministic.
 local function cannedRolls(queue: { number }): (max: number) -> number
 	local i = 0
 	return function(_max: number): number
@@ -2874,15 +2667,9 @@ local function fakeMod(key: string, payMultiplier: number): Cities.ModifierRoll
 	return { key = key, displayName = key, chance = 20, text = "", payMultiplier = payMultiplier }
 end
 
--- M5C-01: delivery missions. Every check here is against the pure core
--- (Cities.RollModifiers/CombinedMultiplier, MissionService.FactorsFor/
--- BaseAmount/ComputePay/CurrentPay/TrySettle/MarkFailed/OnArrival/
--- CanIntercept/GetOrRoll/ApplySuccess/ApplyFailure/ApplyInterception/
--- IsOnRoute) - no Player, Instance or remote involved, same as every other
--- service's self-test in this file.
+-- Delivery missions: every check is against the pure core (no Player, Instance or remote).
 local function testMissionService(results: { Check })
-	-- BUG-46: each city's destination position is its own `<key>Delivery`
-	-- part; two cities never share one; a missing part refuses (nil).
+	-- Each city's destination position is its own `<key>Delivery` part; two cities never share one.
 	do
 		local missionFolder = game:GetService("Workspace"):FindFirstChild("MAP")
 		missionFolder = if missionFolder then missionFolder:FindFirstChild("MISSION") else nil
@@ -2895,7 +2682,7 @@ local function testMissionService(results: { Check })
 			expect(results, "MissionService (BUG-46): Saleh's destination is SalehDelivery's position", posB == partB.Position)
 			expect(results, "MissionService (BUG-46): two cities give two different destination positions", posA ~= posB)
 		else
-			-- BUG-59: a missing part now yields a placeholder, not a refusal.
+			-- A missing part yields a placeholder, not a refusal.
 			expect(results, "MissionService (BUG-59): with the drop-off parts missing, destinations come from placeholders", posA ~= nil and posB ~= nil)
 		end
 		for _, root in { game:GetService("Workspace"), missionFolder, game:GetService("Workspace"):FindFirstChild("MissionPlaceholders") } do
@@ -2911,7 +2698,7 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (BUG-46): an unknown city has no destination position", MissionService.DestinationPositionFor("Nope") == nil)
 	end
 
-	-- BUG-59: placeholder drop-offs, against a temp folder (never the real map).
+	-- Placeholder drop-offs, against a temp folder (never the real map).
 	do
 		local folder = Instance.new("Folder")
 		local city = "Rathole"
@@ -2941,8 +2728,8 @@ local function testMissionService(results: { Check })
 		folder2:Destroy()
 	end
 
-	-- BUG-59 (review): the sweep removes stale placeholders at any depth and
-	-- the whole MissionPlaceholders folder, and leaves real parts alone.
+	-- The sweep removes stale placeholders at any depth and the whole MissionPlaceholders folder, and
+	-- leaves real parts alone.
 	do
 		local root = Instance.new("Folder")
 		local nested = Instance.new("Folder")
@@ -2963,14 +2750,13 @@ local function testMissionService(results: { Check })
 		root:Destroy()
 	end
 
-	-- BUG-56: scale/offset math.
 	do
 		expect(results, "MissionService (BUG-56): a normal package is not scaled", MissionService.PackScale(false) == 1)
 		expect(results, "MissionService (BUG-56): HeavyCargo scales by Config.Missions.HeavyCargoPackScale", MissionService.PackScale(true) == Config.Missions.HeavyCargoPackScale and MissionService.PackScale(true) > 1)
 		expect(results, "MissionService (BUG-56): torso offsets scale with the pack", MissionService.ScaledOffset(1.25, 2) == 2.5 and MissionService.ScaledOffset(0.3, 1) == 0.3)
 	end
 
-	-- BUG-55: Highlight on the package only; HV gets the ordinary beacon schedule.
+	-- Highlight on the package only; HV gets the ordinary beacon schedule.
 	do
 		local fakeCharacter = Instance.new("Model")
 		local fakePack = Instance.new("Model")
@@ -2989,7 +2775,6 @@ local function testMissionService(results: { Check })
 		fakeCharacter:Destroy()
 	end
 
-	-- BUG-51: overhead display settings on a fake character.
 	do
 		local fake = Instance.new("Model")
 		local humanoid = Instance.new("Humanoid")
@@ -3005,8 +2790,8 @@ local function testMissionService(results: { Check })
 		fake:Destroy()
 	end
 
-	-- BUG-50: a replaced save re-publishes the purse. ResetToTemplate +
-	-- RefreshAttributes on a stand-in instance (SetAttribute works on any).
+	-- A replaced save re-publishes the purse (ResetToTemplate + RefreshAttributes on a stand-in
+	-- instance).
 	do
 		local stand: any = Instance.new("Folder")
 		local data = ({
@@ -3028,26 +2813,24 @@ local function testMissionService(results: { Check })
 		expect(results, "DataService (BUG-50): exposes the Replaced signal", DataService.Replaced ~= nil)
 	end
 
-	-- BUG-60: every Rukh gain fires the flutter signal (AlignmentChanged),
-	-- the same one a `.rukh` dev grant fires - both go through AddDeed.
+	-- Every Rukh gain fires the flutter signal (AlignmentChanged), same as a `.rukh` dev grant; both
+	-- go through AddDeed.
 	expect(results, "RankService (BUG-60): a +1 Gold deed with no alignment flip still flutters Gold", RankService.FlutterAlignment("White", "White", "Gold", 1) == "Gold Rukh")
 	expect(results, "RankService (BUG-60): a Black deed flutters Black", RankService.FlutterAlignment("Gold", "Gold", "Black", 2) == "Black Rukh")
 	expect(results, "RankService (BUG-60): an alignment flip announces the new alignment", RankService.FlutterAlignment("White", "Gold", "Gold", 5) == "Gold Rukh")
 	expect(results, "RankService (BUG-60): a loss or zero grant stays silent", RankService.FlutterAlignment("Gold", "Gold", "Gold", 0) == nil and RankService.FlutterAlignment("Gold", "Gold", "Gold", -3) == nil)
 
-	-- H7: route validation rejects an off-route city.
+	-- Route validation rejects an off-route city.
 	expect(results, "MissionService: IsOnRoute accepts a real route destination", MissionService.IsOnRoute("Qarzin", "Saleh"))
 	expect(results, "MissionService: IsOnRoute rejects a destination not on that city's route", not MissionService.IsOnRoute("Qarzin", "Rathole"))
 	expect(results, "MissionService: IsOnRoute rejects an unknown city key entirely", not MissionService.IsOnRoute("Nope", "Qarzin"))
 
-	-- The two old broken route names are fixed to real cities (never nil).
+	-- Route names resolve to real cities (never nil).
 	expect(results, "Cities: Saleh's route no longer names the broken \"JADDATYSHUT\"", MissionService.IsOnRoute("Saleh", "JaddatysHut"))
 	expect(results, "Cities: Rathole's route no longer names the broken \"CITYF\"", MissionService.IsOnRoute("Rathole", "Sahraqin"))
 
-	-- REVIEW-M5C-01 H1: every real modifier's displayName is the old
-	-- MissionDeliniation.Modifiers[*].Name, word for word - the client
-	-- matches pop-outs (and Time Crunch/Courier Loop's own special cases)
-	-- on this field, not the internal key.
+	-- The client matches pop-outs (and Time Crunch/Courier Loop special cases) on each modifier's
+	-- displayName, not the internal key.
 	local expectedDisplayNames: { [string]: string } = {
 		TimeCrunch = "Time Crunch",
 		CourierLoop = "Courier Loop",
@@ -3064,8 +2847,7 @@ local function testMissionService(results: { Check })
 		end
 	end
 
-	-- L15: payout formula with the old numbers - rank 1 (the dead "level"
-	-- used to divide by zero here) no longer errors or blows up.
+	-- Payout formula at rank 1 does not divide by zero.
 	do
 		local pay = MissionService.ComputePay(1, 4, 0, {})
 		expect(results, "MissionService: ComputePay at rank 1 doesn't divide by zero (AUDIT L15)", pay == math.floor(1 + 10 / 1 + 4 * 1.25 + 0 * 1.25))
@@ -3076,19 +2858,16 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: ComputePay applies the modifier multiplier on top of the base (AUDIT L14)", withMods == math.floor(base * 1.2))
 	end
 
-	-- Bryan's refinement: CurrentPay is ComputePay's live equivalent once
-	-- some rolled modifiers may have failed mid-run - a failed one's own
-	-- multiplier just drops out of the sum, everything else still counts.
+	-- CurrentPay is ComputePay's live equivalent: a failed modifier's multiplier drops out of the sum,
+	-- everything else still counts.
 	do
 		local base = MissionService.BaseAmount(2, 10, 3)
 		local modifiers = { fakeMod("TimeCrunch", 1.2), fakeMod("HeavyCargo", 1.3) }
 		local allIntact = MissionService.CurrentPay(base, modifiers, {})
 		expect(results, "MissionService: CurrentPay with nothing failed matches ComputePay", allIntact == MissionService.ComputePay(2, 10, 3, modifiers))
 
-		-- M5/Bryan's refinement: a timer expiry or a landed hit against
-		-- FragilePackage/VIP marks the modifier failed and drops its share
-		-- of the payout - the run itself was never touched here at all
-		-- (there's no run in this test, only the pure pay math).
+		-- A timer expiry or a landed hit against FragilePackage/VIP marks the modifier failed and
+		-- drops its share of the payout (pure pay math only, no run).
 		local timeCrunchFailed = MissionService.CurrentPay(base, modifiers, { TimeCrunch = true })
 		expect(
 			results,
@@ -3100,9 +2879,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: every modifier failed leaves just the base amount", bothFailed == base)
 	end
 
-	-- M4: Clear the Route's bonus is conditional (earned a knockout during
-	-- the run) - CurrentPay treats a not-yet-cleared CleartheRoute exactly
-	-- like any other failed modifier once finishRun marks it so.
+	-- Clear the Route's bonus is conditional (needs a knockout during the run); CurrentPay treats a
+	-- not-yet-cleared one like any failed modifier once finishRun marks it.
 	do
 		local base = MissionService.BaseAmount(1, 0, 0)
 		local modifiers = { fakeMod("CleartheRoute", 1.5) }
@@ -3111,9 +2889,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (M4): Clear the Route's multiplier only counts when credited", cleared == math.floor(base * 1.5) and notCleared == base)
 	end
 
-	-- Bryan's refinement: MarkFailed is idempotent - a caller fires the
-	-- ModifierFailed update/log exactly once per modifier per run, even if
-	-- the same trigger (e.g. several landed hits) fires repeatedly.
+	-- MarkFailed is idempotent: ModifierFailed fires once per modifier per run even if the trigger
+	-- repeats.
 	do
 		local failedKeys: { [string]: boolean } = {}
 		expect(results, "MissionService: MarkFailed succeeds the first time", MissionService.MarkFailed(failedKeys, "FragilePackage"))
@@ -3121,8 +2898,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: a different key still marks independently", MissionService.MarkFailed(failedKeys, "VIP"))
 	end
 
-	-- REVIEW-M5C-01B F3: every MissionUpdate carries the failed-keys SET as
-	-- an array, so the client can re-grey them on any rebuild.
+	-- Every MissionUpdate carries the failed-keys set as an array so the client can re-grey them on
+	-- rebuild.
 	do
 		local failedKeys: { [string]: boolean } = { TimeCrunch = true, VIP = true }
 		local list = MissionService.FailedKeysList(failedKeys)
@@ -3131,18 +2908,15 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (F3): FailedKeysList is empty when nothing has failed", #MissionService.FailedKeysList({}) == 0)
 	end
 
-	-- REVIEW-M5C-01B F4 (Bryan's call): the interceptor is paid the amount
-	-- as it stood BEFORE the knocking blow's own Fragile/VIP reaction, and
-	-- Clear the Route never counts for an interceptor at all.
+	-- The interceptor is paid the amount as it stood BEFORE the knocking blow's own Fragile/VIP
+	-- reaction, and Clear the Route never counts for an interceptor.
 	do
 		local base = MissionService.BaseAmount(1, 0, 0)
 		local modifiers = { fakeMod("VIP", 2), fakeMod("FragilePackage", 1.3) }
 
-		-- The killing blow's own onHitLanded marks VIP/Fragile failed in
-		-- `failedKeys`, but `preHitFailedKeys` (snapshotted just before that)
-		-- is still empty - InterceptPay must use the snapshot, not the
-		-- post-hit state, so the SAME hit that ends the run doesn't also
-		-- cost the interceptor what it just failed for the courier.
+		-- The killing blow marks VIP/Fragile failed in `failedKeys`, but `preHitFailedKeys`
+		-- (snapshotted just before) is still empty; InterceptPay must use the snapshot so the same hit
+		-- does not cost the interceptor what it failed for the courier.
 		local postHitFailedKeys: { [string]: boolean } = { VIP = true, FragilePackage = true }
 		local preHitFailedKeys: { [string]: boolean } = {}
 		local intercepted = MissionService.InterceptPay(base, modifiers, preHitFailedKeys)
@@ -3153,17 +2927,15 @@ local function testMissionService(results: { Check })
 				and intercepted > MissionService.CurrentPay(base, modifiers, postHitFailedKeys)
 		)
 
-		-- Clear the Route is force-excluded for an interceptor regardless of
-		-- whether it happened to already be credited (the courier's own
-		-- ApplySuccess/finishRun path is the only place it should ever pay).
+		-- Clear the Route is excluded for an interceptor even if already credited; only the courier's
+		-- ApplySuccess/finishRun path pays it.
 		local withClearTheRoute = { fakeMod("CleartheRoute", 1.5) }
 		local interceptedWithCtr = MissionService.InterceptPay(base, withClearTheRoute, {})
 		expect(results, "MissionService (F4): Clear the Route never counts toward an interceptor's payout", interceptedWithCtr == base)
 	end
 
-	-- REVIEW-M5C-01B F5: the wire builder itself is pinned, not just the
-	-- underlying data (H1's own fix) - `{key, name, chance, text}`, `name`
-	-- is the DISPLAY name, `payMultiplier` never leaks onto the wire.
+	-- The wire builder is pinned: `{key, name, chance, text}`, `name` is the display name, and
+	-- `payMultiplier` never goes on the wire.
 	do
 		local wire = MissionService.WireModifiers({
 			{ key = "TimeCrunch", displayName = "Time Crunch", chance = 20, text = "Complete in 3:00.", payMultiplier = 1.2 },
@@ -3177,9 +2949,8 @@ local function testMissionService(results: { Check })
 		)
 	end
 
-	-- The intercepted mark (Bryan): OfferMultiplier halves per stack with a
-	-- 10% floor - 0.5, 0.25, floor at 0.1 once the halving would drop below
-	-- it (0.5^4 = 0.0625).
+	-- OfferMultiplier halves per stack with a 10% floor: 0.5, 0.25, then 0.1 (0.5^4 = 0.0625 would
+	-- fall below it).
 	do
 		expect(results, "MissionService (intercepted mark): 0 stacks is no reduction at all", MissionService.OfferMultiplier(0) == 1)
 		expect(results, "MissionService (intercepted mark): 1 stack halves the offer", MissionService.OfferMultiplier(1) == 0.5)
@@ -3188,9 +2959,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (intercepted mark): 4+ stacks floors at 0.1, never reaches 0", MissionService.OfferMultiplier(4) == 0.1 and MissionService.OfferMultiplier(10) == 0.1)
 	end
 
-	-- ApplyOfferMultiplier/MarkIntercepted/ClearIntercepted: the pure pieces
-	-- board offers, a courier's own reduced payout, and one delivery washing
-	-- the mark away are all built from.
+	-- ApplyOfferMultiplier/MarkIntercepted/ClearIntercepted are the pure pieces behind board offers, a
+	-- courier's reduced payout, and a delivery washing the mark away.
 	do
 		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier halves and floors", MissionService.ApplyOfferMultiplier(101, 0.5) == 50)
 		expect(results, "MissionService (intercepted mark): ApplyOfferMultiplier at 1x changes nothing", MissionService.ApplyOfferMultiplier(101, 1) == 101)
@@ -3202,10 +2972,7 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (intercepted mark): ClearIntercepted wipes every stack, not just decrements", data.Progress.Intercepted == 0)
 	end
 
-	-- Board offers are reduced the same way a courier's own finish payout
-	-- is - both are BaseAmount/ComputePay combined with the SAME
-	-- OfferMultiplier, so a marked player's board and their eventual payout
-	-- never disagree.
+	-- Board offers and a courier's finish payout use the same OfferMultiplier, so they never disagree.
 	do
 		local rankIndex, population, streak = 2, 10, 3
 		local modifiers = { fakeMod("TimeCrunch", 1.2) }
@@ -3216,13 +2983,10 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (intercepted mark): two stacks quarters the offer, not just halves it again", twoStackOffer == math.floor(base * 0.25))
 	end
 
-	-- REVIEW-M5C-01C H1: the exact scenario the review found broken - open
-	-- a board (cached), get intercepted on a DIFFERENT run, reopen the SAME
-	-- board without it ever re-rolling: the cached destination must still
-	-- show the new, reduced price (and a run started from it must carry
-	-- the new offerMultiplier and withhold the interceptor's Black Rukh),
-	-- because the fix stores NO multiplier in the cache at all - PreviewPay
-	-- applies whatever `Progress.Intercepted` says right now, every call.
+	-- Reopening a cached board after being intercepted on a different run must show the reduced price
+	-- (and a run from it carries the new offerMultiplier and withholds the interceptor's Black Rukh):
+	-- the cache stores no multiplier; PreviewPay applies the current `Progress.Intercepted` on every
+	-- call.
 	do
 		local cache: { [string]: any } = {}
 		local modifiers = { fakeMod("HeavyCargo", 1.3) }
@@ -3233,18 +2997,16 @@ local function testMissionService(results: { Check })
 			return { key = "Qarzin", modifiers = modifiers, baseAmount = baseAmount }
 		end
 
-		-- First open: 0 stacks, cached at "full price".
+		-- First open: 0 stacks, cached at full price.
 		local dest = MissionService.GetOrRoll(cache, "Qarzin", roll)
 		local fullPrice = MissionService.PreviewPay(dest.baseAmount, dest.modifiers, MissionService.OfferMultiplier(0))
 		expect(results, "MissionService (H1): the destination is rolled exactly once", rolls == 1)
 
-		-- Simulate this player getting intercepted on a DIFFERENT run (their
-		-- own stacks go 0 -> 1) - the cached entry for THIS destination is
-		-- never touched, never re-rolled, never told about the mark.
+		-- Intercepted on a different run: stacks go 0 -> 1; the cached entry is untouched and never
+		-- re-rolled.
 		local stacksAfterInterception = 1
 
-		-- Reopen the SAME board: GetOrRoll hits the cache (still 1 total
-		-- roll), but PreviewPay must reflect the NEW multiplier.
+		-- Reopen: GetOrRoll hits the cache (still 1 roll) but PreviewPay reflects the new multiplier.
 		local destAgain = MissionService.GetOrRoll(cache, "Qarzin", roll)
 		local halvedPrice = MissionService.PreviewPay(destAgain.baseAmount, destAgain.modifiers, MissionService.OfferMultiplier(stacksAfterInterception))
 		expect(results, "MissionService (H1): reopening the board doesn't re-roll the cached destination", rolls == 1)
@@ -3254,17 +3016,14 @@ local function testMissionService(results: { Check })
 			halvedPrice == math.floor(fullPrice * 0.5) and halvedPrice < fullPrice
 		)
 
-		-- Starting a run from that (still-cached) destination must carry
-		-- the CURRENT multiplier, not the one that was in effect when it
-		-- was first rolled.
+		-- A run started from the cached destination carries the current multiplier.
 		local runOfferMultiplier = MissionService.OfferMultiplier(stacksAfterInterception)
 		expect(results, "MissionService (H1): a run started from the reopened board gets offerMultiplier 0.5, not 1.0", runOfferMultiplier == 0.5)
 		local intercepted = MissionService.ApplyOfferMultiplier(MissionService.InterceptPay(destAgain.baseAmount, destAgain.modifiers, {}), runOfferMultiplier)
 		expect(results, "MissionService (H1): intercepting a run from the reopened board pays the reduced amount", intercepted == halvedPrice)
 		expect(results, "MissionService (H1): intercepting a run from the reopened board earns NO Black Rukh", not MissionService.InterceptorEarnsBlackRukh(runOfferMultiplier))
 
-		-- A clearing delivery resets stacks to 0 - reopening again (same
-		-- cache entry, still never re-rolled) must show full price again.
+		-- A clearing delivery resets stacks to 0; reopening shows full price again.
 		local stacksAfterClearing = 0
 		local destOnceMore = MissionService.GetOrRoll(cache, "Qarzin", roll)
 		local fullPriceAgain = MissionService.PreviewPay(destOnceMore.baseAmount, destOnceMore.modifiers, MissionService.OfferMultiplier(stacksAfterClearing))
@@ -3272,10 +3031,9 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (H1): after a clearing delivery, the reopened board is back to full price", fullPriceAgain == fullPrice)
 	end
 
-	-- The interceptor of an ALREADY-marked victim: reduced Copper (the same
-	-- OfferMultiplier applied to their own InterceptPay) and no Black Rukh -
-	-- but a FIRST-ever interception (0 stacks beforehand) still pays full
-	-- price and a real Black Rukh.
+	-- The interceptor of an already-marked victim gets reduced Copper (OfferMultiplier applied to
+	-- InterceptPay) and no Black Rukh; a first-ever interception pays full price and a real Black
+	-- Rukh.
 	do
 		local base = MissionService.BaseAmount(1, 0, 0)
 		local modifiers = { fakeMod("HeavyCargo", 1.3) }
@@ -3298,9 +3056,8 @@ local function testMissionService(results: { Check })
 		)
 	end
 
-	-- H2: the CourierLoop return leg sends "Started" with a phase change,
-	-- never the old "Cleared" - REVIEW-M5C-01 H2, the client tears the
-	-- whole run down on anything but "Started".
+	-- The CourierLoop return leg sends "Started" with a phase change, never "Cleared"; the client
+	-- tears the run down on anything but "Started".
 	do
 		local nextPhase, state = MissionService.OnArrival("ToDestination", true)
 		expect(results, "MissionService (H2): arriving with CourierLoop rolled switches to Returning", nextPhase == "Returning")
@@ -3313,10 +3070,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: arriving back at the origin on the return leg means the run is done", returningPhase == nil)
 	end
 
-	-- M2 (lead decision, Bryan may change it): an interception only pays if
-	-- the courier is genuinely out on the route - far enough from the
-	-- origin OR far enough into the run - so two accounts can't farm the
-	-- reward with no travel at all.
+	-- An interception only pays if the courier is genuinely out on the route (far enough from the
+	-- origin or far enough into the run), so two accounts cannot farm it with no travel.
 	do
 		expect(results, "MissionService (M2): far enough from the origin counts as interceptable", MissionService.CanIntercept(Config.Missions.InterceptMinStuds, 0))
 		expect(results, "MissionService (M2): far enough into the run counts even standing still", MissionService.CanIntercept(0, Config.Missions.InterceptMinSeconds))
@@ -3327,9 +3082,8 @@ local function testMissionService(results: { Check })
 		)
 	end
 
-	-- M3: reopening the board reuses the same roll for a destination - the
-	-- old MissionHandler's CityMods, ported - instead of re-rolling every
-	-- time (which used to let a player fish for VIP/HighlyValuable).
+	-- Reopening the board reuses the same roll for a destination instead of re-rolling, so a player
+	-- cannot fish for VIP/HighlyValuable.
 	do
 		local cache: { [string]: number } = {}
 		local rolls = 0
@@ -3342,20 +3096,20 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService (M3): GetOrRoll only rolls once per key", rolls == 1)
 		expect(results, "MissionService (M3): a cache hit returns the exact same value as the first roll", first == second)
 
-		cache["Qarzin"] = nil -- simulates clearCachedRoll once a run to it starts
+		cache["Qarzin"] = nil
 		local third = MissionService.GetOrRoll(cache, "Qarzin", roll)
 		expect(results, "MissionService (M3): clearing the cache lets the next open roll fresh", rolls == 2 and third == 2)
 	end
 
-	-- AUDIT H8: a run settles (pays out/fails/is intercepted) exactly once.
+	-- A run settles (pays out/fails/is intercepted) exactly once.
 	do
 		local run = ({ settled = false } :: any) :: MissionService.SettleState
 		expect(results, "MissionService: TrySettle succeeds the first time", MissionService.TrySettle(run))
 		expect(results, "MissionService: TrySettle refuses a second time (paid exactly once)", not MissionService.TrySettle(run))
 	end
 
-	-- AUDIT M21: a real, persisted streak - success advances it and records
-	-- route history; any failure (including an interception) resets it.
+	-- A persisted streak: success advances it and records route history; any failure (including
+	-- interception) resets it.
 	do
 		local data = fakeMissionData(nil, 2)
 		MissionService.ApplySuccess(data, "Qarzin")
@@ -3369,8 +3123,7 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: ApplyFailure never touches Routes", data.Progress.Routes["Qarzin"] == 2)
 	end
 
-	-- AUDIT H8: interception pays the attacker's Bounty and never touches
-	-- the courier's own save at all (nothing to farm back and forth).
+	-- Interception pays the attacker's Bounty and never touches the courier's save.
 	do
 		local attackerData = fakeMissionData()
 		local courierData = fakeMissionData(nil, 5)
@@ -3381,8 +3134,7 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: the courier's streak still breaks on the interception (ApplyFailure)", courierData.Progress.DeliveryStreak == 0)
 	end
 
-	-- AUDIT M12: modifier roll weights respect route history and city
-	-- safety - not a global counter nothing ever updated.
+	-- Modifier roll weights respect route history and city safety.
 	do
 		local inactive = fakeMissionData({ Qarzin = 3 })
 		local active = fakeMissionData({ Qarzin = 20 })
@@ -3396,9 +3148,8 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: FactorsFor.SafeRoute is false for a War-Torn city (Rathole)", not warTorn.SafeRoute)
 	end
 
-	-- Cities.RollModifiers: VIP/CleartheRoute only ever appear on an unsafe
-	-- route (AUDIT M12 - reqs are checked for real now); HighlyValuable only
-	-- on a safe one. A canned roll sequence makes every draw deterministic.
+	-- VIP/CleartheRoute only appear on an unsafe route, HighlyValuable only on a safe one. A canned
+	-- roll sequence makes every draw deterministic.
 	do
 		local safe = { PlayerActive = false, SafeRoute = true }
 		local unsafe = { PlayerActive = false, SafeRoute = false }
@@ -3420,17 +3171,13 @@ local function testMissionService(results: { Check })
 		expect(results, "Cities: CleartheRoute is only eligible on an unsafe route", poolHas(eligibleUnsafe, "CleartheRoute") and not poolHas(eligibleSafe, "CleartheRoute"))
 		expect(results, "Cities: TimeCrunch/HeavyCargo/FragilePackage have no reqs - eligible either way", poolHas(eligibleSafe, "TimeCrunch") and poolHas(eligibleUnsafe, "TimeCrunch"))
 
-		-- Roll 1 in the (ordered) eligible pool always lands on its first
-		-- entry (TimeCrunch, chance 20, cumulative 1-20); a gate roll of 6
-		-- fails the "<= 5" 50% check for a second draw, so exactly one
-		-- modifier comes back - fully deterministic, no math.random.
+		-- Roll 1 in the eligible pool lands on its first entry (TimeCrunch, chance 20, cumulative
+		-- 1-20); a gate roll of 6 fails the "<= 5" check for a second draw, so exactly one modifier.
 		local rolled = Cities.RollModifiers(unsafe, cannedRolls({ 1, 6 }))
 		expect(results, "Cities: RollModifiers's first draw picks the lowest-cumulative eligible modifier for roll 1", #rolled == 1 and rolled[1].key == "TimeCrunch")
 
-		-- A gate roll of 5 (<= 5) DOES pass, so a second draw happens; the
-		-- next roll (11, past CourierLoop's cumulative 10 but within its
-		-- own+CourierLoop's 13) lands on HeavyCargo. A second gate of 4
-		-- (> 3) then stops it at exactly two modifiers.
+		-- A gate roll of 5 passes, so a second draw happens; roll 11 (past CourierLoop's cumulative 10
+		-- but within 13) lands on HeavyCargo. A second gate of 4 (> 3) stops at exactly two.
 		local rolledTwo = Cities.RollModifiers(unsafe, cannedRolls({ 1, 5, 11, 4 }))
 		expect(
 			results,
@@ -3439,8 +3186,7 @@ local function testMissionService(results: { Check })
 		)
 	end
 
-	-- Cities.CombinedMultiplier: a bare mission (no modifiers) pays exactly
-	-- the base amount; each modifier adds its own (payMultiplier - 1).
+	-- A bare mission pays the base amount; each modifier adds (payMultiplier - 1).
 	expect(results, "Cities: CombinedMultiplier is 1 with no modifiers rolled", Cities.CombinedMultiplier({}) == 1)
 	expect(
 		results,
@@ -3452,8 +3198,8 @@ end
 
 local SelfTestService = {}
 
--- M6: the shared world clock's pure maths and the `.time` dev command, and
--- CollisionService's group assignment on a fake folder of parts.
+-- The shared world clock's pure maths and the `.time` dev command, plus CollisionService's group
+-- assignment on a fake folder of parts.
 local function testWorld(results: { Check })
 	local D, N = Config.World.DayNight.DaySeconds, Config.World.DayNight.NightSeconds
 	local L = D + N
@@ -3518,8 +3264,7 @@ local function testWorld(results: { Check })
 	root:Destroy()
 end
 
--- M7-01: RagdollService folds the legacy EffectsService ragdoll; BUG-33's dev
--- combat lock; BUG-34's Dagger numbers (exported real seconds).
+-- RagdollService, the dev combat lock, and Dagger's numbers (exported real seconds).
 local function testRagdollAndLock(results: { Check })
 	local scratch = Instance.new("Folder")
 	scratch.Name = "SelfTestRagdollLock"
@@ -3562,14 +3307,14 @@ local function testRagdollAndLock(results: { Check })
 			humanoid:GetState() == Enum.HumanoidStateType.Physics and not humanoid:GetStateEnabled(Enum.HumanoidStateType.GettingUp)
 		)
 
-		StatusService.Apply(npc, "Knocked", 30) -- refresh: idempotent
+		StatusService.Apply(npc, "Knocked", 30)
 		StatusService.Remove(npc, "Knocked")
 		local cleared = pollUntil(2, function()
 			return torso:FindFirstChild("NeckJoint") == nil
 		end)
 		expect(results, "RagdollService: Knocked ending removes the joints", cleared and not RagdollService.IsRagdolled(npc))
 		expect(results, "RagdollService: GettingUp is re-enabled for the NPC", humanoid:GetStateEnabled(Enum.HumanoidStateType.GettingUp))
-		StatusService.Remove(npc, "Knocked") -- twice: no-op
+		StatusService.Remove(npc, "Knocked")
 		expect(results, "RagdollService: clearing twice does nothing", not RagdollService.IsRagdolled(npc))
 
 		StatusService.Unregister(npc)

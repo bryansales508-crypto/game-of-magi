@@ -1,6 +1,5 @@
 --!strict
--- Rukh alignment (DESIGN 3a): a mix of two hidden tallies (Gold/Black
--- deeds), not a single scale. Data + the one pure classifier function.
+-- Rukh alignment: a mix of two hidden tallies (Gold/Black deeds), not a single scale. Data plus the one pure classifier.
 
 export type Alignment = "White" | "Gold" | "Black" | "GoldBlack"
 

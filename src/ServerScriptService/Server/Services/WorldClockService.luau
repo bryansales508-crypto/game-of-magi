@@ -1,10 +1,8 @@
 --!strict
--- The shared world clock (M6 Phase 6B, docs/M6-PLAN.md). The server never
--- touches Lighting: it publishes two Workspace attributes once, and every
--- client derives Lighting.ClockTime from workspace:GetServerTimeNow() each
--- frame with the same maths as ClockTimeAt below (the client
--- LightingController mirrors it), so all players see the same hour, late
--- joiners are in sync, and no replication traffic exists.
+-- The shared world clock. The server never touches Lighting: it publishes Workspace attributes
+-- once, and every client derives Lighting.ClockTime from workspace:GetServerTimeNow() each
+-- frame with the same maths as ClockTimeAt below (client LightingController mirrors it), so all
+-- players see the same hour with no replication traffic.
 --
 --   DayStart   number  GetServerTimeNow() at which the current in-game day
 --                      began (at DawnHour, 06:00)

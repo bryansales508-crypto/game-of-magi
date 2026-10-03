@@ -1,5 +1,5 @@
 --!strict
--- Creates the Net remote folder and wires up the handlers this milestone owns.
+-- Creates the Net remote folder and wires up its handlers.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 

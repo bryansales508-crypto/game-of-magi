@@ -1,8 +1,5 @@
 --!strict
--- The save schema: the template ProfileStore deep-copies for every new
--- profile, and the migration chain that brings an old save up to the
--- current Config.Data.SchemaVersion. Data-only, so it's easy for Bryan to
--- read; DataService is the only thing that runs Migrate.
+-- The save schema: the template ProfileStore deep-copies for every new profile, and the migration chain that brings an old save up to Config.Data.SchemaVersion. Data-only; DataService is the only caller of Migrate.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -12,7 +9,6 @@ local Assets = require(ReplicatedFirst.Assets)
 
 export type Data = {
 	Version: number,
-	-- Same meanings as the old Stats folder (SYSTEMS.md section 1).
 	Character: {
 		FirstName: string,
 		Gender: number, -- 0 = not chosen yet
@@ -25,12 +21,7 @@ export type Data = {
 		MouthShape: number,
 		Height: number, -- 10 = "not rolled yet" sentinel
 		GrowthProfile: string, -- "" until AgeHandler rolls one; format "v1|start|adult|spurtAge|fatEnd"
-		-- Schema v3 (M3B-05): this character's own remaining lives
-		-- (Config.Life.LivesPerCharacter at birth). A real death
-		-- (Humanoid.Died - not a combat knockout) costs one; the death
-		-- that takes the last one wipes to a brand-new character with a
-		-- fresh count (LifeService.luau). Distinct from Meta.Lives below,
-		-- which counts CHARACTERS, not lives within one.
+		-- This character's remaining lives (Config.Life.LivesPerCharacter at birth). A real death (Humanoid.Died, not a combat knockout) costs one; the last one wipes to a brand-new character (LifeService). Not Meta.Lives, which counts characters.
 		LivesLeft: number,
 	},
 	Age: {
@@ -38,36 +29,17 @@ export type Data = {
 		TimePassed: number, -- os.time() of the last aging tick; set on first load
 		ProgToAge: number, -- seconds banked toward the next birthday
 	},
-	-- DESIGN.md section 3a.
 	Progress: {
 		Magoi: number,
 		GoldRukh: number,
 		BlackRukh: number,
 		Epithet: string,
-		-- Schema v2 (M4-01). The epithet choice offered at the last rank-up
-		-- (or the origin choice at birth) and not yet answered by
-		-- ChooseEpithet. nil when nothing is pending. Optional, so a v1 save
-		-- (missing the key entirely) already reads the same as nil - nothing
-		-- for Migrations[2] to fill in.
+		-- The epithet choice offered at the last rank-up (or origin choice at birth) and not yet answered by ChooseEpithet; nil when nothing is pending.
 		PendingEpithet: { rank: number, choices: { string } }?,
-		-- Schema v4 (M5C-01, delivery missions). A REAL consecutive-success
-		-- streak (AUDIT M21: the old "SuccessRate" folder reset on every
-		-- respawn and wasn't a streak at all) - +1 on a completed delivery,
-		-- reset to 0 on any failed/intercepted run. City key -> completed
-		-- delivery count (AUDIT M12: feeds the modifier roll's PlayerActive
-		-- factor for real, instead of a global counter nothing ever wrote
-		-- to); missing keys mean 0 deliveries to that city.
+		-- DeliveryStreak: consecutive successful deliveries; +1 on completion, reset to 0 on any failed/intercepted run. Routes: city key -> completed delivery count (missing = 0).
 		DeliveryStreak: number,
 		Routes: { [string]: number },
-		-- The intercepted mark (Bryan, added to schema v4 while M5C-01 is
-		-- still unmerged, so no new schema version): +1 every time this
-		-- player is intercepted mid-delivery, halving their own board
-		-- offers, their own reduced payout on a delivery they still
-		-- complete, and an interceptor's own payout while this is above 0
-		-- (MissionService.OfferMultiplier = max(0.1, 0.5^Intercepted)).
-		-- Cleared to 0 only by completing a delivery (after paying it at
-		-- the reduced rate) - a failed/left/re-intercepted run leaves it
-		-- alone.
+		-- Intercepted mark: +1 each time this player is intercepted mid-delivery; cleared to 0 only by completing a delivery (paid at the reduced rate). See MissionService.OfferMultiplier.
 		Intercepted: number,
 	},
 	Bounty: number,
@@ -82,24 +54,14 @@ export type Data = {
 		Hats: { string }, -- 3 slots; "" = empty
 		Inventory: { string }, -- item code strings
 	},
-	Family: { [string]: any }, -- reserved, DESIGN.md section 3
+	Family: { [string]: any },
 	Magic: { [string]: any }, -- reserved, DESIGN.md section 4
 	Meta: {
 		Created: number, -- os.time() of first load; 0 until then
 		LastSeen: number, -- os.time() of the most recent load
-		-- The INCARNATION count - how many characters this player has had
-		-- (bumped by DataService.NewLife). Not the same thing as
-		-- Character.LivesLeft above, which is how many lives the CURRENT
-		-- character has left before it becomes the next incarnation.
+		-- Incarnation count: how many characters this player has had (bumped by DataService.NewLife). Not Character.LivesLeft.
 		Lives: number,
-		-- Schema v3 (M3B-01): combat is earned, not automatic (DESIGN: a
-		-- tutorial unlocks it; until that ships, Config.Combat.
-		-- UnlockedByDefault blanket-unlocks everyone regardless of this).
-		-- Lives in Meta, not Progress: it's per-player forever, not per-life -
-		-- DataService.NewLife carries it over the same way it carries
-		-- Meta.Lives/.Created; only DataService.Wipe clears it (a wipe makes a
-		-- brand-new player). CombatService.SetStance/.SetUnlocked are the
-		-- only writers.
+		-- Combat unlock. Per-player forever, so DataService.NewLife carries it over and only DataService.Wipe clears it. Config.Combat.UnlockedByDefault blanket-unlocks everyone regardless. CombatService.SetStance/.SetUnlocked are the only writers.
 		Unlocks: { Combat: boolean },
 	},
 }
@@ -107,18 +69,7 @@ export type Data = {
 local SaveSchema = {}
 
 local template: Data = {
-	-- REVIEW-M3B-01 C1: a fresh template is already current - not 1, which
-	-- used to make Migrate walk a brand-new profile AND DataService.
-	-- ResetToTemplate (Wipe/NewLife) through every migration up to
-	-- Config.Data.SchemaVersion, including Migrations[3]'s own "grandfather
-	-- an EXISTING save" logic. That's backwards for anything actually new:
-	-- Migrations[3] set Meta.Unlocks.Combat = true and Character.LivesLeft
-	-- to a full count on a brand-new profile too, when the whole point of
-	-- both fields is that a genuinely new one starts at the template's own
-	-- values instead (false / already-full, respectively - Wipe/NewLife
-	-- never actually lost anything here, but the unlock flag becoming
-	-- unconditionally true broke the entire premise of "earned, not
-	-- automatic" the moment Bryan turns Config.Combat.UnlockedByDefault off).
+	-- A fresh template is already current, so Migrate and DataService.ResetToTemplate (Wipe/NewLife) never run migrations on a brand-new profile; Migrations[3] would otherwise grandfather combat access onto it.
 	Version = Config.Data.SchemaVersion,
 	Character = {
 		FirstName = "",
@@ -170,60 +121,25 @@ local template: Data = {
 	},
 }
 
--- Deep-copied per player by ProfileStore.New()'s template argument.
+-- Deep-copied per player by ProfileStore.New().
 SaveSchema.Template = template
 
--- One migration per version, keyed by the TARGET version it produces (so
--- Migrations[2] turns a v1 save into a v2 save). Migrate below runs
--- Migrations[data.Version + 1], then [+2], and so on up to
--- Config.Data.SchemaVersion. Schema v1 is the baseline: no real save is
--- ever below it, so there's no Migrations[1] entry.
+-- One migration per version, keyed by the target version it produces. Migrate runs Migrations[data.Version + 1] up to Config.Data.SchemaVersion. v1 is the baseline, so there is no Migrations[1].
 SaveSchema.Migrations = {} :: { [number]: (data: Data) -> () }
 
--- v2 (M4-01, DESIGN.md 3a) only adds Progress.PendingEpithet, an optional
--- field: a v1 save missing the key entirely already reads as nil, the
--- field's own "nothing pending" value, so there's nothing to backfill.
--- Kept as an explicit (empty) entry rather than left out, so Migrate's
--- version bump and the self-test's v1 -> v2 case both walk through a real
--- migration, not just the loop's own version-number increment.
+-- v2 adds the optional Progress.PendingEpithet; a missing key already reads as nil. Kept as an explicit empty entry so the version bump walks a real migration.
 SaveSchema.Migrations[2] = function(_data: Data) end
 
--- v3 (M3B-01/M3B-05): adds Meta.Unlocks.Combat and Character.LivesLeft.
--- Migrate is always called after Profile:Reconcile() (DataService.
--- onPlayerAdded), which already backfilled both from the template's own
--- defaults before this runs - so this only has to flip/set them, not
--- create them. Unlocks.Combat is explicitly true here (not left at the
--- template's false): an EXISTING save already had full combat access
--- before v3 ever existed, and nobody should lose that just because the
--- schema grew a flag for it. LivesLeft is set to a full
--- Config.Life.LivesPerCharacter too, but that line is redundant on
--- purpose (REVIEW-M3B-05 L3) - Reconcile's own backfill already gave an
--- existing save this exact value before Migrate ever runs, same as it did
--- for Unlocks.Combat's false; setting it again here just keeps both v3
--- fields explicit and symmetric, not because anything would otherwise be
--- missing. Only a save that's genuinely new as of v3 (never reconciled
--- before, so there's no "existing access"/"already has lives" to
--- preserve) starts at the template's own values.
+-- v3 adds Meta.Unlocks.Combat and Character.LivesLeft. Migrate runs after Profile:Reconcile(), which has already backfilled both from the template, so this only sets them. Unlocks.Combat is true because an existing save already had full combat access before v3.
 SaveSchema.Migrations[3] = function(data: Data)
 	data.Meta.Unlocks.Combat = true
 	data.Character.LivesLeft = Config.Life.LivesPerCharacter
 end
 
--- v4 (M5C-01): adds Progress.DeliveryStreak, Progress.Routes and (added
--- later, while M5C-01 was still unmerged, so no v5 for it) Progress.
--- Intercepted. An intentional no-op, same reasoning as Migrations[2] - all
--- three are new fields with a "nothing has happened yet" default (0 / an
--- empty table) that Profile:Reconcile() already backfills before Migrate
--- ever runs, so an existing pre-v4 save reads exactly like a save that's
--- always had them: no streak, no route history, no intercepted mark,
--- nothing to carry over from the old (never-persisted) SuccessRate folder.
--- Kept as an explicit entry, not left out, for the same reason Migrations[2]
--- is - the version bump always walks through a real migration function.
+-- v4 adds Progress.DeliveryStreak, Routes and Intercepted. A no-op: Profile:Reconcile() already backfills their defaults before Migrate runs.
 SaveSchema.Migrations[4] = function(_data: Data) end
 
--- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion,
--- in order. Call Profile:Reconcile() before this, so missing template keys
--- already exist and a migration can assume its own version's shape.
+-- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion, in order. Call Profile:Reconcile() first so a migration can assume its own version's shape.
 function SaveSchema.Migrate(data: Data)
 	for version = data.Version + 1, Config.Data.SchemaVersion do
 		local migration = SaveSchema.Migrations[version]
@@ -234,16 +150,7 @@ function SaveSchema.Migrate(data: Data)
 	end
 end
 
--- Rolls the same "new life" randomness the old MainStore2/init.server.luau
--- gave a first-time player: first name, hair colour, eye colour, face base
--- and mouth shape (exact ranges copied from its setNewPlayerData). Race and
--- Kingdom are fixed by the template now (old code fixed them too, per its
--- own TODOs); Gender, SkinTone, Height and GrowthProfile stay at the
--- template's "not chosen/rolled yet" values, chosen later by the player or
--- by AppearanceController/AgeHandler. Progress.Magoi is left alone (old
--- MaxMagoi's race-based roll doesn't apply now that Race is fixed to Human).
--- Called by DataService on a brand-new save (Meta.Created == 0) and after
--- DataService.Wipe.
+-- Rolls the first-time-player randomness: first name, hair colour, eye colour, face base and mouth shape. Gender, SkinTone, Height and GrowthProfile stay at the template's "not chosen/rolled yet" values (set later by the player, AppearanceController or AgeHandler). Called by DataService on a brand-new save (Meta.Created == 0) and after DataService.Wipe.
 function SaveSchema.NewLife(data: Data)
 	data.Character.FirstName = Assets.FirstNames.sindria.male[math.random(1, 50)]
 	data.Character.HairColor = {

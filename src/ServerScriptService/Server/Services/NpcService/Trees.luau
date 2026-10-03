@@ -1,12 +1,8 @@
 --!strict
--- The Dummy and Target behavior trees (M3-04, TRIAGE #20, fixes AUDIT
--- M19). Built fresh per NPC (BuildDummy()/BuildTarget() are factories, not
--- singletons), so Cooldown/Wait's own per-node timers never leak between
--- NPCs. Every Condition/Action here reads/writes an AiController.Blackboard
--- passed in as `blackboard: any` (matching BehaviorTree.luau's own generic
--- typing) - AiController.luau's actual Blackboard type is what the real
--- callers use; this module doesn't require AiController back (that would
--- be a cyclic ModuleScript require).
+-- The Dummy and Target behavior trees. Built fresh per NPC (BuildDummy()/BuildTarget()
+-- are factories, not singletons) so Cooldown/Wait timers never leak between NPCs. Every
+-- Condition/Action reads/writes an AiController.Blackboard passed in as `blackboard: any`;
+-- this module doesn't require AiController back (a cyclic require).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local PathfindingService = game:GetService("PathfindingService")
@@ -23,27 +19,19 @@ local log = Log.new("NpcService")
 
 local Trees = {}
 
--- ==================== shared conditions/actions ====================
 
 local function isKnocked(bb: any): boolean
 	return StatusService.Has(bb.character, "Knocked")
 end
 
--- M3-FIX7-S: every landed hit applies LightStun (nothing applies the "Hit"
--- status any more), so that is the "I was just hit" signal.
+-- Every landed hit applies LightStun (nothing applies "Hit"), so that is the "I was just hit" signal.
 local function wasHit(bb: any): boolean
 	return StatusService.Has(bb.character, "LightStun")
 end
 
--- Best-effort: plays an existing Animation by name if the NPC's art
--- happens to have one (Bryan's rig, untouched by this task - there's no
--- Studio access here to know what's actually there, so this only ever
--- reacts to what it finds; a missing animation is silently skipped, never
--- an error).
--- REVIEW-M3-04 L2: tries an existing named Animation instance on the
--- model first (Bryan's own art, if it's there); falls back to
--- Config.Npc.Animations[name] (an asset id, empty by default) so Bryan can
--- fill in either one without a code change.
+-- Best-effort: plays a named Animation instance on the model if its art has one, else
+-- falls back to Config.Npc.Animations[name] (an asset id, empty by default). A missing
+-- animation is silently skipped.
 local function playAnimationIfPresent(bb: any, name: "Walk" | "Run" | "Flinch")
 	local ok = pcall(function()
 		local animator = bb.humanoid:FindFirstChildOfClass("Animator")
@@ -83,11 +71,8 @@ local idle = BehaviorTree.Action(function(_bb: any): BehaviorTree.Status
 	return "Success"
 end)
 
--- ==================== Dummy ====================
 
--- Selector( Sequence(IsKnocked, Wait), Sequence(WasHit, Flinch), Idle ).
--- Old SYSTEMS 15: "only plays walk and run animations and flinches when
--- hit" - no chasing, no wandering.
+-- Selector( Sequence(IsKnocked, Wait), Sequence(WasHit, Flinch), Idle ): no chasing or wandering.
 function Trees.BuildDummy(): BehaviorTree.Node
 	return BehaviorTree.Selector({
 		BehaviorTree.Sequence({
@@ -99,7 +84,6 @@ function Trees.BuildDummy(): BehaviorTree.Node
 	})
 end
 
--- ==================== Target ====================
 
 local function distance(a: Vector3, b: Vector3): number
 	return (a - b).Magnitude
@@ -143,9 +127,8 @@ local attack = BehaviorTree.Action(function(bb: any): BehaviorTree.Status
 	return "Success"
 end)
 
--- Re-plans at most every 2s (a "small path cache" - AiController ticks
--- every 0.2s, recomputing a full path that often would be wasteful), and
--- falls back to a direct MoveTo if pathing fails.
+-- Re-plans at most every 2s (AiController ticks every 0.2s; a full path that often
+-- would be wasteful), and falls back to a direct MoveTo if pathing fails.
 local PATH_REPLAN_SECONDS = 2
 local WAYPOINT_REACHED_STUDS = 3
 
@@ -281,31 +264,18 @@ function Trees.BuildTarget(): BehaviorTree.Node
 	})
 end
 
--- ==================== Training dummies (M3B-02) ====================
--- docs/M3B-PLAN.md section 3, Bryan's roster, approved 2026-09-28. Every
--- trainer is Fist style, spawned by NpcService's `.dummy spawn` (not
--- auto-discovered like Dummy/Target above) - see NpcService for the
--- spawn/reset/name-tag side of this. Each tree only acts through
--- CombatService.Attack/.AttackCancel/.SetBlocking and MovementService.Dash -
--- AttackCancel joins the two Bryan named explicitly (Attack/SetBlocking/
--- Dash) because Feinting Mohammed's whole habit (throw the light, cancel
--- the telegraphed hit 2, re-jab) has no other way to exist: it's an
--- existing public CombatService entry point, not a new one.
---
--- A trainer never chases or wanders - it stands still and reacts, so
--- there's no path-finding half here the way Target has. Each decide
--- function below keeps its own tiny state machine on the blackboard itself
--- (`bb.phase`/`bb.phaseAt`, os.clock()-timed) rather than nesting more
--- BehaviorTree.Wait/Cooldown nodes: those keep one fixed timer in their own
--- closure that doesn't reset when the condition guarding them goes false
--- and true again (fine for Sam/Sinbad's flat rhythin below, wrong for
--- Jamal/Pete/Dalila's "the read has to restart if what they're reading
--- stops" reaction windows).
+-- Training dummies: every trainer is Fist style, spawned by NpcService's `.dummy spawn`
+-- (not auto-discovered like Dummy/Target). Each tree only acts through
+-- CombatService.Attack/.AttackCancel/.SetBlocking and MovementService.Dash. A trainer
+-- never chases or wanders; it stands still and reacts. Each decide function keeps its own
+-- tiny state machine on the blackboard (`bb.phase`/`bb.phaseAt`, os.clock()-timed) rather
+-- than nesting BehaviorTree.Wait/Cooldown nodes, whose fixed closure timer doesn't reset
+-- when the guarding condition flips (fine for Sam/Sinbad's flat rhythm, wrong for reaction
+-- windows that must restart).
 
--- The trainer's own target: prefers whatever bb.target already validly is
--- (a self-test sets this directly; a live trainer just keeps its last
--- acquired target as long as it's still alive) before trying to acquire a
--- new one (spawner in range, else the nearest player in range).
+-- The trainer's own target: prefers a valid bb.target (set directly by self-tests; a live
+-- trainer keeps its last acquired target while alive) before acquiring a new one
+-- (spawner in range, else nearest player in range).
 local function findTrainerTarget(bb: any): Model?
 	local engageRadius = (bb.engageRadius :: number?) or 12
 
@@ -347,9 +317,8 @@ local function engageTrainerTarget(bb: any): boolean
 	return found ~= nil
 end
 
--- x/z away from the target, in the trainer's own local space
--- (MovementService.Dash's own contract) - correct regardless of which way
--- the trainer happens to be facing.
+-- x/z away from the target in the trainer's own local space (MovementService.Dash's
+-- contract), correct whichever way the trainer faces.
 local function dashAway(bb: any): boolean
 	local root = targetRoot(bb)
 	if root == nil then
@@ -364,9 +333,8 @@ local function dashAway(bb: any): boolean
 	return MovementService.Dash(bb.character, localDir.X, localDir.Z)
 end
 
--- Straight Sam: two-hit Fist chain on a fixed rhythm, never cancels
--- (CombatService.Attack throws the WHOLE chain itself - there's nothing
--- here that could cancel it even if it wanted to), never blocks.
+-- Straight Sam: two-hit Fist chain on a fixed rhythm, never cancels or blocks
+-- (CombatService.Attack throws the whole chain).
 local function samDecide(bb: any, cfg: any): BehaviorTree.Status
 	local now = os.clock()
 	if bb.character:GetAttribute("Attacking") == true then
@@ -380,19 +348,16 @@ local function samDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Success"
 end
 
--- Turtle Tariq: holds block always, never attacks. "Never parries": once
--- already blocking, SetBlocking(true) is a no-op (CombatService.SetBlocking
--- returns early on an already-active block), so the one parry window
--- StatusService opened on the FIRST Apply expires on its own
+-- Turtle Tariq: holds block always, never attacks. Never parries: SetBlocking(true) on an
+-- already-active block is a no-op, so the parry window opened on the first Apply expires
 -- (Combat.Block.parryWindow) and is never refreshed.
 local function tariqDecide(bb: any, _cfg: any): BehaviorTree.Status
 	CombatService.SetBlocking(bb.character, true)
 	return "Success"
 end
 
--- Jabbing Jamal: idle (blocking) until the target STARTS any attack
--- (Attacking true), then jabs after reactionSeconds - the bait-and-punish
--- Bryan's teaching order wants here.
+-- Jabbing Jamal: idle (blocking) until the target STARTS any attack, then jabs after
+-- reactionSeconds.
 local function jamalDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
@@ -418,10 +383,9 @@ local function jamalDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Running"
 end
 
--- Parry Pete: idle until the target's hit 1 of a swing, then times a real
--- parry (a fresh Block Apply - not just holding it, which is what actually
--- opens a live parry window) reactionSeconds later. The read resets if the
--- swing ends (or moves past hit 1) before the timer fires.
+-- Parry Pete: idle until the target's hit 1 of a swing, then reactionSeconds later times a
+-- real parry (a fresh Block Apply; merely holding block opens no live parry window). The
+-- read resets if the swing ends or moves past hit 1 first.
 local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
@@ -452,13 +416,10 @@ local function peteDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Failure"
 end
 
--- Feinting Mohammed: throws the Fist chain, but cancels his OWN hit 2 on the
--- first tick that sees CurrentHitIndex == 2 (a scripted, telegraphed feint,
--- not a reaction to the target; no extra wait - the AI tick lag alone can
--- push a later cancel past cancelUntil + HitTolerance, which the server
--- refuses), then re-jabs immediately (Fist's cancelInto is "Any" - nothing
--- auto-fires the way Dagger's "Jab" would). Repeats on rhythmSeconds; never
--- blocks.
+-- Feinting Mohammed: throws the Fist chain, cancels his OWN hit 2 on the first tick that
+-- sees CurrentHitIndex == 2 (a scripted feint; no extra wait, since AI tick lag alone can
+-- push a later cancel past cancelUntil + HitTolerance, which the server refuses), then
+-- re-jabs immediately (Fist's cancelInto is "Any"). Repeats on rhythmSeconds; never blocks.
 local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 	local now = os.clock()
 	local attacking = bb.character:GetAttribute("Attacking") == true
@@ -476,8 +437,7 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 
 	if bb.phase == "thrown" then
 		if not attacking then
-			-- Landed clean some other way (a target it interrupted, e.g.) -
-			-- the rhythm timer restarts from here either way.
+			-- Landed clean some other way (e.g. a target it interrupted): the rhythm timer restarts.
 			bb.phase = "idle"
 			bb.phaseAt = now
 			return "Failure"
@@ -491,16 +451,14 @@ local function mohammedDecide(bb: any, cfg: any): BehaviorTree.Status
 		return "Running"
 	end
 
-	-- bb.phase == "cancelled"
 	CombatService.Attack(bb.character)
 	bb.phase = "idle"
 	bb.phaseAt = now
 	return "Success"
 end
 
--- Dashing Dalila: dashes away when the target starts any attack
--- (reactionSeconds later, the same read as Jamal); otherwise jabs on
--- rhythmSeconds like Sam's first hit alone.
+-- Dashing Dalila: dashes away when the target starts any attack (reactionSeconds later,
+-- like Jamal); otherwise jabs on rhythmSeconds.
 local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 	local target = bb.target :: Model
 	local now = os.clock()
@@ -520,15 +478,12 @@ local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 		return "Running"
 	end
 
-	-- REVIEW-M3B-02: a lone jab, not the full chain - the exact same
-	-- self-cancel Feinting Mohammed uses (CombatService.AttackCancel once
-	-- her own CurrentHitIndex becomes 2), just without his re-jab: she
-	-- just pokes once per rhythmSeconds and waits for the next cycle,
-	-- never committing to the second hit on her own initiative.
+	-- A lone jab, not the full chain: the same self-cancel Mohammed uses
+	-- (CombatService.AttackCancel once CurrentHitIndex becomes 2) without his re-jab; she
+	-- never commits to the second hit.
 	if bb.phase == "jabbing" then
 		if bb.character:GetAttribute("Attacking") ~= true then
-			-- Ended some other way (interrupted, say) before ever reaching
-			-- hit 2 - the rhythm timer restarts from here either way.
+			-- Ended some other way (e.g. interrupted) before reaching hit 2: the rhythm timer restarts.
 			bb.phase = "idle"
 			bb.phaseAt = now
 			return "Failure"
@@ -552,17 +507,12 @@ local function dalilaDecide(bb: any, cfg: any): BehaviorTree.Status
 	return "Running"
 end
 
--- Sparring Sinbad: picks throw/cancel/parry/dash by Config.Npc.Trainers.
--- SparringSinbad.weights every rhythmSeconds. "Reacts to the target's own
--- state" shows up in what each pick actually DOES rather than in the pick
--- itself: a cancel with nothing in progress, or a dash with no target in
--- range, are already safe no-ops in the services underneath (nothing extra
--- to gate here).
+-- Sparring Sinbad: picks throw/cancel/parry/dash by Config.Npc.Trainers.SparringSinbad.weights
+-- every rhythmSeconds. A cancel with nothing in progress, or a dash with no target in range,
+-- are safe no-ops in the services underneath.
 local SINBAD_ACTIONS = { "throw", "cancel", "parry", "dash" }
 
--- Exposed (not local) so self-tests can prove the weighting math directly,
--- with a fixed roll, independent of math.random() and of Config's own
--- frozen tables.
+-- Exposed so self-tests can prove the weighting math with a fixed roll.
 function Trees.WeightedPick(weights: { [string]: number }, roll: number): string
 	local total = 0
 	for _, key in SINBAD_ACTIONS do
@@ -612,11 +562,8 @@ local TRAINER_DECIDERS: { [string]: (bb: any, cfg: any) -> BehaviorTree.Status }
 	SparringSinbad = sinbadDecide,
 }
 
--- `cfgOverride` lets a self-test swap in tiny reaction/rhythm numbers (and,
--- for Sinbad, a skewed weight table) instead of waiting out Config.Npc.
--- Trainers' own real-feel placeholders, and instead of touching Config's
--- own frozen tables to do it. A live trainer (NpcService's `.dummy spawn`)
--- always calls this with no override.
+-- `cfgOverride` lets a self-test swap in tiny reaction/rhythm numbers (and, for Sinbad, a
+-- skewed weight table). A live trainer always calls this with no override.
 function Trees.BuildTrainer(key: string, cfgOverride: { [string]: any }?): BehaviorTree.Node
 	local decide = TRAINER_DECIDERS[key]
 	if decide == nil then

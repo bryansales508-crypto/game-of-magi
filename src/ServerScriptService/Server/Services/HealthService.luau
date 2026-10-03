@@ -1,20 +1,9 @@
 --!strict
--- Max health and health/block regen (TRIAGE #14, DESIGN.md section 3a "Rank
--- raises max health"). Rank/Epithet/Alignment are M4-01's RankService's
--- attributes now, not this service's - see RankService.luau.
--- Replaces the old StarterCharacterScripts/Health.server.luau and
--- BlockHealthRegen.server.luau. The old "revive from Knocked" countdown
--- those scripts also did (decrementing character.Effects.Knocked.Value
--- once a second) is gone (REVIEW-M3-03 L6): M3-03's CombatService/
--- StatusService are the sole authority on when a knockout ends now, so a
--- second, independent timer here was a real conflict, not just a
--- documented overlap - no health clamping loop besides regen.
---
--- Health/Block/MaxBlock/RegenTier aren't part of the save (SaveSchema has
--- no Health section): Humanoid.Health/MaxHealth is the one source of
--- truth for health, and Block is fresh runtime state per spawn, same as
--- the old IntFold.BlockInt was. Player attributes are the cheap
--- replication path the client (M2-04's HudController) reads.
+-- Max health and health/block regen. Rank raises max health; Rank/Epithet/Alignment attributes
+-- belong to RankService.
+-- Humanoid.Health/MaxHealth is the one source of truth for health; Block/MaxBlock/RegenTier are
+-- per-spawn runtime state (not saved). Player attributes are the replication path the HUD
+-- reads. Knockout end is owned by CombatService/StatusService, not here.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -26,9 +15,7 @@ local Ranks = require(ReplicatedStorage.Shared.Data.Ranks)
 local DataService = require(script.Parent.DataService)
 local PlayerService = require(script.Parent.PlayerService)
 local DevService = require(script.Parent.DevService)
--- M3-FIX4-S: the bleed tick below reads StatusService's own Bleed status
--- (stacks/config) - safe to require (StatusService only ever requires
--- PlayerService, no cycle back here).
+-- Bleed ticks read StatusService's Bleed status (no require cycle).
 local StatusService = require(script.Parent.StatusService)
 
 local log = Log.new("HealthService")
@@ -36,13 +23,8 @@ local log = Log.new("HealthService")
 type Data = SaveSchema.Data
 export type Tier = "Idle" | "Combat" | "Knocked"
 
--- REVIEW-M3-04 H1: NPCs take the identical health path as players now -
--- every function below accepts either. A Player is resolved to its own
--- `.Character` (unchanged); a Model (an NPC) is its own character
--- already. Attributes are set directly on whichever was passed in - a
--- Player's own attributes for a player (what the HUD reads), the NPC's
--- own character attributes for an NPC (the same place every other M3
--- service, keyed by character Model, already puts its attributes).
+-- NPCs take the same health path as players: every function accepts a Player (resolved to its
+-- Character) or a character Model. Attributes go on whichever was passed in.
 export type Combatant = Player | Model
 
 local APPEARENCE_WAIT_TIMEOUT = 30
@@ -62,28 +44,21 @@ end
 
 -- ==================== pure helpers (self-tested directly) ====================
 
--- `rankIndex` is Ranks.rankFor's first return (1 = Street Rat .. 7 =
--- King/Queen). FIX M11: the old Height.Changed handler called the wrong
--- branch and never actually added height's bonus; this just always
--- recomputes from scratch, so there's no branch to get wrong.
+-- `rankIndex` is Ranks.rankFor's first return (1 = Street Rat .. 7 = King/Queen). Always
+-- recomputes from scratch.
 function HealthService.MaxHealthFor(height: number, rankIndex: number): number
 	local rankBonus = Config.Health.RankBonus[rankIndex] or 0
 	return Config.Health.Base + Config.Health.HeightBonus * height + rankBonus
 end
 
--- FIX L8: a flat per-second rate, independent of how often the regen loop
--- actually ticks (the old scripts' rate scaled with their own wait time,
--- so the Regen "tiers" never changed anything).
+-- A flat per-second rate, independent of the regen loop's tick rate.
 function HealthService.RegenAmount(tier: Tier, seconds: number): number
 	return Config.Health.RegenPerSecond[tier] * seconds
 end
 
 -- ==================== per-combatant state ====================
--- None of this is saved (SaveSchema has no Health section): Block is
--- fresh every spawn, same as the old IntFold.BlockInt was. Keyed by
--- whatever HealthService.Register (NPCs) or PlayerService.Ready (players)
--- put in - a Player or a character Model, never mixed for the same
--- combatant.
+-- Not saved. Keyed by whatever Register (NPCs) or PlayerService.Ready (players) put in: a
+-- Player or a character Model, never mixed for one combatant.
 
 local active: { [Combatant]: boolean } = {}
 local tierState: { [Combatant]: Tier } = {}
@@ -103,7 +78,7 @@ local function clearState(combatant: Combatant)
 	blockAmount[combatant] = nil
 end
 
--- ==================== public API (M3 combat calls these) ====================
+-- ==================== public API ====================
 
 function HealthService.TakeDamage(combatant: Combatant, amount: number, _source: string?)
 	local character = resolveCharacter(combatant)
@@ -138,11 +113,9 @@ function HealthService.SetBlocking(combatant: Combatant, blocking: boolean)
 	blockingState[combatant] = blocking
 end
 
--- ==================== NPC registration (REVIEW-M3-04 H1) ====================
--- The Player path (PlayerService.Ready, below) still does its own rank-
--- based setupCharacter; this is the parallel entry point NpcService uses -
--- max health is just given directly (Config.Npc.MaxHealth[type], no rank
--- ladder), not computed here.
+-- ==================== NPC registration ====================
+-- Parallel entry point for NpcService: max health comes straight from
+-- Config.Npc.MaxHealth[type], no rank ladder.
 
 export type RegisterOptions = { maxHealth: number }
 
@@ -201,9 +174,8 @@ local function setupCharacter(player: Player, character: Model, data: Data)
 end
 
 -- ==================== dev commands ====================
--- Registered via DevService.Register (not a direct require of HealthService
--- from DevService), same reasoning as AgeService's .birthday/.heart: Roblox
--- errors on a cyclic ModuleScript require.
+-- Registered via DevService.Register, not a direct require, since Roblox errors on cyclic
+-- requires.
 
 local function registerDevCommands()
 	DevService.Register("hp", "<n> [player] - set current health", function(caller: Player, args: { string })
@@ -246,9 +218,7 @@ end
 function HealthService:Init()
 	registerDevCommands()
 
-	-- BUG-15: `.age`/`.age+` used to leave MaxHealth stale until the next
-	-- birthday; recompute it (rank can move too, so not just height)
-	-- right away instead.
+	-- Recompute MaxHealth immediately on .age/.age+ (rank can move too, not just height).
 	DevService.OnAgeChanged(function(player: Player, data: Data)
 		local character = player.Character
 		if character then
@@ -289,9 +259,7 @@ function HealthService:Start()
 
 	Players.PlayerRemoving:Connect(clearState)
 
-	-- One shared loop: health/block regen (M4-01 moved the Rank/Epithet/
-	-- Alignment attribute refresh out to RankService, which updates them
-	-- itself on every Progress change instead of every tick).
+	-- One shared loop for health/block regen.
 	task.spawn(function()
 		while true do
 			task.wait(Config.Health.Tick)
@@ -308,28 +276,14 @@ function HealthService:Start()
 					character = player.Character
 					local data = DataService.Get(player)
 
-					-- REVIEW-M2-03 finding 1: recomputed every tick, not only
-					-- at Ready/AppearenceLoaded. AgeService.resizeCharacter
-					-- changes Character.Height in place on a birthday, with
-					-- no respawn to re-fire PlayerService.Ready, so without
-					-- this MaxHealth stayed stuck at spawn's height until
-					-- the player's next death/rejoin - the exact M11 bug
-					-- this service exists to fix, just moved. setupCharacter
-					-- already applies the "top up only if already full"
-					-- rule; calling it here reuses that instead of a second
-					-- copy of it, and keeps AgeService and HealthService
-					-- decoupled (no new call from AgeService into
-					-- HealthService needed).
-					-- M4-01: Rank/Epithet/Alignment are RankService's attributes
-					-- now (one writer) - it refreshes them itself on every
-					-- Progress change instead of this loop refreshing them
-					-- every tick.
+					-- Recomputed every tick: AgeService changes Character.Height in place on a
+					-- birthday with no respawn, so setupCharacter (which tops up only if
+					-- already full) is re-run here.
 					if character and data then
 						setupCharacter(player, character, data)
 					end
 				else
-					-- An NPC (REVIEW-M3-04 H1): no rank/save, just health/
-					-- block regen below, same as a player gets.
+					-- An NPC: health/block regen only.
 					local model = combatant :: Model
 					if model.Parent == nil then
 						clearState(combatant)
@@ -345,11 +299,9 @@ function HealthService:Start()
 						humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + regen)
 					end
 
-					-- M3-FIX4-S: Bleed ticks once a second, `stacks` x the
-					-- causing style's own damagePerStackPerSecond - and never
-					-- knocks out on its own (floors at 1 HP, not 0, so
-					-- Humanoid.Died never fires from bleed alone; CombatService/
-					-- StatusService stay the only knockout authority).
+					-- Bleed ticks once a second: stacks x the style's damagePerStackPerSecond.
+					-- Floors at 1 HP so Humanoid.Died never fires from bleed;
+					-- CombatService/StatusService own knockouts.
 					local bleedInfo = character and StatusService.Get(character :: Model, "Bleed")
 					if bleedInfo and type(bleedInfo.data) == "table" and humanoid.Health > 1 then
 						local data = bleedInfo.data :: any

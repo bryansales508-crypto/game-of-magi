@@ -1,15 +1,12 @@
 local module = {}
 
--- Amounts
 GoodVibe = 25
 BadVibe = -25
 
--- Servuces
 local tweenserv = game:GetService("TweenService")
 
 
 module.RankUp = function(player, method, slain)
-	-- Player Variables
 	local StatsFold = player:FindFirstChild("Stats")
 	local Race = StatsFold.Race
 	local MaxMagoi = StatsFold.MaxMagoi
@@ -18,7 +15,6 @@ module.RankUp = function(player, method, slain)
 
 	local chara = player.Character or player.CharacterAdded:Wait()
 
-	-- Race Mod
 	local RaceMod
 
 	if Race.Value == 5 then
@@ -38,7 +34,6 @@ module.RankUp = function(player, method, slain)
 		PlayerAlign = "Villain"
 	end
 
-	-- Slain Variables
 	if slain then
 		local SlainStatsFold = game.Players:FindFirstChild(slain):FindFirstChild("Stats")
 		local SlainRace = SlainStatsFold.Race
@@ -55,7 +50,6 @@ module.RankUp = function(player, method, slain)
 			SlainAlign = "Villain"
 		end
 
-		-- Reward for Method
 		if method == "Gripped" then
 
 		elseif method == "TurnIn" then
@@ -65,16 +59,13 @@ module.RankUp = function(player, method, slain)
 			-- How much Max Magoi (EXP) this gives. Decent mission for beginners. Overall better for Villain types. 
 			if PlayerAlign == "Hero" and SlainAlign == "Villain" then
 				MaxMagoi.Value += 3*RaceMod
-				--Morality
 				LBR.Value += 1
 				
 			elseif PlayerAlign == "Hero" and SlainAlign == "Neutral" then
 				MaxMagoi.Value += 1*RaceMod
-				-- Morality
 				if LBR.Value > 0 then LBR.Value += -1 end
 				
 			elseif PlayerAlign == "Hero" and SlainAlign == "Hero" then
-				-- Morality
 				if LBR.Value > 0 then LBR.Value += -1 end
 				Depr.Value += 1
 				
@@ -84,18 +75,15 @@ module.RankUp = function(player, method, slain)
 				
 			elseif PlayerAlign == "Villain" and SlainAlign == "Neutral" then
 				MaxMagoi.Value += 3*RaceMod
-				-- Morality
 				Depr.Value += 1
 				
 			elseif PlayerAlign == "Villain" and SlainAlign == "Hero" then
 				MaxMagoi.Value += 5*RaceMod
-				-- Morality
 				Depr.Value += 2
 				
 				
 			elseif PlayerAlign == "Neutral" and SlainAlign == "Villain" then
 				MaxMagoi.Value += 3*RaceMod
-				-- Morality
 				LBR.Value += 1
 				
 			elseif PlayerAlign == "Neutral" and SlainAlign == "Neutral" then
@@ -103,12 +91,10 @@ module.RankUp = function(player, method, slain)
 				
 			elseif PlayerAlign == "Neutral" and SlainAlign == "Hero" then
 				MaxMagoi.Value += 3*RaceMod
-				-- Morality
 				Depr.Value += 1
 			end
 		end
 		
-		-- Rukh Variables // Morally Bad
 		local Dep1 = chara.Torso.RukhAttach1.DepravityRukh1
 		local Dep2 = chara.Torso.RukhAttach2.DepravityRukh2
 		local Dep3 = chara.Torso.RukhAttach3.DepravityRukh3
@@ -140,7 +126,6 @@ module.RankUp = function(player, method, slain)
 			Dep3.Enabled = false
 		end)
 	else
-		-- Reward for Method
 		if method == "PackageDelivery" then
 
 			-- How much Max Magoi (EXP) this gives. Decent mission for beginners. Overall better for Hero types.
@@ -149,7 +134,6 @@ module.RankUp = function(player, method, slain)
 			elseif PlayerAlign == "Neutral" then
 				MaxMagoi.Value += 5*RaceMod
 
-				-- Morality (Beginner)
 				LBR.Value += 1
 
 				if Depr.Value > 0 then
@@ -158,12 +142,10 @@ module.RankUp = function(player, method, slain)
 			elseif PlayerAlign == "Villain" then
 				MaxMagoi.Value += 1*RaceMod
 
-				-- Morality (Slight Helper)
 				LBR.Value += 1
 			end
 		end
 
-		-- Rukh Effects // Morally Good
 		local Dep1 = chara.Torso.RukhAttach1.Rukh1
 		local Dep2 = chara.Torso.RukhAttach2.Rukh2
 		local Dep3 = chara.Torso.RukhAttach3.Rukh3

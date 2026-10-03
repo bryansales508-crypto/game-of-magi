@@ -1,30 +1,19 @@
 --!strict
--- The one owner of combat statuses (M3-01, TRIAGE #13, fixes AUDIT M18).
--- Keyed by the combatant's character Model, never by Player: NPCs are
--- combatants exactly like players (Bryan, 2026-09-27), and this service
--- must not assume a Player exists. Players are registered automatically on
--- PlayerService.Ready below; NPCs are registered by M3-04's NpcService.
+-- The one owner of combat statuses. Keyed by the combatant's character Model, never by
+-- Player: NPCs are combatants exactly like players. Players are registered automatically
+-- on PlayerService.Ready; NpcService registers NPCs.
 --
--- Statuses: Hit, Stun, Knocked, Ragdoll, Block, BlockBroken, TrueStun.
--- M3-FIX4-S added three more, with no legacy bridge marker (BRIDGE below)
--- since nothing old ever knew about them: LightStun (a landed Light's own
--- softer stun - can't block/parry, but CAN still attack or dash),
--- Recovery (a punished feint - can't attack, block or dash), and Bleed
--- (stacked; data = {stacks, config}, ticked by HealthService). Anything
--- else can still be Applied/Removed (the API is generic), it just won't
--- get an attribute or a bridge marker unless added to the tables below.
+-- Statuses: Hit, Stun, Knocked, Ragdoll, Block, BlockBroken, TrueStun, plus LightStun (a
+-- landed Light's softer stun: can't block/parry, can still attack or dash), Recovery (a
+-- punished feint: can't attack, block or dash) and Bleed (stacked; data = {stacks,
+-- config}, ticked by HealthService). Anything else can still be Applied/Removed (the API
+-- is generic) but gets no attribute or bridge marker unless added to the tables below.
 --
--- Bridge: every Apply/Remove also creates/destroys the matching Value
--- under character.Effects, with the same Name/ClassName/Value semantics
--- the old DamageHandler/InteractionsDesign/EffectsService used (see
--- SYSTEMS.md section 10 and those two files on main), so old readers
--- (missions, regions, EffectsService's own ragdoll/blind-screen/sound
--- reactions) keep working until M3-03/M3-06 replace them. StatusService
--- only owns the markers; it does not ragdoll, blind or make sound itself
--- (EffectsService still does, reacting to the same markers as before). The
--- bridge is two-way (REVIEW-M3-01 M2): if a marker disappears by some
--- other script's own hand (old code still destroys a few of these itself),
--- StatusService treats that as the status ending too.
+-- Bridge: every Apply/Remove also creates/destroys the matching Value under
+-- character.Effects (the Name/ClassName/Value semantics legacy readers expect: missions,
+-- regions, EffectsService's ragdoll/blind-screen/sound reactions). StatusService only owns
+-- the markers; EffectsService reacts to them. The bridge is two-way: if another script
+-- destroys a marker, StatusService treats that as the status ending.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -38,14 +27,12 @@ local log = Log.new("StatusService")
 export type StatusInfo = {
 	-- os.clock() this status expires at, or nil for "stays until Removed".
 	expiresAt: number?,
-	-- The duration originally passed to Apply (nil for "no duration"),
-	-- kept alongside expiresAt so a bridge marker's Value can be built from
-	-- it without redoing the os.clock() math on every write.
+	-- The duration originally passed to Apply (nil for none), so a marker's Value can be
+	-- built without redoing the clock math.
 	duration: number?,
 	data: any?,
-	-- Block only (REVIEW-M3-01 L4): os.clock() the parry window (value 1)
-	-- flips to the block hold (value 0) at, or nil once it's already
-	-- flipped (or was never scheduled).
+	-- Block only: os.clock() at which the parry window (value 1) flips to the block hold
+	-- (value 0), or nil once flipped or never scheduled.
 	parryFlipAt: number?,
 }
 
@@ -56,10 +43,8 @@ type RegisteredEntry = {
 	ancestryConn: RBXScriptConnection?,
 	effectsRemovedConn: RBXScriptConnection?,
 	humanoidDiedConn: RBXScriptConnection?,
-	-- Name -> in-flight self-Destroy() count, so the Effects.ChildRemoved
-	-- bridge below (M2) can tell "we just destroyed our own marker" apart
-	-- from "something else destroyed it" without misfiring under deferred
-	-- signal behavior (REVIEW-M3-01 M2).
+	-- Name -> in-flight self-Destroy() count, so the Effects.ChildRemoved bridge can tell
+	-- our own destroy from someone else's under deferred signals.
 	selfDestroying: { [string]: number },
 }
 
@@ -67,35 +52,26 @@ local TICK = 0.1
 local EFFECTS_RETRY = 1
 local NPC_EFFECTS_WAIT_TIMEOUT = 5
 
--- ==================== attribute mirroring ====================
--- Character attributes clients read directly (cheap replication, same
--- pattern as HealthService's player attributes). Only these four statuses
--- get one; everything else is StatusService-internal/bridge-only.
+-- Character attributes clients read directly (cheap replication). Only these statuses
+-- get one; the rest are internal/bridge-only.
 
 local ATTRIBUTE_FOR: { [string]: string } = {
 	Stun = "Stunned",
 	Knocked = "Knocked",
 	Block = "Blocking",
 	TrueStun = "TrueStunned",
-	-- M3-FIX4-S:
 	LightStun = "LightStunned",
 	Recovery = "Recovering",
-	-- Bleed's attribute isn't a boolean like the others - see
-	-- mirrorAttribute's own special case below.
+	-- Bleed's attribute is a stack count, not a boolean (see mirrorAttribute).
 	Bleed = "Bleed",
 }
 
--- ==================== bridge marker shapes ====================
--- className: what the old code expected at character.Effects[status].
--- value: computes the Value to set on Apply (or on a refreshing re-Apply);
--- returning nil leaves the instance's default Value alone, matching
--- statuses the old code never wrote a meaningful Value for (Stun, Ragdoll,
--- BlockBroken, TrueStun all default-constructed their Value in the old
--- scripts too). alwaysRecreate (REVIEW-M3-01 M1): the old code always
--- added a brand-new Instance per hit, and several readers (EffectsService's
--- sound/particle, FaceControl's hurt face, PhysicalHandler's stagger, the
--- FragilePackage mission) key off ChildAdded - reusing one Hit marker
--- across repeated hits would go silent after the first.
+-- className: the instance class at character.Effects[status]. value: computes the Value
+-- to set on Apply (or a refreshing re-Apply); returning nil leaves the default Value.
+-- alwaysRecreate: a brand-new Instance per Apply, because several readers
+-- (EffectsService sound/particle, FaceControl's hurt face, PhysicalHandler's stagger, the
+-- FragilePackage mission) key off ChildAdded; reusing one Hit marker would go silent
+-- after the first hit.
 
 type BridgeSpec = {
 	className: "StringValue" | "IntValue",
@@ -104,8 +80,7 @@ type BridgeSpec = {
 }
 
 local BRIDGE: { [string]: BridgeSpec } = {
-	-- Old DamageHandler always set Value = "Fist" regardless of weapon;
-	-- data.kind lets a caller override once other weapons exist (M5).
+	-- Value defaults to "Fist"; data.kind overrides it for other weapons.
 	Hit = {
 		className = "StringValue",
 		value = function(data: any?): any?
@@ -122,11 +97,9 @@ local BRIDGE: { [string]: BridgeSpec } = {
 			return nil
 		end,
 	},
-	-- Old DamageHandler: Value = math.random(3,5), a getup countdown
-	-- HealthService's reviveLoop ticks down on its own (unchanged, still
-	-- runs until M3-03 rewires the knockout path). Ours is the authority on
-	-- when Knocked actually gets Removed; the Value here is just what that
-	-- old countdown display starts from.
+	-- Value is a getup countdown (math.random(3,5)) that HealthService's reviveLoop ticks
+	-- down. StatusService is the authority on when Knocked is Removed; the Value is only
+	-- the countdown display's start.
 	Knocked = {
 		className = "IntValue",
 		value = function(_data: any?, duration: number?): any?
@@ -139,12 +112,9 @@ local BRIDGE: { [string]: BridgeSpec } = {
 			return nil
 		end,
 	},
-	-- Old Blocking remote: IntValue, 1 during the parry window then 0.
-	-- StatusService itself flips this 1 -> 0 after Combat.Block.parryWindow
-	-- on the shared loop (REVIEW-M3-01 L4); a caller (CombatService, M3-03)
-	-- just Applies once with {value = 1} (or no data at all: 1 is the
-	-- default, matching the old remote's own Block(true)) and never has to
-	-- re-Apply to flip it itself.
+	-- IntValue: 1 during the parry window, then 0. StatusService flips 1 -> 0 after
+	-- Combat.Block.parryWindow on the shared loop; a caller Applies once with {value = 1}
+	-- (the default) and never re-Applies to flip it.
 	Block = {
 		className = "IntValue",
 		value = function(data: any?): any?
@@ -168,7 +138,6 @@ local BRIDGE: { [string]: BridgeSpec } = {
 	},
 }
 
--- ==================== state ====================
 
 local registered: { [Model]: RegisteredEntry } = {}
 local changedBindable = Instance.new("BindableEvent")
@@ -176,9 +145,7 @@ local changedBindable = Instance.new("BindableEvent")
 local StatusService = {}
 StatusService.Changed = changedBindable.Event :: RBXScriptSignal
 
--- ==================== bridge writes ====================
--- Defined before the Effects-folder resolution below, which backfills
--- through this same function (REVIEW-M3-01 L2).
+-- Defined before the Effects-folder resolution below, which backfills through this function.
 
 local function writeBridgeMarker(character: Model, status: string, info: StatusInfo)
 	local spec = BRIDGE[status]
@@ -197,9 +164,7 @@ local function writeBridgeMarker(character: Model, status: string, info: StatusI
 			instance = found :: Instance
 		else
 			if found then
-				-- REVIEW-M3-01 M2: mark this as our own destroy so the
-				-- ChildRemoved bridge below doesn't treat it as the status
-				-- ending.
+				-- Mark this as our own destroy so the ChildRemoved bridge doesn't treat it as the status ending.
 				entry.selfDestroying[status] = (entry.selfDestroying[status] or 0) + 1
 				found:Destroy()
 			end
@@ -207,17 +172,14 @@ local function writeBridgeMarker(character: Model, status: string, info: StatusI
 			instance.Name = status
 		end
 
-		-- REVIEW-M3-01 L3: Value and the attacker child are set before a
-		-- freshly-created marker is parented, so anything reacting to
-		-- ChildAdded (or the old code's Immediate-signal readers) never
-		-- sees a marker with a stale/default Value.
+		-- Value and the attacker child are set before a fresh marker is parented, so
+		-- ChildAdded readers never see a stale/default Value.
 		local value = spec.value(info.data, info.duration)
 		if value ~= nil then
 			(instance :: any).Value = value
 		end
 
-		-- Old DamageHandler parented a StringValue named after the
-		-- attacker under the Knocked marker itself (SYSTEMS 10's "personKnocker").
+		-- Knocked parents a StringValue named after the attacker under the marker.
 		if status == "Knocked" and type(info.data) == "table" and type(info.data.by) == "string" then
 			local byName = info.data.by :: string
 			if instance:FindFirstChild(byName) == nil then
@@ -253,11 +215,10 @@ local function removeBridgeMarker(character: Model, status: string)
 	end
 end
 
--- Every mirrored attribute is a plain boolean EXCEPT Bleed, whose attribute
--- is its current stack count (0 once inactive) - `info` carries that count
--- through on Apply (and every refreshing re-Apply, so a new stack updates
--- the attribute even though Changed doesn't re-fire); Remove has no info
--- to give (any is fine, since inactive always means 0 stacks anyway).
+-- Every mirrored attribute is a plain boolean EXCEPT Bleed, whose attribute is its
+-- current stack count (0 once inactive). `info` carries that count on Apply (and every
+-- refreshing re-Apply, since Changed doesn't re-fire); Remove has no info to give,
+-- since inactive always means 0.
 local function mirrorAttribute(character: Model, status: string, active: boolean, info: StatusInfo?)
 	local attrName = ATTRIBUTE_FOR[status]
 	if attrName == nil then
@@ -272,15 +233,11 @@ local function mirrorAttribute(character: Model, status: string, active: boolean
 	end)
 end
 
--- ==================== public API (forward-declared for the folder/removed-bridge helpers) ====================
 
--- Assigned right after StatusService.Remove is defined further down;
--- declared here so resolveEffectsFolder's ChildRemoved bridge and
--- removeAllStatuses (both defined before the public API section for
--- readability) can call it.
+-- Assigned once StatusService.Remove is defined; declared here so earlier helpers (the
+-- ChildRemoved bridge, removeAllStatuses) can call it.
 local RemoveImpl: (character: Model, status: string) -> ()
 
--- ==================== effects folder (bridge home) ====================
 
 local function backfillMarkers(character: Model, entry: RegisteredEntry)
 	for status, info in entry.statuses do
@@ -305,16 +262,12 @@ local function watchEffectsRemoved(character: Model, entry: RegisteredEntry)
 	end)
 end
 
--- Never yields the caller. REVIEW-M3-01 H1: a brand-new player's character
--- can go many seconds before EffectsService gets around to creating
--- `Effects` (it waits on AppearenceLoaded); if StatusService raced ahead
--- and made its own folder first, EffectsService would later add a SECOND
--- one that its own ragdoll/sound/TrueStun hooks are connected to, while
--- everyone else keeps writing into ours. So: for a player (owner ~= nil),
--- keep waiting - however long it takes - and never create one ourselves;
--- only give up if the character leaves first. Only an NPC (owner == nil,
--- no EffectsService pipeline ever creates one for it) gets a bounded wait
--- and a fallback create.
+-- Never yields the caller. A brand-new player's `Effects` can take many seconds to be
+-- created by EffectsService (it waits on AppearenceLoaded); creating our own first would
+-- make EffectsService add a SECOND folder that its hooks connect to. So for a player
+-- (owner ~= nil) keep waiting and never create one, giving up only if the character
+-- leaves. An NPC (owner == nil) has no EffectsService pipeline, so it gets a bounded
+-- wait and a fallback create.
 local function resolveEffectsFolder(character: Model, entry: RegisteredEntry)
 	local existing = character:FindFirstChild("Effects")
 	if existing and existing:IsA("Folder") then
@@ -369,7 +322,6 @@ local function resolveEffectsFolder(character: Model, entry: RegisteredEntry)
 	end)
 end
 
--- ==================== register / unregister ====================
 
 local function removeAllStatuses(character: Model, entry: RegisteredEntry)
 	local names: { string } = {}
@@ -402,8 +354,7 @@ function StatusService.Register(character: Model, owner: Player?)
 		entry.ancestryConn = conn
 	end
 
-	-- REVIEW-M3-01 L1: statuses shouldn't outlive the combatant's death
-	-- (they'd otherwise keep running until the corpse is actually removed).
+	-- Statuses shouldn't outlive the combatant's death.
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		local okDied, diedConn = pcall(function()
@@ -423,10 +374,9 @@ function StatusService.IsRegistered(character: Model): boolean
 	return registered[character] ~= nil
 end
 
--- Safe to call on a character that's already gone (AUDIT M18): every write
--- below is guarded, and a missing entry is just a no-op. REVIEW-M3-01 M3:
--- every active status goes through the real Remove (bridge marker cleared,
--- Changed fired), not just a direct attribute clear.
+-- Safe on a character that's already gone: every write is guarded and a missing entry
+-- is a no-op. Every active status goes through the real Remove (marker cleared, Changed
+-- fired), not just an attribute clear.
 function StatusService.Unregister(character: Model)
 	local entry = registered[character]
 	if entry == nil then
@@ -447,7 +397,6 @@ function StatusService.Unregister(character: Model)
 	end
 end
 
--- ==================== public API ====================
 
 -- Applies (or refreshes) a status. `duration` (seconds) auto-expires it on
 -- the shared loop below; nil means it stays until Remove is called
@@ -481,8 +430,7 @@ function StatusService.Apply(character: Model, status: string, duration: number?
 		parryFlipAt = nil,
 	}
 
-	-- REVIEW-M3-01 L4: schedule Block's own 1 -> 0 parry-window flip here,
-	-- so a caller never has to re-Apply just to end the parry window.
+	-- Schedule Block's own 1 -> 0 parry-window flip here so a caller never re-Applies.
 	if status == "Block" then
 		local blockValue = if type(data) == "table" and data.value ~= nil then data.value else 1
 		if blockValue == 1 then
@@ -500,8 +448,7 @@ function StatusService.Apply(character: Model, status: string, duration: number?
 	end
 end
 
--- Safe on a character that's already gone (AUDIT M18): a missing entry or
--- a status that isn't active is just a no-op, never an error.
+-- Safe on a character that's already gone: a missing entry or inactive status is a no-op.
 function StatusService.Remove(character: Model, status: string)
 	local entry = registered[character]
 	if entry == nil or entry.statuses[status] == nil then
@@ -529,7 +476,6 @@ function StatusService.Get(character: Model, status: string): StatusInfo?
 	return entry.statuses[status]
 end
 
--- ==================== service ====================
 
 function StatusService:Init()
 	PlayerService.Ready:Connect(function(player: Player, character: Model)
@@ -545,11 +491,9 @@ function StatusService:Init()
 end
 
 function StatusService:Start()
-	-- One shared loop for every combatant's status durations (players and
-	-- NPCs alike): no per-status task.delay/thread, so nothing leaks on
-	-- respawn or death (AUDIT M18's "hooks miss early markers" and the
-	-- wider "no leaked listeners or threads" rule for M3). Also flips
-	-- Block's parry window (REVIEW-M3-01 L4).
+	-- One shared loop for every combatant's status durations (players and NPCs): no
+	-- per-status task.delay, so nothing leaks on respawn or death. Also flips Block's
+	-- parry window.
 	task.spawn(function()
 		while true do
 			task.wait(TICK)

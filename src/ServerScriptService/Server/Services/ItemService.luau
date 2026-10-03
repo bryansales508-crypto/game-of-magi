@@ -1,12 +1,7 @@
 --!strict
--- Wearables: item codes ("type|name|r,g,b"), equip (recolour + resize to
--- the current body, exactly as before), colour-aware ownership, and writing
--- a worn item into the save. Ported from the old
--- ServerScriptService.Character.ItemHandler (M5-PLAN.md Phase 5B) - same
--- code format and equip behaviour; only the typing changed and two things
--- were added: Owns (exact item AND colour - the old MarketHandler ignored
--- colour) and Wear (equips, then writes Gear.Shirt/Gear.Pants/the first
--- empty Gear.Hats slot).
+-- Wearables: item codes ("type|name|r,g,b"), equip (recolour + resize to the current body),
+-- colour-aware ownership (Owns), and Wear (equips, then writes Gear.Shirt/Gear.Pants/the first
+-- empty Gear.Hats slot into the save).
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -36,7 +31,7 @@ end
 local function codeToColor(s: string): Color3
 	local r, g, b = s:match("(%d+),(%d+),(%d+)")
 	if not r then
-		return Color3.new(1, 1, 1) -- fallback white on bad data, same as before
+		return Color3.new(1, 1, 1)
 	end
 	return Color3.fromRGB(tonumber(r) :: number, tonumber(g) :: number, tonumber(b) :: number)
 end
@@ -55,7 +50,7 @@ function ItemService.Decode(code: string): (string?, string?, string?)
 	if #p < 3 then
 		return nil
 	end
-	return p[1], p[2], p[3] -- type, name, "r,g,b"
+	return p[1], p[2], p[3]
 end
 
 local outfits = Assets.outfits.desertBasic
@@ -70,11 +65,8 @@ function ItemService.ClothingId(itemType: string, name: string): string?
 	return nil
 end
 
--- Pure: whether `data` already holds the exact item AND colour `code`
--- names - Owns distinguishes colour on purpose (REVIEW/AUDIT: the old
--- MarketHandler only compared the clothing id, so owning a black shirt
--- blocked buying an identical white one; a hat/cloak match was already
--- colour-aware there, this just makes shirts/pants consistent with it).
+-- Pure: whether `data` already holds the exact item AND colour `code` names (a black shirt must
+-- not block buying a white one).
 function ItemService.Owns(data: Data, code: string): boolean
 	local itemType = ItemService.Decode(code)
 	if itemType == nil then
@@ -93,9 +85,8 @@ function ItemService.Owns(data: Data, code: string): boolean
 	return false
 end
 
--- Pure: the 3-slot Gear.Hats array holds both hats AND cloaks (same as the
--- save alone; nothing mirrors it since M6) - checked before EconomyService.Pay
--- ever runs, not after.
+-- Pure: the 3-slot Gear.Hats array holds both hats AND cloaks. Checked before
+-- EconomyService.Pay runs, not after.
 function ItemService.HasFreeHatSlot(data: Data): boolean
 	for _, hatCode in data.Gear.Hats do
 		if hatCode == "" then
@@ -115,9 +106,8 @@ local function currentRatio(player: Player): Vector3
 	return HeightHandler.heightToRatio(data.Character.Height, fat)
 end
 
--- Equips `code` onto `chara`: recolours a shirt/pants in place, or clones
--- and resizes a hat/cloak accessory to the wearer's current body - same
--- behaviour as the old ItemHandler.equip.
+-- Equips `code` onto `chara`: recolours a shirt/pants in place, or clones and resizes a
+-- hat/cloak accessory to the wearer's current body.
 function ItemService.Equip(code: string, chara: Model): Instance?
 	local itemType, name, colorCode = ItemService.Decode(code)
 	if itemType == nil or name == nil then
@@ -187,13 +177,10 @@ function ItemService.Equip(code: string, chara: Model): Instance?
 	return item
 end
 
--- Equips `code` onto the player's current character AND writes it into the
--- save: Gear.Shirt/Gear.Pants for S/P, or the first empty Gear.Hats slot for
--- H/C. The slot-free check is the CALLER's job (ShopService checks it
--- before ever charging) - this repeats it as a second guard, the same
--- defense-in-depth every other write path in this codebase uses, not the
--- only place it's enforced. Returns false (nothing charged back, nothing
--- written) if there's no free slot or no character to equip onto.
+-- Equips `code` onto the player's current character AND writes it into the save
+-- (Gear.Shirt/Gear.Pants, or the first empty Gear.Hats slot for H/C). ShopService checks slot
+-- availability before charging; this repeats it as a second guard. Returns false (nothing
+-- written) if there's no free slot or no character.
 function ItemService.Wear(player: Player, code: string): boolean
 	local itemType = ItemService.Decode(code)
 	if itemType == nil then

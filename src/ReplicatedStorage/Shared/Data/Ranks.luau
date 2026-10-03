@@ -1,7 +1,5 @@
 --!strict
--- The Magoi rank ladder (DESIGN 3a). Data only: thresholds and titles.
--- Bryan can retune the Magoi numbers here; the ladder shape (7 ranks) is
--- fixed by the epithet banks in Epithets.luau, which are keyed by title.
+-- The Magoi rank ladder. Data only: thresholds and titles. The ladder shape (7 ranks) is fixed by the epithet banks in Epithets.luau, keyed by title.
 
 export type RankEntry = {
 	magoi: number,
@@ -40,9 +38,7 @@ function RanksModule.rankFor(magoi: number): (number, string)
 	return index, Ranks[index].title
 end
 
--- Same as rankFor, but renders "King/Queen" as "King" or "Queen" for a
--- known gender (1 = male, 2 = female). Gender 0 (unset) or any other rank
--- title is returned unchanged.
+-- Same as rankFor, but renders "King/Queen" as "King" or "Queen" for a known gender (1 = male, 2 = female).
 function RanksModule.titleFor(magoi: number, gender: number): string
 	local _, title = RanksModule.rankFor(magoi)
 	if title == "King/Queen" then

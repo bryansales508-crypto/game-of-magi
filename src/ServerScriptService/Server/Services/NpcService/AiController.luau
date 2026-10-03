@@ -1,9 +1,7 @@
 --!strict
--- Per-NPC state and the tick loop's entry point (M3-04, TRIAGE #20). Holds
--- the blackboard a tree's Condition/Action nodes read and write, and the
--- tree itself (built by Trees.luau, passed in rather than required here -
--- NpcService requires both AiController and Trees; AiController never
--- requires Trees, so there's no cyclic ModuleScript require).
+-- Per-NPC state and the tick loop's entry point. Holds the blackboard a tree's
+-- Condition/Action nodes read and write, and the tree itself (built by Trees.luau and
+-- passed in; AiController never requires Trees, avoiding a cyclic require).
 
 local BehaviorTree = require(game:GetService("ReplicatedStorage").Shared.BehaviorTree)
 
@@ -12,8 +10,7 @@ export type Blackboard = {
 	humanoid: Humanoid,
 	rootPart: BasePart,
 	npcType: string,
-	-- The point Wander (Trees.luau) roams around - wherever this NPC
-	-- started.
+	-- The point Wander roams around: where this NPC started.
 	home: Vector3,
 	target: Model?,
 	wanderGoal: Vector3?,
@@ -21,10 +18,9 @@ export type Blackboard = {
 	waypoints: { PathWaypoint }?,
 	waypointIndex: number,
 	pathComputedAt: number?,
-	-- M3B-02: training-dummy-only fields (nil for Dummy/Target) - NpcService
-	-- sets these right after AiController.new for a spawned trainer;
-	-- Trees.luau's trainer decide functions read/write trainerKey/spawner/
-	-- engageRadius and the small phase/phaseAt state machine each one keeps.
+	-- Training-dummy-only fields (nil for Dummy/Target), set by NpcService right after
+	-- AiController.new; Trees.luau's trainer decide functions read/write trainerKey/spawner/
+	-- engageRadius and the small phase/phaseAt state machine.
 	trainerKey: string?,
 	spawner: Player?,
 	engageRadius: number?,

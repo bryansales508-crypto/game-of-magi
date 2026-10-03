@@ -1,21 +1,14 @@
 --!strict
--- Ragdoll fold (M7-01, BUG-35). Replaces the legacy EffectsService.server.luau:
--- when Knocked turns on for ANY combatant StatusService knows (player or NPC,
--- wherever it lives in Workspace) its joints are built via the Ragdoll module;
--- when Knocked ends they are removed again.
---
--- Players: the owning client's EffectsController still flips the Humanoid
--- between Physics and GettingUp itself, so the server does not touch a
--- player's Humanoid state (and the old RagdollEvent remote is no longer fired).
--- NPCs have no client doing that, so the server sets the Humanoid state, exactly
--- like the old ragdollFunc did.
---
--- Also takes over the one other job EffectsService had for players: creating
--- character.Effects (once AppearenceLoaded is true) - StatusService, FaceControl
--- and the client's InputHandler all wait for that folder to exist.
---
--- Also writes the "Ragdoll" status (-> character.Effects.Ragdoll bridge marker)
--- alongside Knocked, because FaceControl reads that marker for the dazed face.
+-- Ragdoll fold. When Knocked turns on for ANY combatant StatusService knows (player or NPC,
+-- anywhere in Workspace) its joints are built via the Ragdoll module; when it ends they are
+-- removed.
+-- Players: the owning client's EffectsController flips the Humanoid between Physics and
+-- GettingUp itself, so the server leaves a player's Humanoid state alone. NPCs have no such
+-- client, so the server sets the Humanoid state.
+-- Also creates character.Effects for players (once AppearenceLoaded is true; StatusService,
+-- FaceControl and the client's InputHandler wait for it) and writes the "Ragdoll" status
+-- (character.Effects.Ragdoll bridge marker) alongside Knocked, because FaceControl reads it for
+-- the dazed face.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -133,10 +126,9 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 	end
 end
 
--- Players only (NPC bridge folders are StatusService's own fallback). Same
--- timing the old EffectsService used: after AppearenceLoaded flips true. Gives
--- up waiting after EFFECTS_WAIT seconds and creates it anyway so nothing that
--- waits on it hangs forever; stops if the character leaves first.
+-- Players only (NPC bridge folders are StatusService's own fallback). Created after
+-- AppearenceLoaded flips true; gives up waiting after EFFECTS_WAIT seconds and creates it
+-- anyway so nothing waiting on it hangs; stops if the character leaves first.
 local EFFECTS_WAIT = 60
 
 local function ensureEffectsFolder(character: Model)

@@ -1,10 +1,5 @@
 --!strict
--- Small, composable validators for remote arguments.
---
--- Each Validate.* call is a factory: it takes options and returns a
--- Validator function. Validators are pure and side-effect free; calling
--- one just checks a value and reports why it failed, it never mutates
--- anything or throws.
+-- Small, composable validators for remote arguments. Each Validate.* call is a factory returning a Validator: pure, side-effect free, never mutates or throws; it checks a value and reports why it failed.
 
 export type Validator = (value: any) -> (boolean, string?)
 

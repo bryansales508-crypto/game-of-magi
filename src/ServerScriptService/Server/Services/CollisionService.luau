@@ -1,14 +1,10 @@
 --!strict
--- Collision groups for the map (M6 Phase 6E, docs/M6-PLAN.md; replaces the
--- old Interactions/CollisionsHandler). Every BasePart under Workspace.MAP
--- (Unions included: AUDIT L18) joins MapCollisionGroup unless it sits under
--- a folder named "Areas", and every BasePart inside a model named
--- "ClothingRack" anywhere under Workspace joins ClothingRackGroup (players
--- walk through racks; CharacterService registers the PlayerLimbs group and
--- makes it ignore the rack group). Runs at Init with no game.Loaded wait
--- (AUDIT L9) and keeps listening to MAP.DescendantAdded for parts that
--- stream in or are spawned later. ShopService still writes its own group
--- changes when a rack is dressed or undressed.
+-- Collision groups for the map. Every BasePart under Workspace.MAP (Unions included) joins
+-- MapCollisionGroup unless it sits under a folder named "Areas"; every BasePart inside a model
+-- named "ClothingRack" anywhere under Workspace joins ClothingRackGroup (players walk through
+-- racks; CharacterService registers PlayerLimbs and makes it ignore the rack group). Runs at
+-- Init with no game.Loaded wait and keeps listening to MAP.DescendantAdded. ShopService changes
+-- a rack's group itself when it is dressed or undressed.
 
 local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -88,7 +84,7 @@ function CollisionService:Init()
 		log:Warn("Workspace.MAP not found; no map parts assigned")
 	end
 
-	-- Racks outside MAP (the old script scanned all of Workspace for them).
+	-- Racks outside MAP.
 	for _, descendant in Workspace:GetDescendants() do
 		if descendant:IsA("BasePart") and (map == nil or not descendant:IsDescendantOf(map)) and inRack(descendant) then
 			descendant.CollisionGroup = RACK_GROUP

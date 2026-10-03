@@ -1,9 +1,5 @@
 --!strict
--- Shared configuration, read by both server and client.
---
--- One frozen table. Later milestones add their own sections here
--- (Aging, Rank, Economy, ...) alongside Debug and Data. Don't invent
--- those sections yet.
+-- Shared configuration, read by both server and client. One frozen table; every tunable number lives here.
 
 local RunService = game:GetService("RunService")
 
@@ -13,53 +9,37 @@ Config.IsStudio = RunService:IsStudio()
 
 Config.Debug = {
 	Enabled = Config.IsStudio,
-	-- M1-03: forces a brand-new save every time DataService loads, in Studio only.
 	FreshSave = false,
 	SaveScope = if Config.IsStudio then "Studio" else "Live",
 	LogLevel = if Config.IsStudio then "Debug" else "Info",
 	-- Speeds up aging and day/night for tests; 1 = real time.
 	TimeScale = 1,
-	-- BUG-20 (Bryan, design): off by default in Studio, so dev aging
-	-- (.age/.birthday) never accidentally kills a test character; always
-	-- on live. DevService.IsMortal() is the runtime override (.mortal
-	-- on|off), same pattern as TimeScale, since Config is frozen.
+	-- Off by default in Studio so dev aging (.age/.birthday) never kills a test character; always on live.
+	-- DevService.IsMortal() is the runtime override (Config is frozen).
 	DeathRolls = not Config.IsStudio,
 }
 
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
-	-- v2 (M4-01): Progress.PendingEpithet, SaveSchema.Migrations[2].
-	-- v3 (M3B-01/M3B-05): Meta.Unlocks.Combat, Character.LivesLeft,
-	-- SaveSchema.Migrations[3].
-	-- v4 (M5C-01): Progress.DeliveryStreak, Progress.Routes,
-	-- SaveSchema.Migrations[4].
+	-- Schema history lives in SaveSchema.Migrations; bump SchemaVersion together with a new migration.
 	SchemaVersion = 4,
 }
 
--- M1-05: SYSTEMS.md section 16's UserId, kept as the one source of truth.
--- A player also counts as a dev when Config.Debug.Enabled (Studio) is true;
--- see DevService.IsDev.
+-- UserIds that always count as devs. Any player also counts as a dev while Config.Debug.Enabled (Studio); see DevService.IsDev.
 Config.Dev = {
 	Admins = { 27938432 },
 }
 
--- M2-02: aging (DESIGN.md section 3, "Aging while offline"/"Aging and
--- death"). AgeService multiplies the online tick's banked seconds by
--- DevService.GetTimeScale() (a runtime override of Config.Debug.TimeScale,
--- since Config is frozen); offline aging is always real time, never
--- scaled. SceneTimeout is real time too (REVIEW-M2-02 R7): the client's
--- scene takes about the same wall-clock time to play regardless of aging
--- speed, so scaling it down at a high timescale used to cut it off mid-play.
+-- Aging. AgeService multiplies the online tick's banked seconds by DevService.GetTimeScale(); offline aging is always real time.
+-- SceneTimeout is real time too: the client's scene takes the same wall-clock time at any aging speed.
 Config.Aging = {
 	SecondsPerYear = if Config.IsStudio then 60 else 1800,
 	OfflineYearsPerDay = 2,
 	OfflineAgeCap = 59,
 	AdultAge = 18,
-	-- Hair visibly greys from GreyStart to GreyEnd (CharacterService.applyHairColor).
 	GreyStart = 45,
 	GreyEnd = 70,
-	-- From DeathStart, every online birthday carries a heart-attack moment;
-	-- DeathChance is the odds it's fatal, linearly interpolated between points.
+	-- From DeathStart, every online birthday carries a heart-attack moment; DeathChance is the odds it is fatal, linearly interpolated between points.
 	DeathStart = 60,
 	DeathChance = {
 		{ 60, 0.05 },
@@ -73,105 +53,51 @@ Config.Aging = {
 	-- How long the server waits for RukhSceneDone before starting the new
 	-- life anyway.
 	SceneTimeout = 30,
-	-- How often the online aging loop ticks, in real seconds.
 	Tick = 10,
 }
 
--- M3B-05 (Bryan, 2026-09-28): a character ("a life") gets this many lives
--- before a real death (Humanoid.Died - falling, the void, drowning, later
--- executions; a combat knockout never touches this) wipes to a brand-new
--- character. See Character.LivesLeft, SaveSchema.luau, LifeService.luau.
+-- Lives per character before a real death (Humanoid.Died: falling, the void, drowning) wipes to a brand-new character. A combat knockout never touches this. See Character.LivesLeft and LifeService.
 Config.Life = {
 	LivesPerCharacter = 4,
-	-- REVIEW-M3B-05 M1: how long a death with lives left waits before
-	-- respawning the same character - long enough to read as a real death
-	-- moment, short enough not to feel like a hang.
+	-- How long a death with lives left waits before respawning the same character.
 	RespawnDelay = 3,
-	-- BUG-38 (Bryan, 2026-10-02): the engine's own Players.RespawnTime
-	-- (default 5 s) respawned a last-life character in the middle of the Rukh
-	-- scene, so the white fade never showed. LifeService sets RespawnTime to
-	-- this instead: every death is respawned by our own code (RespawnDelay
-	-- above with lives left; AgeService after the scene on the last life;
-	-- the join pipeline on a save that isn't loaded), and this only exists
-	-- as a far-off safety net if every one of those somehow failed.
+	-- LifeService sets Players.RespawnTime to this. Every death is respawned by our own code (RespawnDelay, AgeService after the Rukh scene on the last life, or the join pipeline), so this is only a far-off safety net; the engine default would respawn a last-life character mid-scene.
 	EngineRespawnSeconds = 3600,
 }
 
--- M2-03: max health and block (DESIGN.md section 3a "Rank raises max
--- health", TRIAGE #14). Numbers kept from the old scripts where they
--- weren't broken; see HealthService's own comments for what changed.
+-- Max health and block.
 Config.Health = {
-	Base = 50, -- old StarterHealth
-	HeightBonus = 3, -- per Height ratio unit; same multiplier the old Race==2 formula used
+	Base = 50,
+	HeightBonus = 3,
 	-- Indexed by Ranks.rankFor's rank index (1 = Street Rat .. 7 = King/Queen).
 	RankBonus = { 0, 10, 20, 35, 50, 70, 100 },
 	RegenPerSecond = { Idle = 2, Combat = 0, Knocked = 1 },
 	MaxBlock = 100,
 	BlockRegenPerSecond = 10,
-	-- How often the shared regen loop ticks, in real seconds.
 	Tick = 1,
-	-- M3-03 (REVIEW-M3-03 M2): CombatService.SetTier(player, "Combat") on
-	-- any hit dealt or taken; it falls back to "Idle" once this many
-	-- seconds pass with no further combat activity (and no longer than
-	-- that - "Knocked" always wins over both while it's active).
+	-- CombatService.SetTier(player, "Combat") on any hit dealt or taken; falls back to "Idle" after this many seconds without combat activity. "Knocked" always wins while active.
 	CombatTierSeconds = 6,
 }
 
--- M3-FIX3-S/M3-FIX3-C/M3-FIX4: the animation-driven, per-style hit chain
--- (Shared/Data/Combat.luau's Combat.Styles shape). Per-hit numbers (damage,
--- hit windows, stun) stay in Combat.luau; everything about pacing, assets
--- and feel is here.
---
--- M3-FIX5 (Bryan, 2026-09-30): a combo is ONE animation but takes one
--- click per hit. Click 1 starts the swing; hit 1 winds up (slowed, as
--- before) and lands; the animation then freezes at the next hit's wind-up
--- marker until the player clicks again, which unfreezes it for hit 2, and
--- so on through the chain. No click within Chain.ClickTimeout = the combo
--- times out (the frozen pose fades out). After the last hit, Chain.Recovery
--- is the cooldown before a new combo can start.
+-- Animation-driven, per-style hit chain (Shared/Data/Combat.luau's Combat.Styles shape). Per-hit numbers (damage, hit windows, stun) live in Combat.luau; pacing, assets and feel are here.
+-- A combo is one animation but takes one click per hit: the animation freezes at each hit's wind-up marker until the player clicks again. The chain loops while each click lands inside HitGap..ClickTimeout of the previous hit.
 Config.Combat = {
-	-- Seconds of slack added to BOTH ends of a hit's hitWindow when the
-	-- server checks an AttackHit report (and to AttackCancel's cancelWindow/
-	-- cancelUntil, and to AttackContinue's HitGap/ClickTimeout), absorbing
-	-- network round-trip and animation-marker jitter between the client's
-	-- animation clock and the server's own.
+	-- Seconds of slack added to both ends of a hit's hitWindow when the server checks an AttackHit report (and to AttackCancel's windows and AttackContinue's HitGap/ClickTimeout), absorbing network and animation-marker jitter.
 	HitTolerance = 0.15,
-	-- The pacing of a chain, seconds. The server enforces every one of
-	-- these; the client mirrors them so a click that can't count is never
-	-- sent. M3-FIX6 (Bryan, 2026-10-01): the chain LOOPS - "1, 2, 1, 2, ..."
-	-- for as long as every click arrives inside HitGap..ClickTimeout of the
-	-- punch before it; it ends by dropping (no click in time), a cancel, an
-	-- interrupt, or an NPC finishing its pass. The animation freezes ON each
-	-- punch while it waits for the click.
+	-- Chain pacing, in seconds. The server enforces all of these; the client mirrors them so a click that cannot count is never sent. The chain ends by dropping (no click in time), a cancel, an interrupt, or an NPC finishing its pass.
 	Chain = {
-		-- Earliest the NEXT hit's click counts after a hit lands. A click
-		-- before this is remembered and fires the moment the gap is over,
-		-- so mashing never drops a hit, it just can't speed it up.
+		-- Earliest the next hit's click counts after a hit lands. An earlier click is remembered and fires when the gap is over, so mashing never drops a hit but cannot speed it up.
 		HitGap = 0.2,
-		-- Latest the next hit's click counts after a hit lands; past this
-		-- the combo is dropped (the animation fades out, DropRecovery
-		-- applies).
+		-- Latest the next hit's click counts; past this the combo is dropped (DropRecovery applies).
 		ClickTimeout = 1.0,
-		-- Cooldown before a new chain can start after one ends any way other
-		-- than a drop: an NPC finishing its pass (AttackEnded), a cancel after
-		-- at least one hit landed, or the server's watchdog giving up on a
-		-- hit report.
+		-- Cooldown before a new chain can start after one ends any way other than a drop: an NPC finishing its pass, a cancel after at least one hit, or the watchdog giving up on a hit report.
 		Recovery = 0.25,
-		-- Cooldown after a chain times out (no click in time) - from the
-		-- moment it's dropped, not from the last hit.
+		-- Cooldown after a chain times out, counted from the moment it is dropped.
 		DropRecovery = 0.2,
-		-- Server watchdog margin: how long past a hit's own hitWindow.max (+
-		-- HitTolerance) the server waits for the client's report before
-		-- silently ending the attack with Recovery.
+		-- Server watchdog margin: how long past a hit's hitWindow.max (+ HitTolerance) the server waits for the client's report before silently ending the attack with Recovery.
 		WatchdogMargin = 0.6,
 	},
-	-- The marker (animation event) names in each style's combo animation,
-	-- one Windup/Hit name per hit in the chain, in order. Fist: Bryan's own
-	-- names (2026-09-30). With LogMarkers on (the default), CombatController
-	-- logs every KeyframeReached AND every configured marker that's actually
-	-- reached, with the track time AND the seconds since that hit's own
-	-- segment started (what the server checks hitWindow against), so the
-	-- real names and timings show up in Output.
+	-- Marker (animation event) names in each style's combo animation: one Windup and one Hit name per hit, in order. With LogMarkers on, CombatController logs every KeyframeReached and configured marker with track time and seconds since that hit's segment started.
 	Markers = {
 		Fist = {
 			Windup = { "WindUp1", "WindUp2" },
@@ -183,48 +109,28 @@ Config.Combat = {
 		},
 	},
 	LogMarkers = true,
-	-- How long EffectsController flashes the "Cancel" Highlight for a
-	-- cancelled (not interrupted) attack.
+	-- How long EffectsController flashes the "Cancel" Highlight for a cancelled attack.
 	CancelFlashSeconds = 0.25,
-	-- M3B-01/M3B-03: the combat stance (docs/M3B-PLAN.md section 1). The
-	-- key toggles SetStance(not InCombat); clicks/Block/cancel only work
-	-- while InCombat (a click with a weapon Tool equipped is the one
-	-- exception -- it enters the stance first). Bryan can rebind the key
-	-- freely.
+	-- Combat stance toggle key. Clicks, Block and cancel only work while InCombat (a click with a weapon Tool equipped enters the stance first).
 	StanceKey = Enum.KeyCode.C,
-	-- Every combat animation asset lives here (Bryan, 2026-09-30: reference
-	-- as many assets as possible from Config). CombatController and
-	-- EffectsController read these; nothing hardcodes an id any more.
-	--
-	-- One looping idle animation id per style, played on any character
-	-- while InCombat (own and others) so everyone can see who's ready to
-	-- fight; empty = no animation for that style yet.
+	-- Every combat animation asset id lives here (CombatController and EffectsController read them). StanceAnimations: one looping idle per style, played on any InCombat character; empty = none yet.
 	StanceAnimations = {
 		Fist = "rbxassetid://124480069742107",
 		Dagger = "",
 	},
-	-- Playback speed of the stance idle (1 = as authored).
 	StanceSpeed = 0.1,
-	-- One combo animation per style, containing the style's WHOLE chain in
-	-- order (Fist: WindUp1, Punch1, WindUp2, Punch2). Dagger still uses the
-	-- old Royal Dagger swing until Bryan makes its combo animation.
+	-- One combo animation per style, containing the style's whole chain in order (Fist: WindUp1, Punch1, WindUp2, Punch2).
 	ComboAnimations = {
 		Fist = "rbxassetid://104341608277955",
 		Dagger = "rbxassetid://115894342135428",
 	},
-	-- Playback speed of each combo animation outside its wind-ups (1 = as
-	-- authored; the old PhysicalHandler's `aniSpeed` per weapon).
+	-- Playback speed of each combo animation outside its wind-ups (1 = as authored).
 	ComboSpeed = {
-		-- Bryan 2026-10-01: "slow the animation down a bit" (was 1.6). Retune
-		-- Combat.luau's Fist windows whenever this changes - its comments
-		-- show the arithmetic.
+		-- Retune Combat.luau's Fist windows whenever this changes; its comments show the arithmetic.
 		Fist = 1.3,
 		Dagger = 0.25,
 	},
-	-- M3-FIX6: the dash lines (EffectsController). `Count` thin copies of
-	-- ReplicatedFirst.VFX.MiscEffects.DashTrail sprout from random points in
-	-- the torso's box (scaled by `Spread`, 1 = the whole box), each between
-	-- MinWidth and MaxWidth studs tall, for `Seconds`.
+	-- Dash lines (EffectsController): Count thin copies of ReplicatedFirst.VFX.MiscEffects.DashTrail sprout from random points in the torso's box (scaled by Spread, 1 = whole box), each MinWidth..MaxWidth studs tall, for Seconds.
 	DashTrail = {
 		Count = 7,
 		Seconds = 0.3,
@@ -232,8 +138,7 @@ Config.Combat = {
 		MinWidth = 0.08,
 		MaxWidth = 0.3,
 	},
-	-- Block pose, run and the four cardinal dashes (ids kept from the old
-	-- SCS/Scripts/PhysicalHandler.client.luau so the feel is unchanged).
+	-- Block pose, run and the four cardinal dashes.
 	MoveAnimations = {
 		Block = "rbxassetid://15429144750",
 		Run = "rbxassetid://15421855688",
@@ -242,22 +147,12 @@ Config.Combat = {
 		DashBack = "rbxassetid://18101228314",
 		DashRight = "rbxassetid://18101385205",
 	},
-	-- Matches the server's default (docs/M3B-PLAN.md section 2) only in
-	-- spirit -- the server's CombatUnlocked attribute is the real source
-	-- of truth; this client never decides unlock state itself, it only
-	-- reads that attribute. Until the tutorial (a later milestone) exists,
-	-- every new life starts unlocked - once earned for real, it's for every
-	-- future character too (Meta.Unlocks.Combat survives DataService.
-	-- NewLife; only Wipe clears it).
+	-- The server's CombatUnlocked attribute is the real source of truth; the client only reads it. Every new life starts unlocked until a tutorial exists (Meta.Unlocks.Combat survives DataService.NewLife; only Wipe clears it).
 	UnlockedByDefault = true,
-	-- How long the "you don't know how to fight yet" line stays up.
 	LockedMessageSeconds = 2,
 }
 
--- The character's own locomotion animations (the old Animations.server.luau
--- ids): CharacterService writes them into a player's Animate script, and
--- NpcAnimController plays the same ones on every NPC (Bryan, 2026-09-30:
--- dummies get every animation a player has).
+-- Locomotion animations: CharacterService writes them into a player's Animate script, and NpcAnimController plays the same ones on every NPC.
 Config.Character = {
 	Animations = {
 		Idle = "rbxassetid://15422107398",
@@ -268,70 +163,42 @@ Config.Character = {
 	},
 }
 
--- M2-05: the heart-attack/death scene's sound. Bryan: swap for your own sound.
+-- The heart-attack/death scene's sound.
 Config.Sfx = {
 	Heartbeat = "rbxassetid://102383912898742",
 }
 
--- M2-FIX-C (BUG-16): every timing for the heart-attack pulses and the
--- return-to-the-Rukh scene, so Bryan can tune the pacing directly. The
--- scene's look (colours, the AfterLife model itself) stays in
--- RukhController and his own ReplicatedFirst.AfterLife model, not here.
+-- Timings for the heart-attack pulses and the return-to-the-Rukh scene. The scene's look (colours, the AfterLife model) lives in RukhController and ReplicatedFirst.AfterLife.
 Config.Scene = {
-	-- A heartbeat is "lub-dub": two quick beats. BeatGap is the gap
-	-- between them; PairGap is the pause after the pair before the next
-	-- cycle (seconds).
+	-- A heartbeat is "lub-dub": BeatGap is the gap between the two beats, PairGap the pause after the pair (seconds).
 	BeatGap = 0.25,
 	PairGap = 0.8,
-	-- Heart-attack moment length, in lub-dub cycles.
 	NonFatalCycles = 2,
 	FatalCycles = 3,
-	-- Each fatal cycle's BeatGap/PairGap is multiplied by this again
-	-- (compounding), so the beats slow and the pauses grow cycle to
-	-- cycle, per Bryan's "too fast" note.
+	-- Each fatal cycle's BeatGap/PairGap is multiplied by this again (compounding), so beats slow and pauses grow.
 	FatalSlowFactor = 1.4,
-	-- How long "Your heart gave out." stays up before the scene starts.
 	MessageSeconds = 2,
-	-- The return-to-the-Rukh walk: total time, and how much of the end
-	-- of it is the fade to white.
+	-- Return-to-the-Rukh walk: total time, and how much of its end is the fade to white.
 	WalkSeconds = 6,
 	FadeSeconds = 2,
-	-- How far ahead of the spawn point the stand-in core sits when
-	-- Bryan's AfterLife model has no AfterlifeCore of its own (studs).
+	-- How far ahead of the spawn point the stand-in core sits when the AfterLife model has no AfterlifeCore (studs).
 	CoreDistance = 15,
 }
 
--- M3-04: NpcService/AiController (TRIAGE #20). NPCs are combatants exactly
--- like players (Bryan, 2026-09-27): MaxHealth comes from here, by
--- NpcType, instead of the player rank ladder.
+-- NpcService/AiController. NPCs are combatants like players; MaxHealth comes from here by NpcType instead of the rank ladder.
 Config.Npc = {
-	-- How often the shared AiController loop ticks every NPC's tree.
 	TickSeconds = 0.2,
 	ChaseRadius = 30,
 	GiveUpRadius = 40,
 	AttackRange = 4,
 	AttackCooldown = 1.4,
-	-- M3-FIX5: an NPC's "next click" - seconds after one of its chain hits
-	-- lands before it throws the next hit (must be at least
-	-- Config.Combat.Chain.HitGap, and under ClickTimeout, or its own combos
-	-- get dropped like a player's would).
+	-- Seconds after an NPC chain hit lands before it throws the next one. Must be at least Combat.Chain.HitGap and under ClickTimeout, or its combos get dropped.
 	ContinueDelay = 0.35,
 	WanderRadius = 12,
 	MaxHealth = { Dummy = 100, Target = 100 },
-	-- REVIEW-M3-04 L2: optional asset ids Bryan can fill in for the walk/
-	-- run/flinch animations (empty by default - Trees.luau's by-name
-	-- Animation-instance lookup on the model itself is tried first; this
-	-- is only a fallback for when the art doesn't have one).
+	-- Optional fallback asset ids for walk/run/flinch; the model's own Animation instances (by name, see Trees.luau) are tried first.
 	Animations = { Walk = "", Run = "", Flinch = "" },
-	-- M3B-02: the seven training dummies (docs/M3B-PLAN.md section 3,
-	-- Bryan's roster, approved 2026-09-28). All Fist style. reactionSeconds
-	-- is the delay before a dummy reacts to something it read off the
-	-- player's own attributes (CurrentHitIndex/Attacking); rhythmSeconds paces a
-	-- dummy that throws on its own schedule rather than reacting; weights
-	-- are Sparring Sinbad's own throw/cancel/parry/dash mix. engageRadius
-	-- (12): a trainer only fights its spawner or the nearest player within
-	-- this many studs - PLACEHOLDERS, Bryan retunes every number here once
-	-- he's felt each dummy against the real animations.
+	-- The seven training dummies, all Fist style. reactionSeconds: delay before reacting to the player's attributes (CurrentHitIndex/Attacking). rhythmSeconds: pace of a dummy that throws on its own schedule. weights: Sparring Sinbad's throw/cancel/parry/dash mix. engageRadius: a trainer only fights its spawner or the nearest player within this many studs. All values are placeholders to tune.
 	Trainers = {
 		StraightSam = {
 			displayName = "Straight Sam",
@@ -370,8 +237,7 @@ Config.Npc = {
 			weights = { throw = 0.4, cancel = 0.2, parry = 0.2, dash = 0.2 },
 		},
 	},
-	-- The teaching order (docs/M3B-PLAN.md section 3's own table) - also
-	-- `.dummy list`'s print order, since Lua tables don't keep one.
+	-- Teaching order; also `.dummy list`'s print order, since Lua tables keep none.
 	TrainerOrder = {
 		"StraightSam",
 		"TurtleTariq",
@@ -383,14 +249,7 @@ Config.Npc = {
 	},
 }
 
--- M5C-01: delivery missions (M5-PLAN.md Phase 5C, Bryan's rules 2026-09-29).
--- OpenStuds/BoardCloseStuds give the board some hysteresis (open close to
--- the part, close only once well clear of it, so standing right at the
--- part's edge doesn't flicker); ArriveStuds is the same idea for the
--- destination part. PlayerActiveThreshold/SafeRouteThreshold are the old
--- MissionHandler's own numbers (AUDIT M12's fix wires them to something
--- real: the player's own Progress.Routes count and each city's static
--- Safety value, instead of a global counter nothing ever updated).
+-- Delivery missions. OpenStuds/BoardCloseStuds give the board hysteresis (open near the part, close only once well clear); ArriveStuds is the same for the destination part. PlayerActiveThreshold is checked against the player's Progress.Routes count and SafeRouteThreshold against each city's static Safety value.
 Config.Missions = {
 	OpenStuds = 12,
 	BoardCloseStuds = 20,
@@ -398,32 +257,17 @@ Config.Missions = {
 	PlayerActiveThreshold = 10,
 	SafeRouteThreshold = 0.75,
 	TimeCrunchSeconds = 180,
-	-- REVIEW-M5C-01 M2 (lead decision, Bryan may change it): an interception
-	-- only pays if the courier is genuinely out on the route - at least this
-	-- far from where they started, or this far into the run - so two
-	-- accounts can't farm the reward by knocking a courier out right next
-	-- to the board they just opened.
+	-- An interception only pays if the courier is genuinely out on the route (this far from the start, or this far into the run), so two accounts cannot farm it by knocking a courier out beside the board.
 	InterceptMinStuds = 100,
 	InterceptMinSeconds = 30,
-	-- The intercepted mark (Bryan): every interception adds one stack to the
-	-- courier (Progress.Intercepted); MissionService.OfferMultiplier =
-	-- max(InterceptedFloor, InterceptedDecay ^ stacks) multiplies that
-	-- player's own board offers, their own reduced payout if they still
-	-- complete a marked delivery, and an interceptor's own payout while the
-	-- victim is marked (no Black Rukh either, while marked) - one completed
-	-- delivery clears every stack, after paying it at the reduced rate.
+	-- Intercepted mark: every interception adds one stack to the courier (Progress.Intercepted). MissionService.OfferMultiplier = max(InterceptedFloor, InterceptedDecay ^ stacks) scales that player's board offers, their payout for a marked delivery, and an interceptor's payout while the victim is marked (no Black Rukh either). One completed delivery clears every stack after paying at the reduced rate.
 	InterceptedDecay = 0.5,
 	InterceptedFloor = 0.1,
 	HeavyCargoSpeedMult = 0.75,
-	-- BUG-56: HeavyCargo's package model is drawn this many times bigger
-	-- (Model:ScaleTo when it's attached; gone with the package on run end).
+	-- HeavyCargo's package model is scaled up by this (Model:ScaleTo on attach).
 	HeavyCargoPackScale = 1.5,
 	MagoiPerDelivery = 10,
-	-- BUG-59: where a city's placeholder drop-off goes when its
-	-- `<key>Delivery` part is missing AND Workspace.Regions has no
-	-- `<key>REGION` part. These are the old marker positions from
-	-- docs/reference/m5c-studio-dump.md, so a placeholder lands where the real
-	-- part will be. A city with neither refuses runs.
+	-- Where a city's placeholder drop-off goes when its `<key>Delivery` part is missing and Workspace.Regions has no `<key>REGION` part. A city with neither refuses runs.
 	PlaceholderDeliveryPoints = {
 		Qarzin = Vector3.new(1761.86, 199.22, -7571.19),
 		Saleh = Vector3.new(-2459.5, 197.41, -8458.78),
@@ -433,30 +277,16 @@ Config.Missions = {
 		Sahraqin = Vector3.new(7400.8, 186.67, -7302),
 		AinJamala = Vector3.new(3779.3, 197.41, -8866.13),
 	} :: { [string]: Vector3 },
-	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch
-	-- expiry, the beacon) - not a per-frame loop (AUDIT H9).
+	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch expiry, the beacon).
 	Tick = 0.5,
-	-- Courier beacon (Bryan, 2026-09-29): a Highlight visible through walls,
-	-- same look as the old MissionHandler:316 (DepthMode = AlwaysOnTop) -
-	-- the client draws it off the CourierBeacon character attribute this
-	-- toggles. The old code had no real equivalent timing to port (its only
-	-- similar effect, HighlyValuable's package sparkle at MissionHandler:
-	-- 311-328, cycles on its own unrelated 1s-fade/6s-hold/20s-off tween for
-	-- a different purpose) - these are Bryan's own approved numbers.
-	-- BUG-43 (Bryan: "less frequently"): was 30 s, now 45 s (lead may tune).
-	-- Server-driven: MissionService reads these; the client fades in/out over
-	-- 0.6 s each way inside the forSeconds window.
+	-- Courier beacon: a Highlight visible through walls (DepthMode AlwaysOnTop), drawn by the client off the CourierBeacon character attribute that MissionService toggles every everySeconds for forSeconds. The client fades in/out over 0.6 s each way inside the window.
 	Beacon = {
 		everySeconds = 45,
 		forSeconds = 3,
 	},
 }
 
--- M4-02: the Rukh flutter on RankUp/AlignmentChanged (DESIGN.md section 3a).
--- Emitters are exactly the ParticleEmitter names under
--- ReplicatedFirst.VFX.RukhEffects; Bryan can rename, add or remap any of
--- these lists freely without touching RankController. EmitRate multiplies
--- every cloned emitter's own Rate (1 = whatever Bryan authored in Studio).
+-- The Rukh flutter on RankUp/AlignmentChanged. Emitters are ParticleEmitter names under ReplicatedFirst.VFX.RukhEffects; EmitRate multiplies every cloned emitter's own Rate.
 Config.Rukh = {
 	FlutterSeconds = 4,
 	EmitRate = 1,
@@ -521,75 +351,54 @@ table.freeze(Config.Missions.Beacon)
 table.freeze(Config.Missions.PlaceholderDeliveryPoints)
 table.freeze(Config.Missions)
 
--- M6 (docs/M6-PLAN.md, Bryan approved 2026-09-29): the world. Music, the
--- shared day clock, the ocean and footsteps. The night look itself lives in
--- Shared/Data/DayNight.luau, the region playlists in Shared/Data/Regions.luau.
+-- The world: music, the shared day clock, the ocean and footsteps. The night look lives in Shared/Data/DayNight.luau, region playlists in Shared/Data/Regions.luau.
 Config.World = {
 	Music = {
-		-- One volume for every playlist track (Bryan: the old code mixed 0.05
-		-- and 0.5 and felt finicky). Ambient loops keep their own volume in
-		-- Regions.luau.
+		-- One volume for every playlist track. Ambient loops keep their own volume in Regions.luau.
 		Volume = 0.5,
 		CrossfadeSeconds = 1,
-		-- How often the client tests its position against the region boxes.
 		RegionPollSeconds = 0.25,
 	},
 	DayNight = {
-		-- The old game's Day/Night Cycle script: 10 real minutes of daylight
-		-- (06:00 to 18:00) and 6 of night. Day must stay longer than night
-		-- (Bryan). Total = one in-game day.
+		-- 10 real minutes of daylight (06:00 to 18:00) and 6 of night. Day must stay longer than night. Total = one in-game day.
 		DaySeconds = 600,
 		NightSeconds = 360,
 		DawnHour = 6,
 		DuskHour = 18,
-		-- How long the palette blends at dawn and dusk, and how long a tagged
-		-- city light takes to fade on or off (seconds).
+		-- How long the palette blends at dawn and dusk, and how long a tagged city light takes to fade on or off (seconds).
 		TransitionSeconds = 60,
 		LightFadeSeconds = 2,
-		-- The CollectionService tag Bryan puts on a lamp, torch or fire part
-		-- or model: its lights, fires and particles run at night only, and a
-		-- Neon part in it swaps to this material by day.
+		-- CollectionService tag for a lamp, torch or fire part or model: its lights, fires and particles run at night only, and a Neon part in it swaps to DayMaterial by day.
 		Tag = "CityLight",
 		DayMaterial = Enum.Material.SmoothPlastic,
 	},
 	Ocean = {
-		-- Off until Bryan deletes the 766 old wave scripts under
-		-- Workspace.MAP.OCEAN (docs/TINKER.md), which would otherwise fight
-		-- the client for the tile positions.
+		-- Off until the old wave scripts under Workspace.MAP.OCEAN are deleted; they would fight the client for the tile positions.
 		Enabled = false,
-		-- The old scripts' timing: tiles rise 2 studs over 15 s, hold 3 s,
-		-- fall 15 s; wave decals fade in over 10 s, out over 10 s, pause 10 s.
+		-- Tiles rise Amplitude studs over RiseSeconds, hold, then fall; wave decals fade in, out, then pause.
 		Amplitude = 2,
 		RiseSeconds = 15,
 		HoldSeconds = 3,
 		DecalFadeSeconds = 10,
 		DecalPauseSeconds = 10,
 		DecalVisibleTransparency = 0.95,
-		-- Tiles farther than this from the camera are left still (studs).
 		CullDistance = 6000,
 	},
 	Footsteps = {
-		-- The old game's numbers (REVIEW-M6-02): 0.1 walking, 0.25 running.
+		-- Footstep volumes while walking and running.
 		WalkVolume = 0.1,
 		RunVolume = 0.25,
-		-- Sand and mud prints: how long one stays (the old fade was 0.75 s) and how far below the
-		-- torso the raycast looks for the ground (studs).
+		-- Sand and mud prints: how long one stays and how far below the torso the raycast looks for the ground (studs).
 		PrintSeconds = 0.75,
 		PrintRayStuds = 6,
-		-- BUG-48: true logs every step event, the floor material and the sound
-		-- picked (Output), to find out why steps are silent.
+		-- true logs every step event, floor material and sound picked, to debug silent steps.
 		Debug = false,
-		-- Fallback for when Animate's walk markers don't fire (or while
-		-- running): one step per this many studs walked. 0 = off.
+		-- Fallback when Animate's walk markers don't fire: one step per this many studs walked. 0 = off.
 		FallbackStrideStuds = 5.5,
-		-- BUG-57: seconds between running steps. 0 = follow the run
-		-- animation itself (one step each half of its loop, at whatever
-		-- speed it plays); set a number only to override that.
+		-- Seconds between running steps. 0 = follow the run animation (one step each half of its loop); a number overrides that.
 		RunStepSeconds = 0,
 	},
-	-- BUG-61: the old dash sound. The deleted PhysicalHandler/server dash
-	-- handler cloned Torso.SoundEffects.QuickDash; it now lives at
-	-- ReplicatedFirst.SFX.CombatSounds.QuickDash (m6-studio-dump.md).
+	-- Dash sound name, under ReplicatedFirst.SFX.CombatSounds.
 	Sfx = {
 		Dash = "QuickDash",
 	},
