@@ -13,16 +13,14 @@
 --
 -- REVIEW-M3B-05 M1: the "still has lives" respawn waits Config.Life.
 -- RespawnDelay (3s) instead of firing the same frame - an instant pop-back
--- left no death moment at all - via a guarded task.delay rather than
--- touching Players.RespawnTime (left at the engine default; a global
--- change there had its own side effects on paths this service doesn't
--- otherwise touch, e.g. a death this service skips outright). The guard
--- (player.Character == the character that just died) only protects against
--- OUR OWN delayed call firing after something else already respawned the
--- player by the time it runs - it can't reach into Roblox's own separate
--- CharacterAutoLoads/RespawnTime(5s) timer, which is still live and still a
--- possible second respawn; the playtester needs to confirm in Studio that
--- one doesn't show up 5s after a `.kill` with lives left.
+-- left no death moment at all - via a guarded task.delay. The guard
+-- (player.Character == the character that just died) protects against OUR
+-- OWN delayed call firing after something else already respawned the
+-- player. BUG-38 (2026-10-02): the engine's separate RespawnTime (5 s)
+-- timer DID fire on the last-life path and cut the Rukh scene short, so
+-- Init now pushes Players.RespawnTime far out (Config.Life.
+-- EngineRespawnSeconds): every death is respawned by this service or by
+-- AgeService, never by the engine.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -159,6 +157,12 @@ local function registerDevCommands()
 end
 
 function LifeService:Init()
+	-- BUG-38: the engine's 5 s auto-respawn used to fire during the last-life
+	-- Rukh scene and cut it short (the character really dies on that path,
+	-- unlike the frozen heart-attack one). Every death path here and in
+	-- AgeService respawns on its own schedule; the engine timer becomes a
+	-- far-off safety net only (Config.Life.EngineRespawnSeconds).
+	Players.RespawnTime = Config.Life.EngineRespawnSeconds
 	registerDevCommands()
 end
 

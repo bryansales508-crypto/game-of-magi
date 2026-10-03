@@ -85,9 +85,16 @@ Config.Life = {
 	LivesPerCharacter = 4,
 	-- REVIEW-M3B-05 M1: how long a death with lives left waits before
 	-- respawning the same character - long enough to read as a real death
-	-- moment, short enough not to feel like a hang (Players.RespawnTime,
-	-- the engine's own default, is left alone).
+	-- moment, short enough not to feel like a hang.
 	RespawnDelay = 3,
+	-- BUG-38 (Bryan, 2026-10-02): the engine's own Players.RespawnTime
+	-- (default 5 s) respawned a last-life character in the middle of the Rukh
+	-- scene, so the white fade never showed. LifeService sets RespawnTime to
+	-- this instead: every death is respawned by our own code (RespawnDelay
+	-- above with lives left; AgeService after the scene on the last life;
+	-- the join pipeline on a save that isn't loaded), and this only exists
+	-- as a far-off safety net if every one of those somehow failed.
+	EngineRespawnSeconds = 3600,
 }
 
 -- M2-03: max health and block (DESIGN.md section 3a "Rank raises max

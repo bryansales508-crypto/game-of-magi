@@ -373,7 +373,10 @@ function MovementService.Dash(character: Model, x: number, z: number): boolean
 	-- character up and over it. Sweep a sphere along the path first and
 	-- shorten the dash to stop Combat.Dash.wallMargin short of whatever it
 	-- hits; nothing to dash into at all = no dash and no cooldown spent.
-	local distance = Combat.Dash.distance
+	-- BUG-37 (Bryan, 2026-10-02): a hurt fighter's dash shortens by the same
+	-- LowHealth multiplier walk and run already use (1.0 at full health,
+	-- 0.25 at none), so every movement reads the same wound.
+	local distance = Combat.Dash.distance * (entry.modifiers.LowHealth or 1)
 	local castParams = RaycastParams.new()
 	castParams.FilterType = Enum.RaycastFilterType.Exclude
 	castParams.FilterDescendantsInstances = { character }
