@@ -19,6 +19,7 @@ local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
@@ -36,6 +37,13 @@ local NO_MUSIC_KEY = "\0none"
 
 local MusicController = {}
 
+-- FEAT-62: the player's own music volume (0-1), remembered for the session in
+-- a client attribute so the panel and `.music` agree; Config is the default.
+local VOLUME_ATTRIBUTE = "MusicVolume"
+local userVolume: number = settings.Volume
+local fadeTweens: { [Sound]: Tween } = {}
+local changedCallbacks: { () -> () } = {}
+
 local osts: Instance? = nil
 local folder: Folder? = nil
 local warnedTracks: { [string]: boolean } = {}
@@ -48,7 +56,18 @@ local current: Sound? = nil
 local lastTrack: string? = nil
 local ambientLayers: { [string]: Sound } = {}
 
+local function notifyChanged()
+	for _, callback in changedCallbacks do
+		task.spawn(callback)
+	end
+end
+
 local function fadeOutAndDestroy(sound: Sound, seconds: number)
+	local running = fadeTweens[sound]
+	if running ~= nil then
+		running:Cancel()
+		fadeTweens[sound] = nil
+	end
 	local tween = TweenService:Create(sound, TweenInfo.new(seconds, Enum.EasingStyle.Linear), { Volume = 0 })
 	tween.Completed:Once(function()
 		sound:Destroy()
@@ -82,11 +101,16 @@ local function startSound(source: Sound, volume: number, looped: boolean): Sound
 	sound.Volume = 0
 	sound.Parent = parent
 	sound:Play()
-	TweenService:Create(
+	local fade = TweenService:Create(
 		sound,
 		TweenInfo.new(settings.CrossfadeSeconds, Enum.EasingStyle.Linear),
 		{ Volume = volume }
-	):Play()
+	)
+	fadeTweens[sound] = fade
+	fade.Completed:Once(function()
+		fadeTweens[sound] = nil
+	end)
+	fade:Play()
 	return sound
 end
 
@@ -127,6 +151,7 @@ function playNext()
 	if previous ~= nil then
 		fadeOutAndDestroy(previous, settings.CrossfadeSeconds)
 	end
+	notifyChanged()
 
 	local name = pickTrack()
 	if name == nil then
@@ -139,11 +164,12 @@ function playNext()
 	lastTrack = name
 
 	local looped = #playlist == 1
-	local sound = startSound(source, settings.Volume, looped)
+	local sound = startSound(source, userVolume, looped)
 	if sound == nil then
 		return
 	end
 	current = sound
+	notifyChanged()
 	if looped then
 		return
 	end
@@ -176,6 +202,7 @@ local function setPlaylist(key: string?, tracks: { string })
 		if previous ~= nil then
 			fadeOutAndDestroy(previous, settings.CrossfadeSeconds)
 		end
+		notifyChanged()
 		return
 	end
 	playNext()
@@ -321,13 +348,227 @@ function MusicController.Next()
 	end
 end
 
-function MusicController.CurrentTrack(): string?
+-- Name of the track now playing, or nil.
+function MusicController.Current(): string?
 	return if current ~= nil then current.Name else nil
+end
+
+-- Resume the playlist of the region you are in (after Stop).
+function MusicController.Play()
+	if current == nil then
+		activeKey = nil
+		refreshMusic()
+	end
+end
+
+function MusicController.IsPlaying(): boolean
+	return current ~= nil
+end
+
+function MusicController.Volume(): number
+	return userVolume
+end
+
+-- Live music volume (0-1), also applied to the track now playing and kept for
+-- later tracks. Ambient layers keep their own volumes.
+function MusicController.SetVolume(volume: number)
+	userVolume = math.clamp(volume, 0, 1)
+	player:SetAttribute(VOLUME_ATTRIBUTE, userVolume)
+	local sound = current
+	if sound ~= nil then
+		local fade = fadeTweens[sound]
+		if fade ~= nil then
+			fade:Cancel()
+			fadeTweens[sound] = nil
+		end
+		sound.Volume = userVolume
+	end
+end
+
+-- Called (deferred) whenever the track starts, changes or stops.
+function MusicController.OnChanged(callback: () -> ())
+	table.insert(changedCallbacks, callback)
+end
+
+-- ==================== music panel (FEAT-62) ====================
+
+-- Bottom-left: track name, play/stop, volume slider. Bryan's board palette
+-- (m2/m5c dumps: brown fill, orange accent, tan text, Merriweather Bold).
+local PANEL_FILL = Color3.fromRGB(75, 54, 36)
+local PANEL_ACCENT = Color3.fromRGB(229, 151, 62)
+local PANEL_TEXT = Color3.fromRGB(255, 224, 152)
+
+local function buildPanel()
+	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "MusicPanel"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 5
+	gui.Parent = playerGui
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Panel"
+	frame.AnchorPoint = Vector2.new(0, 1)
+	frame.Position = UDim2.new(0, 12, 1, -12)
+	frame.Size = UDim2.fromOffset(210, 62)
+	frame.BackgroundColor3 = PANEL_FILL
+	frame.BackgroundTransparency = 0.15
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = frame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = PANEL_ACCENT
+	stroke.Thickness = 1
+	stroke.Parent = frame
+
+	local boldFont = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold)
+
+	local trackLabel = Instance.new("TextLabel")
+	trackLabel.Name = "Track"
+	trackLabel.BackgroundTransparency = 1
+	trackLabel.Position = UDim2.fromOffset(10, 6)
+	trackLabel.Size = UDim2.new(1, -66, 0, 24)
+	trackLabel.FontFace = boldFont
+	trackLabel.TextSize = 14
+	trackLabel.TextColor3 = PANEL_TEXT
+	trackLabel.TextXAlignment = Enum.TextXAlignment.Left
+	trackLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	trackLabel.Text = "no music"
+	trackLabel.Parent = frame
+
+	local button = Instance.new("TextButton")
+	button.Name = "PlayStop"
+	button.AnchorPoint = Vector2.new(1, 0)
+	button.Position = UDim2.new(1, -8, 0, 6)
+	button.Size = UDim2.fromOffset(48, 24)
+	button.BackgroundColor3 = PANEL_ACCENT
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.FontFace = boldFont
+	button.TextSize = 13
+	button.TextColor3 = Color3.new(0, 0, 0)
+	button.Text = "Play"
+	button.Parent = frame
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 4)
+	buttonCorner.Parent = button
+
+	local slider = Instance.new("Frame")
+	slider.Name = "Slider"
+	slider.Position = UDim2.new(0, 10, 0, 44)
+	slider.Size = UDim2.new(1, -20, 0, 6)
+	slider.BackgroundColor3 = Color3.fromRGB(40, 28, 18)
+	slider.BorderSizePixel = 0
+	slider.Parent = frame
+	local sliderCorner = Instance.new("UICorner")
+	sliderCorner.CornerRadius = UDim.new(1, 0)
+	sliderCorner.Parent = slider
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = PANEL_ACCENT
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.fromScale(userVolume, 1)
+	fill.Parent = slider
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	local knob = Instance.new("Frame")
+	knob.Name = "Knob"
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.fromScale(userVolume, 0.5)
+	knob.Size = UDim2.fromOffset(12, 12)
+	knob.BackgroundColor3 = PANEL_TEXT
+	knob.BorderSizePixel = 0
+	knob.Parent = slider
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	-- A wider invisible hit area so the 6 px bar is easy to grab.
+	local hit = Instance.new("TextButton")
+	hit.Name = "Hit"
+	hit.BackgroundTransparency = 1
+	hit.Text = ""
+	hit.AnchorPoint = Vector2.new(0.5, 0.5)
+	hit.Position = UDim2.fromScale(0.5, 0.5)
+	hit.Size = UDim2.new(1, 12, 0, 24)
+	hit.Parent = slider
+
+	local function render()
+		trackLabel.Text = MusicController.Current() or "no music"
+		button.Text = if MusicController.IsPlaying() then "Stop" else "Play"
+		fill.Size = UDim2.fromScale(userVolume, 1)
+		knob.Position = UDim2.fromScale(userVolume, 0.5)
+	end
+
+	button.Activated:Connect(function()
+		if MusicController.IsPlaying() then
+			MusicController.Stop()
+		else
+			MusicController.Play()
+		end
+		render()
+	end)
+
+	local dragging = false
+	local function setFromX(x: number)
+		local width = slider.AbsoluteSize.X
+		if width <= 0 then
+			return
+		end
+		MusicController.SetVolume((x - slider.AbsolutePosition.X) / width)
+		render()
+	end
+	hit.InputBegan:Connect(function(input: InputObject)
+		if
+			input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			dragging = true
+			setFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input: InputObject)
+		if
+			dragging
+			and (
+				input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch
+			)
+		then
+			setFromX(input.Position.X)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if
+			input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			dragging = false
+		end
+	end)
+
+	MusicController.OnChanged(render)
+	render()
 end
 
 function MusicController:Init() end
 
 function MusicController:Start()
+	local saved = player:GetAttribute(VOLUME_ATTRIBUTE)
+	if typeof(saved) == "number" then
+		userVolume = math.clamp(saved, 0, 1)
+	else
+		player:SetAttribute(VOLUME_ATTRIBUTE, userVolume)
+	end
+
 	local ostFolder = nil
 	local sfx = ReplicatedFirst:WaitForChild("SFX", 30)
 	if sfx ~= nil then
@@ -346,6 +587,8 @@ function MusicController:Start()
 
 	RegionController.OnEntered(onEntered)
 	RegionController.OnLeft(onLeft)
+
+	task.spawn(buildPanel)
 
 	-- Regions may already have been entered before we subscribed.
 	for _, key in RegionController.Current() do
