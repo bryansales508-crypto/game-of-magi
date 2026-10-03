@@ -22,11 +22,9 @@
 -- whichever style's track is playing so Bryan can read the real names out
 -- of Output.
 --
--- M3-FIX4 also adds: a Light/Heavy `kind` and a `windupSpeed` per hit,
--- read from Shared/Data/Combat.luau's Combat.Styles (server-owned data,
--- M3-FIX4-S, built in parallel -- read here defensively, since that table
--- doesn't exist on every branch yet; falls back to Config.Combat.WindupSpeed
--- and the old marker-gated cancel rule when it's missing); the LightStunned
+-- M3-FIX4 also adds: per-hit timings (windupAt/cancelUntil/...) read
+-- defensively from Shared/Data/Combat.luau's Combat.Styles (server-owned
+-- data); the LightStunned
 -- and Recovering attributes gating input alongside Stunned/Knocked/
 -- TrueStunned; and a purely cosmetic Royal Dagger prop shown on ANY
 -- character (not just the local one) whose WeaponSet is "Dagger".
@@ -35,7 +33,7 @@
 -- animation per style (Config.Combat.ComboAnimations), but after hit k
 -- lands the track freezes at hit k+1's wind-up marker (AdjustSpeed(0))
 -- until the player clicks again; that click sends AttackContinue(k+1) and
--- unfreezes the track straight into the wind-up slowdown. A click that
+-- unfreezes the track straight into the next hit's wind-up. A click that
 -- lands early (during hit k's follow-through, or inside Chain.HitGap) is
 -- remembered and fires as soon as it's allowed; no click within
 -- Chain.ClickTimeout and the server drops the combo (AttackCancelled
@@ -516,12 +514,10 @@ cancelBlock = function()
 end
 
 -- Right-click/jump ALSO tries to cancel an in-progress attack (point 3):
--- eligible while the live hit hasn't passed its own cancel point -- a
--- Light before its own wind-up marker (the old M3-FIX3 rule, and the
--- fallback when a hit's `kind` isn't available yet from Combat.Styles); a
--- Heavy until `cancelUntil` seconds after its segment started, by this
--- client's own clock (the server enforces the real check). Never stops
--- the track locally -- that only ever happens once the server's own
+-- eligible while the live hit hasn't passed its own cancel point: until
+-- `cancelUntil` seconds after its segment started, by this client's own
+-- clock (the server enforces the real check). Never stops the track
+-- locally -- that only ever happens once the server's own
 -- AttackCancelled arrives, so client and server never disagree about
 -- whether the swing is still live.
 tryCancelAttack = function()
@@ -545,22 +541,16 @@ tryCancelAttack = function()
 	end
 
 	local hitData = SwingTrack.StyleHitData(swing.styleName, swing.liveHit)
-	local kind = if hitData then hitData.kind else nil
-
-	if kind == "Heavy" then
-		local cancelUntil = if hitData and typeof(hitData.cancelUntil) == "number" then hitData.cancelUntil else nil
-		if not cancelUntil then
-			return
-		end
-		-- M3-FIX6: hit 1 on a later pass of the loop starts with the last
-		-- hit's follow-through, so its numbers sit loopOffset later.
-		if swing.liveHit == 1 and swing.segment > 1 then
-			cancelUntil += SwingTrack.LoopOffsetFor(swing.styleName)
-		end
-		if os.clock() - swing.segmentStartedAt > cancelUntil then
-			return
-		end
-	elseif swing.windupSeen then
+	local cancelUntil = if hitData and typeof(hitData.cancelUntil) == "number" then hitData.cancelUntil else nil
+	if not cancelUntil then
+		return
+	end
+	-- M3-FIX6: hit 1 on a later pass of the loop starts with the last
+	-- hit's follow-through, so its numbers sit loopOffset later.
+	if swing.liveHit == 1 and swing.segment > 1 then
+		cancelUntil += SwingTrack.LoopOffsetFor(swing.styleName)
+	end
+	if os.clock() - swing.segmentStartedAt > cancelUntil then
 		return
 	end
 
