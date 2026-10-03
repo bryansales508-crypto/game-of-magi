@@ -198,7 +198,12 @@ local function startFallback(character: Model)
 		RunService.Heartbeat:Connect(function(dt: number)
 			local root = character:FindFirstChild("HumanoidRootPart")
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
-			if not (root and root:IsA("BasePart") and humanoid) or humanoid.FloorMaterial == Enum.Material.Air then
+			if
+				not (root and root:IsA("BasePart") and humanoid)
+				or humanoid.Health <= 0
+				or humanoid:GetState() == Enum.HumanoidStateType.Dead
+				or humanoid.FloorMaterial == Enum.Material.Air
+			then
 				travelled = 0
 				return
 			end

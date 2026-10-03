@@ -305,19 +305,16 @@ function DevController:Start()
 
 	-- BUG-47: chat commands go to the server's DevService, which forwards the
 	-- ones it doesn't know (.region, .music, .lights) back here (`text` has no
-	-- leading dot). Guarded so the client still loads before the remote exists
-	-- on this branch (M7-03 adds it to Shared/Remotes.luau).
-	if (Remotes :: any).Definitions.DevLocalCommand ~= nil then
-		Remotes.Client.On("DevLocalCommand", function(text: any)
-			if typeof(text) ~= "string" or #text == 0 then
-				return
-			end
-			local line = "." .. text
-			if not handleLocalCommand(line, appendReply) then
-				appendReply("unknown command: " .. line)
-			end
-		end)
-	end
+	-- leading dot).
+	Remotes.Client.On("DevLocalCommand", function(text: any)
+		if typeof(text) ~= "string" or #text == 0 then
+			return
+		end
+		local line = "." .. text
+		if not handleLocalCommand(line, appendReply) then
+			appendReply("unknown command: " .. line)
+		end
+	end)
 
 	local commandBox = newInstance("TextBox", {
 		Name = "CommandBox",

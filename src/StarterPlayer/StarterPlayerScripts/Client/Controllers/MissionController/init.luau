@@ -134,7 +134,8 @@ local ALERT_TEMPLATES = {
 local CHIP_WIDTH = 44
 local CHIP_HEIGHT = 26
 local POPOUT_WIDTH = 300
-local POPOUT_HEIGHT = 72
+local POPOUT_MIN_HEIGHT = 72 -- grows with a 2-3 line description (AutomaticSize Y)
+local POPOUT_PADDING = 8
 local POPOUT_GAP = 6
 
 local TRACKER_WIDTH = 120
@@ -332,13 +333,16 @@ local selectedDestinationKey: string? = nil
 
 -- BUG-45: only one board modifier pop-out is open at a time (clicking
 -- another chip replaces it, clicking the same chip closes it).
-type OpenBoardPopOut = { popOut: Frame, chip: TextButton, idleTransparency: number }
+type OpenBoardPopOut = { popOut: Frame, chip: TextButton, idleTransparency: number, connections: { RBXScriptConnection } }
 local openBoardPopOut: OpenBoardPopOut? = nil
 
 local function closeBoardPopOut()
 	local open = openBoardPopOut
 	openBoardPopOut = nil
 	if open then
+		for _, connection in open.connections do
+			connection:Disconnect()
+		end
 		open.popOut.Parent = nil
 		open.chip.BackgroundTransparency = open.idleTransparency
 	end
@@ -404,11 +408,28 @@ local function buildModifierRow(
 		table.insert(sink, container)
 
 		local popOut = MOD_POP_OUT_TEMPLATE:Clone() :: Frame
-		popOut.Size = if boardFrame then UDim2.fromOffset(POPOUT_WIDTH, POPOUT_HEIGHT) else UDim2.new(1, 0, 0, POPOUT_HEIGHT)
+		-- The card grows with the description (AutomaticSize Y over a wrapped
+		-- Constraint label) so a 2-3 line description never spills out.
+		popOut.Size = if boardFrame then UDim2.fromOffset(POPOUT_WIDTH, 0) else UDim2.fromScale(1, 0)
+		popOut.AutomaticSize = Enum.AutomaticSize.Y
 		local constraint = (popOut :: any).Constraint :: TextLabel
-		;(popOut :: any).ModType.Text = modifier.name
+		local modType = (popOut :: any).ModType :: TextLabel
+		modType.Text = modifier.name
+		modType.AnchorPoint = Vector2.zero
+		modType.Position = UDim2.fromOffset(POPOUT_PADDING, POPOUT_PADDING)
+		modType.Size = UDim2.new(1, -2 * POPOUT_PADDING, 0, 26)
+		modType.TextXAlignment = Enum.TextXAlignment.Left
 		constraint.Text = modifier.text
 		constraint.TextWrapped = true
+		constraint.TextXAlignment = Enum.TextXAlignment.Left
+		constraint.TextYAlignment = Enum.TextYAlignment.Top
+		constraint.AnchorPoint = Vector2.zero
+		constraint.Position = UDim2.fromOffset(POPOUT_PADDING, POPOUT_PADDING + 28)
+		constraint.Size = UDim2.new(1, -2 * POPOUT_PADDING, 0, 0)
+		constraint.AutomaticSize = Enum.AutomaticSize.Y
+		local cardPadding = Instance.new("UIPadding")
+		cardPadding.PaddingBottom = UDim.new(0, POPOUT_PADDING)
+		cardPadding.Parent = popOut
 		table.insert(sink, popOut)
 
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
@@ -427,13 +448,34 @@ local function buildModifierRow(
 					if wasThis then
 						return
 					end
-					local anchorX = container.AbsolutePosition.X
-					local anchorY = boardFrame.AbsolutePosition.Y + boardFrame.AbsoluteSize.Y + POPOUT_GAP
-					popOut.AnchorPoint = Vector2.zero
-					popOut.Position = UDim2.fromOffset(anchorX, anchorY)
 					typedBonusButton.BackgroundTransparency = 0.75
+					popOut.AnchorPoint = Vector2.zero
 					popOut.Parent = popOutHost
-					openBoardPopOut = { popOut = popOut, chip = typedBonusButton, idleTransparency = idleTransparency }
+					local screen = popOutHost :: any
+					-- Below the board, lined up with the chip, clamped inside
+					-- the ScreenGui; redone when the card, the screen or the
+					-- board changes size/position.
+					local function place()
+						local screenSize: Vector2 = screen.AbsoluteSize
+						local cardHeight = math.max(popOut.AbsoluteSize.Y, POPOUT_MIN_HEIGHT)
+						local x = math.clamp(container.AbsolutePosition.X, 0, math.max(0, screenSize.X - POPOUT_WIDTH))
+						local y = boardFrame.AbsolutePosition.Y + boardFrame.AbsoluteSize.Y + POPOUT_GAP
+						y = math.clamp(y, 0, math.max(0, screenSize.Y - cardHeight))
+						popOut.Position = UDim2.fromOffset(x, y)
+					end
+					place()
+					local connections = {
+						popOut:GetPropertyChangedSignal("AbsoluteSize"):Connect(place),
+						boardFrame:GetPropertyChangedSignal("AbsolutePosition"):Connect(place),
+						boardFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(place),
+						screen:GetPropertyChangedSignal("AbsoluteSize"):Connect(place),
+					}
+					openBoardPopOut = {
+						popOut = popOut,
+						chip = typedBonusButton,
+						idleTransparency = idleTransparency,
+						connections = connections,
+					}
 					return
 				end
 				open = not open
