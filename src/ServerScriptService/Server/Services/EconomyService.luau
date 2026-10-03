@@ -147,10 +147,15 @@ end
 
 -- ==================== attributes ====================
 
+-- Also re-run by DataService.Replaced (see Start) and self-tested directly.
 local function refreshAttributes(player: Player, data: Data)
 	player:SetAttribute("Copper", data.Economy.Copper)
 	player:SetAttribute("Silver", data.Economy.Silver)
 	player:SetAttribute("Gold", data.Economy.Gold)
+end
+
+function EconomyService.RefreshAttributes(player: Player, data: Data)
+	refreshAttributes(player, data)
 end
 
 -- ==================== public API ====================
@@ -331,6 +336,15 @@ end
 
 function EconomyService:Start()
 	DataService.Loaded:Connect(function(player: Player)
+		local data = DataService.Get(player)
+		if data then
+			refreshAttributes(player, data)
+		end
+	end)
+
+	-- BUG-50: a Wipe (`.fresh`) / NewLife swaps the save's contents in place
+	-- without a new Loaded, so the purse attributes must be re-published.
+	DataService.Replaced:Connect(function(player: Player)
 		local data = DataService.Get(player)
 		if data then
 			refreshAttributes(player, data)

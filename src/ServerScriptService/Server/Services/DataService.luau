@@ -50,9 +50,14 @@ local profiles: { [Player]: Profile } = {}
 local loading: { [Player]: boolean } = {}
 
 local loadedBindable = Instance.new("BindableEvent")
+-- BUG-50: fires after a player's save is replaced in place (Wipe/NewLife -
+-- same `data` table, new contents) so anything mirroring the save onto
+-- attributes (the purse, ...) can re-publish. Not fired for a normal load.
+local replacedBindable = Instance.new("BindableEvent")
 
 local DataService = {}
 DataService.Loaded = loadedBindable.Event :: RBXScriptSignal
+DataService.Replaced = replacedBindable.Event :: RBXScriptSignal
 
 local function getStore(): any
 	if useMock then
@@ -339,6 +344,7 @@ function DataService.Wipe(player: Player)
 	data.Age.TimePassed = now
 
 	log:Info(string.format("Wiped save for %s", player.Name))
+	replacedBindable:Fire(player)
 end
 
 -- M2-02: a death's "completely fresh life" (DESIGN.md section 3a). Like
@@ -369,6 +375,7 @@ function DataService.NewLife(player: Player)
 	data.Age.TimePassed = now
 
 	log:Info(string.format("New life for %s (life #%d)", player.Name, keepLives))
+	replacedBindable:Fire(player)
 end
 
 function DataService.Save(player: Player)
