@@ -26,6 +26,16 @@
 -- (GetMarkerReachedSignal) or plain KEYFRAME names (KeyframeReached) -
 -- Bryan's Fist animation uses keyframe names; both feed one dispatcher and
 -- each counts once per segment.
+--
+-- M7-02 (BUG-34, timer fallback): a style whose animation has no hit
+-- keyframe/marker (the old Royal Dagger swing) would never report a hit, so
+-- every segment also arms a timer for its live hit. If that hit's marker
+-- hasn't played by the midpoint of its hitWindow (plus a FALLBACK_GRACE so a
+-- marker authored exactly at the midpoint, as Fist's are, always wins the
+-- tie), the timer calls the same onHit path with the name "<timer>": the
+-- track freezes and AttackHit is reported inside the window. The timer is
+-- cancelled by the marker, continue(), stop() and teardown, so a stopped
+-- swing never reports. A missing wind-up marker never blocks it.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -38,6 +48,11 @@ local CombatData: any = require(Shared:WaitForChild("Data"):WaitForChild("Combat
 local SwingTrack = {}
 
 local COMBO_SPEEDS: { [string]: number } = Config.Combat.ComboSpeed
+
+-- Real seconds added to the hitWindow midpoint before the fallback timer
+-- fires (never past the window's max), so a real marker at the midpoint
+-- always arrives first.
+local FALLBACK_GRACE = 0.1
 
 export type Swing = {
 	character: Model,
@@ -168,11 +183,50 @@ function SwingTrack.new(params: Params): Swing
 		end
 	end
 
+	local onHit: (hitIndex: number, name: string) -> ()
+	local fallbackTimer: thread? = nil
+
+	local function cancelFallback()
+		if fallbackTimer then
+			task.cancel(fallbackTimer)
+			fallbackTimer = nil
+		end
+	end
+
+	-- Arms the timer for the live segment's hit (see the header comment).
+	local function armFallback()
+		cancelFallback()
+		local hitData = SwingTrack.StyleHitData(styleName, swing.liveHit)
+		local window = if hitData then hitData.hitWindow else nil
+		if typeof(window) ~= "table" or typeof(window.min) ~= "number" or typeof(window.max) ~= "number" then
+			return
+		end
+		local delaySeconds = window.min + (window.max - window.min) / 2 + FALLBACK_GRACE
+		delaySeconds = math.min(delaySeconds, window.max)
+		-- Same pass rule as the server: hit 1 after the first pass starts
+		-- with the last hit's follow-through.
+		if swing.liveHit == 1 and swing.segment > 1 then
+			delaySeconds += SwingTrack.LoopOffsetFor(styleName)
+		end
+		local armedSegment = swing.segment
+		fallbackTimer = task.delay(delaySeconds, function()
+			fallbackTimer = nil
+			if swing.stopped or swing.landed or swing.segment ~= armedSegment then
+				return
+			end
+			if params.logMarkers then
+				log:Info(string.format("fallback: hit %d at +%.3fs (no marker)", swing.liveHit, os.clock() - swing.segmentStartedAt))
+			end
+			onHit(swing.liveHit, "<timer>")
+		end)
+	end
+
 	swing.stop = function(fadeTime: number?)
 		if swing.stopped then
 			return
 		end
 		swing.stopped = true
+		cancelFallback()
 		for _, conn in connections do
 			conn:Disconnect()
 		end
@@ -199,6 +253,7 @@ function SwingTrack.new(params: Params): Swing
 		swing.windupSeen = false
 		-- Follow-through and the next wind-up at the style's ComboSpeed.
 		track:AdjustSpeed(comboSpeed)
+		armFallback()
 		if params.logMarkers then
 			log:Info(string.format("continue: hit %d (segment %d)", swing.liveHit, swing.segment))
 		end
@@ -233,7 +288,7 @@ function SwingTrack.new(params: Params): Swing
 		end
 	end
 
-	local function onHit(hitIndex: number, name: string)
+	onHit = function(hitIndex: number, name: string)
 		logMarker(name)
 		if swing.landed then
 			return
@@ -247,6 +302,7 @@ function SwingTrack.new(params: Params): Swing
 		end
 		-- The punch: freeze right here, in the impact pose, until the next
 		-- click.
+		cancelFallback()
 		swing.landed = true
 		swing.paused = true
 		swing.lastHitAt = os.clock()
@@ -306,6 +362,7 @@ function SwingTrack.new(params: Params): Swing
 	-- sure).
 	track.Looped = true
 	track:Play(0.05, 1, comboSpeed)
+	armFallback()
 	return swing
 end
 
