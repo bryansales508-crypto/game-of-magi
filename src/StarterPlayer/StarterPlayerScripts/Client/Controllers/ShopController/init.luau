@@ -58,6 +58,7 @@ type HoverTarget = {
 	promptOn: boolean,
 	detectorHover: boolean, -- set by a ClickDetector's hover events
 	usingClickDetector: boolean,
+	stocked: boolean, -- BUG-65: an empty (undressed, invisible) rack never highlights or shows a prompt
 }
 
 local targets: { [BasePart]: HoverTarget } = {}
@@ -70,6 +71,22 @@ local standRadius = 0
 local boundsDirty = false
 local allHidden = true
 local mouse = player:GetMouse()
+
+-- A rack is stocked while its rig's Shirt or Pants has a template; ShopService
+-- blanks both when it undresses the rack. A part with no rack Model above it
+-- counts as stocked.
+local function isRackStocked(part: BasePart): boolean
+	local rack = part:FindFirstAncestorOfClass("Model")
+	if not rack then
+		return true
+	end
+	local shirt = rack:FindFirstChildOfClass("Shirt")
+	local pants = rack:FindFirstChildOfClass("Pants")
+	if not (shirt or pants) then
+		return true
+	end
+	return (shirt ~= nil and shirt.ShirtTemplate ~= "") or (pants ~= nil and pants.PantsTemplate ~= "")
+end
 
 local function rangeOf(target: HoverTarget): number
 	local prompt = target.prompt
@@ -166,7 +183,7 @@ local function refresh()
 
 	for part, target in targets do
 		local distance = (origin - part.Position).Magnitude
-		if distance <= rangeOf(target) then
+		if target.stocked and distance <= rangeOf(target) then
 			nearCount += 1
 			if distance < nearDistance then
 				nearDistance = distance
@@ -249,9 +266,35 @@ local function registerTarget(part: BasePart)
 		promptOn = false,
 		detectorHover = false,
 		usingClickDetector = false,
+		stocked = isRackStocked(part),
 	}
 	targets[part] = target
 	setState(target, false, false)
+
+	local function updateStocked()
+		target.stocked = isRackStocked(part)
+		if not target.stocked then
+			setState(target, false, false)
+		end
+	end
+	local rack = part:FindFirstAncestorOfClass("Model")
+	if rack then
+		local function watchClothing(child: Instance)
+			if child:IsA("Shirt") then
+				table.insert(target.connections, child:GetPropertyChangedSignal("ShirtTemplate"):Connect(updateStocked))
+			elseif child:IsA("Pants") then
+				table.insert(target.connections, child:GetPropertyChangedSignal("PantsTemplate"):Connect(updateStocked))
+			else
+				return
+			end
+			updateStocked()
+		end
+		for _, child in rack:GetChildren() do
+			watchClothing(child)
+		end
+		table.insert(target.connections, rack.ChildAdded:Connect(watchClothing))
+		table.insert(target.connections, rack.ChildRemoved:Connect(updateStocked))
+	end
 
 	-- A prompt the server adds (or re-adds on restock) after we registered
 	-- starts hidden; the next frame's refresh decides if it shows.
