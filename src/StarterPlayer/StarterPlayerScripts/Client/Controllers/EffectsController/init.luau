@@ -739,12 +739,39 @@ local function onKnockedBack(data: any)
 	emitParticle(target, "HitParticle", 1)
 end
 
+local warnedDashSound = false
+
+-- BUG-61: the old dash whoosh, played from the dasher's body so every nearby
+-- player hears it spatialised (the old server handler did the same).
+local function playDashSound(rootPart: BasePart)
+	local sfx = ReplicatedFirst:FindFirstChild("SFX")
+	local combatSounds = sfx and sfx:FindFirstChild("CombatSounds")
+	local template = combatSounds and combatSounds:FindFirstChild(Config.World.Sfx.Dash)
+	if template == nil or not template:IsA("Sound") then
+		if not warnedDashSound then
+			warnedDashSound = true
+			log:Warn("dash sound missing: ReplicatedFirst.SFX.CombatSounds." .. Config.World.Sfx.Dash)
+		end
+		return
+	end
+	local sound = template:Clone()
+	sound.Parent = rootPart
+	sound.Ended:Once(function()
+		sound:Destroy()
+	end)
+	sound:Play()
+	Debris:AddItem(sound, math.max(sound.TimeLength, 2) + 1)
+end
+
 local function onDash(data: any)
 	local character = data.character
 	if typeof(character) ~= "Instance" then
 		return
 	end
 	local rootPart = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if rootPart and rootPart:IsA("BasePart") then
+		playDashSound(rootPart)
+	end
 	local template = MiscEffects:FindFirstChild("DashTrail")
 	if not rootPart or not (template and template:IsA("Trail")) then
 		return
