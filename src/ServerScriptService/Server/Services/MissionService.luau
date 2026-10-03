@@ -1,41 +1,18 @@
 --!strict
--- Delivery missions (M5-PLAN.md Phase 5C, Bryan's rules 2026-09-29). One
--- board per player, opened from a `*Delivery` part; a route/board
--- membership check on every start (fixes H7 - the old code trusted any city
--- name the client sent); modifiers rolled server-side from the player's own
--- route history and each city's Safety (fixes M12); one shared 0.5s loop for
--- arrivals, TimeCrunch and the beacon (fixes H9 - the old code left a
--- per-frame loop running forever per board click); an interception pays the
--- attacker instantly and exactly once (fixes H8); a real, saved success
--- streak (fixes M21); the old reward formula with the dead "level" replaced
--- by rank index (fixes L15's division by zero).
+-- Delivery missions. One board per player, opened from a `*Delivery` part. Every
+-- start is checked against the board's trade route; modifiers are rolled
+-- server-side from the player's own route history and each city's Safety; one
+-- shared 0.5s loop handles arrivals, TimeCrunch and the beacon. An interception
+-- pays the attacker instantly and exactly once.
 --
--- REVIEW-M5C-01 fix round (CHANGES NEEDED): H1 (modifier displayName, see
--- Shared/Data/Cities.luau), H2 (the CourierLoop return leg sends "Started",
--- not "Cleared"), M1 (the shared tick is pcall-wrapped), M2 (interception
--- needs distance/time into the run - Bryan's call, Config.Missions.
--- InterceptMin*), M3 (board rolls are cached per player per destination
--- until a run to it starts), M5 (FragilePackage/VIP react to CombatService.
--- HitLanded - ANY landed hit), M6
--- (the package's FragilePackage/HighlyValuable looks restored), L1 (leaving
--- fails the run before local state is dropped), L2 (Mission attributes
--- refresh after a new life), L3 (the interceptor is resolved by UserId, not
--- name - see CombatService's byUserId).
+-- Failing a modifier (TimeCrunch's timer, a FragilePackage/VIP hit, Clear the
+-- Route with no knockout) never ends the run: it drops that modifier's share of
+-- the payout and sends `MissionUpdate` state "ModifierFailed" `{key}` so the
+-- client greys the pop-out. Only leaving, dying, respawning, an interception, or
+-- `.mission fail` end a run early.
 --
--- Bryan's own follow-up refinement (after the fix round): failing a
--- modifier (TimeCrunch's timer, a FragilePackage/VIP hit, Clear the Route
--- with no knockout) never ends the run any more - it just drops that
--- modifier's own share of the payout and tells the client which pop-out to
--- grey (`MissionUpdate` state "ModifierFailed", `{key}`). Only leaving,
--- dying, respawning, an interception, or `.mission fail` end a run early.
--- BUG-55 (Bryan, 2026-10-03) supersedes the old "HighlyValuable keeps
--- `CourierBeacon` on for the whole run": the gold Highlight lives on the
--- PACKAGE only, and the HV courier gets the same occasional beacon as every
--- other courier.
---
--- Ported from (now removed) SSS/MISC/MissionHandler/init.server.luau,
--- RS/Modules/MissionDeliniation.luau and RS/Modules/RewardHandler.luau; see
--- docs/SYSTEMS.md section 7 and docs/reference/m5c-studio-dump.md.
+-- The gold Highlight lives on the package only; the HighlyValuable courier gets
+-- the same occasional beacon as every other courier.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -66,12 +43,8 @@ local MissionService = {}
 
 -- ==================== pure core (self-tested directly) ====================
 
--- Pure: whether `destinationKey` is actually on `cityKey`'s trade route
--- (fixes H7 - the old server never checked this at all). Used both as the
--- remote handler's real guard (on top of "is it on THIS board", which
--- already implies it, since a board is only ever built from a real route -
--- this is the defense-in-depth copy, and what the self-test exercises
--- directly) and by the dev `.mission start` command.
+-- Pure: whether `destinationKey` is on `cityKey`'s trade route. Used as the
+-- remote handler's guard and by the dev `.mission start`.
 function MissionService.IsOnRoute(cityKey: string, destinationKey: string): boolean
 	local route = Cities.Routes[cityKey]
 	if route == nil then
@@ -85,10 +58,8 @@ function MissionService.IsOnRoute(cityKey: string, destinationKey: string): bool
 	return false
 end
 
--- Pure: the roll factors for one destination, from the PLAYER's own save
--- (Progress.Routes - a real per-player count, AUDIT M12) and the
--- destination city's static Safety (Cities.luau, standing in for the old
--- global successRate counter nothing ever wrote to).
+-- Pure: the roll factors for one destination, from the player's own save
+-- (Progress.Routes) and the city's static Safety.
 function MissionService.FactorsFor(data: Data, destinationKey: string): Cities.Factors
 	local city = Cities.ByKey[destinationKey]
 	local safety = if city then city.safety else 0
@@ -99,34 +70,23 @@ function MissionService.FactorsFor(data: Data, destinationKey: string): Cities.F
 	}
 end
 
--- Pure: the pre-multiplier base amount (rank/population/streak only - no
--- modifiers). Cached once per board roll (M3) and combined with whichever
--- modifiers are still intact at settlement (CurrentPay below) to get the
--- actual payout - kept separate so a modifier failing DURING the run only
--- ever lowers the final number, never recomputes rank/population/streak
--- from a different moment. `rankIndex` replaces the old race-branched
--- "level" (Ranks.rankFor never returns less than 1, so 10/rankIndex can't
--- divide by zero - AUDIT L15); `streak` is the real, saved DeliveryStreak,
--- not the old per-spawn SuccessRate folder (AUDIT M21).
+-- Pure: the pre-multiplier base amount (rank/population/streak only, no
+-- modifiers). Cached per board roll and combined with the still-intact modifiers
+-- at settlement (CurrentPay), so a mid-run failure only lowers the payout.
+-- Ranks.rankFor never returns less than 1, so 10/rankIndex cannot divide by zero.
 function MissionService.BaseAmount(rankIndex: number, population: number, streak: number): number
 	return math.floor(1 + 10 / rankIndex + population * 1.25 + streak * 1.25)
 end
 
--- Pure: the old RewardHandler.rewardcaculation × citymodifier formula,
--- given a fixed set of modifiers - used for the board's PREVIEW pay (every
--- rolled modifier assumed intact, the best case) and by the self-test.
--- CurrentPay below is the live equivalent once some may have failed.
--- Cities.CombinedMultiplier is additive (REVIEW-M5C-01B F2, confirmed with
--- Bryan), not a product of the modifiers' own multipliers.
+-- Pure: base amount times the modifiers' combined multiplier for a fixed set of
+-- modifiers; used for the board preview (every modifier intact) and the
+-- self-test. Cities.CombinedMultiplier is additive, not a product.
 function MissionService.ComputePay(rankIndex: number, population: number, streak: number, modifiers: { ModifierRoll }): number
 	return math.floor(MissionService.BaseAmount(rankIndex, population, streak) * Cities.CombinedMultiplier(modifiers))
 end
 
--- Pure (Bryan's refinement): the ACTUAL payout at settlement - `baseAmount`
--- combined only with whichever rolled modifiers are still intact (not
--- listed in `failedKeys`). A modifier failing during the run (TimeCrunch's
--- timer, a landed hit against FragilePackage/VIP, Clear the Route with no
--- knockout) never ends the run any more - it just drops out of this sum.
+-- Pure: the payout at settlement: `baseAmount` combined with the rolled modifiers
+-- not listed in `failedKeys`.
 function MissionService.CurrentPay(baseAmount: number, modifiers: { ModifierRoll }, failedKeys: { [string]: boolean }): number
 	local intact: { ModifierRoll } = {}
 	for _, mod in modifiers do
@@ -137,84 +97,58 @@ function MissionService.CurrentPay(baseAmount: number, modifiers: { ModifierRoll
 	return math.floor(baseAmount * Cities.CombinedMultiplier(intact))
 end
 
--- Pure (REVIEW-M5C-01B F4, Bryan's call): what an INTERCEPTOR is actually
--- paid - `failedKeysBeforeHit` is `failedKeys` as they stood BEFORE the
--- very hit that knocked the courier out (see onHitLanded's own snapshot),
--- so the same landed hit that ends the run never also costs the
--- interceptor whatever it just failed for the courier (a VIP courier's 2x
--- or Fragile's 1.3x otherwise always vanished into the killing blow
--- itself). Clear the Route's bonus is force-excluded outright, always -
--- the interceptor didn't clear anything (if anything, they're the threat
--- it was about), whether or not the courier happened to earn it against
--- someone else earlier in the run.
+-- Pure: what an interceptor is paid. `failedKeysBeforeHit` is the failed set
+-- before the hit that knocked the courier out, so the killing blow never costs
+-- the interceptor what it just failed for the courier. Clear the Route's bonus is
+-- always excluded.
 function MissionService.InterceptPay(baseAmount: number, modifiers: { ModifierRoll }, failedKeysBeforeHit: { [string]: boolean }): number
 	local excluding: { [string]: boolean } = table.clone(failedKeysBeforeHit)
 	excluding["CleartheRoute"] = true
 	return MissionService.CurrentPay(baseAmount, modifiers, excluding)
 end
 
--- Pure (the intercepted mark, Bryan): every interception adds one stack to
--- the COURIER (Progress.Intercepted) - this is the multiplier that stack
--- count earns them, halved per stack with a 10% floor so it never hits
--- zero. Applies to that player's own board offers, their own reduced
--- payout if they still complete a marked delivery, and an interceptor's
--- own payout while the victim is marked (see ApplyOfferMultiplier/
--- interceptRun) - `stacks == 0` is exactly 1 (no reduction at all).
+-- Pure: the multiplier earned by `stacks` interception marks on the courier:
+-- halved per stack with a 10% floor. Applies to their board offers, their own
+-- payout, and an interceptor's payout while the victim is marked. `stacks == 0`
+-- is exactly 1.
 function MissionService.OfferMultiplier(stacks: number): number
 	return math.max(Config.Missions.InterceptedFloor, Config.Missions.InterceptedDecay ^ stacks)
 end
 
--- Pure: applies an already-computed OfferMultiplier to an already-computed
--- pay number - kept as its own tiny step (rather than folded into
--- ComputePay/CurrentPay/InterceptPay) so none of those - or their existing
--- self-tests - need to know the intercepted mark exists at all; a run's own
--- `offerMultiplier` is fixed once at roll time (same reasoning as
--- `baseAmount`), same as everything else this stacks with.
+-- Pure: applies an OfferMultiplier to a computed pay number. Kept separate so
+-- ComputePay/CurrentPay/InterceptPay do not know about the mark.
 function MissionService.ApplyOfferMultiplier(pay: number, offerMultiplier: number): number
 	return math.floor(pay * offerMultiplier)
 end
 
--- Pure (REVIEW-M5C-01C H1): the board-preview pay for a cached
--- `BoardDestination`, applying `offerMultiplier` FRESH every call rather
--- than one baked in at roll time - `baseAmount`/`modifiers` are genuinely
--- fixed the moment a destination is rolled (M3), but the intercepted mark
--- can change while that same cache entry is still sitting in `boardRolls`
--- (a DIFFERENT destination's run gets intercepted, a clearing delivery,
--- `.mission mark`), so this is the one place that reads it. No modifier is
--- ever pre-failed for a preview (empty failedKeys - the best case, same as
--- ComputePay).
+-- Pure: board-preview pay for a cached `BoardDestination`. Applies
+-- `offerMultiplier` fresh on every call because the mark can change while the
+-- roll sits in `boardRolls`. No modifier is pre-failed.
 function MissionService.PreviewPay(baseAmount: number, modifiers: { ModifierRoll }, offerMultiplier: number): number
 	return MissionService.ApplyOfferMultiplier(MissionService.CurrentPay(baseAmount, modifiers, {}), offerMultiplier)
 end
 
--- Pure: the courier's OWN mark advances by one on every interception -
--- never cleared by a failure, only by ClearIntercepted below (a completed
--- delivery).
+-- Pure: the courier's mark advances by one per interception; only
+-- ClearIntercepted removes it.
 function MissionService.MarkIntercepted(data: Data)
 	data.Progress.Intercepted += 1
 end
 
--- Pure: one completed delivery washes the mark away entirely - AFTER that
--- delivery itself is paid at whatever the reduced rate was at the time it
--- was rolled (finishRun's own ordering, not this function's).
+-- Pure: a completed delivery clears the mark, after being paid at the rate rolled
+-- for it.
 function MissionService.ClearIntercepted(data: Data)
 	data.Progress.Intercepted = 0
 end
 
--- Pure (Bryan): an interceptor earns a Black Rukh only if the victim
--- WASN'T already marked before this interception - `offerMultiplierAtStart`
--- is a run's own `offerMultiplier` (fixed at roll/start time, i.e. before
--- this interception's own mark), which is exactly 1 only when stacks was 0
--- at that point.
+-- Pure: an interceptor earns a Black Rukh only if the victim was not already
+-- marked; `offerMultiplierAtStart` is the run's own offerMultiplier, exactly 1
+-- only when stacks was 0.
 function MissionService.InterceptorEarnsBlackRukh(offerMultiplierAtStart: number): boolean
 	return offerMultiplierAtStart >= 1
 end
 
--- Pure (Bryan's post-review refinement): marks one modifier failed in
--- `failedKeys`, idempotently - returns true only the first time (so a
--- caller fires the ModifierFailed update/log exactly once per modifier per
--- run, even if the same trigger fires repeatedly, e.g. several landed hits
--- against FragilePackage).
+-- Pure: marks a modifier failed in `failedKeys`; returns true only the first
+-- time, so the ModifierFailed update fires once per modifier per run.
 function MissionService.MarkFailed(failedKeys: { [string]: boolean }, key: string): boolean
 	if failedKeys[key] then
 		return false
@@ -223,13 +157,9 @@ function MissionService.MarkFailed(failedKeys: { [string]: boolean }, key: strin
 	return true
 end
 
--- Pure (REVIEW-M5C-01B F3): the failed-keys SET as an array, for the wire.
--- Every MissionUpdate carries this so the client can re-grey already-failed
--- pop-outs on ANY rebuild - most importantly the CourierLoop return leg's
--- own "Started" (which tears down and rebuilds every pop-out from
--- `modifiers` alone otherwise, un-greying a TimeCrunch/Fragile/VIP that
--- already failed on the first leg) - without ever re-firing the one-shot
--- `"ModifierFailed"` update for a key that's already been sent.
+-- Pure: the failed-keys set as an array for the wire. Every MissionUpdate carries
+-- it so the client can re-grey failed pop-outs on any rebuild (e.g. the
+-- CourierLoop return leg's "Started").
 function MissionService.FailedKeysList(failedKeys: { [string]: boolean }): { string }
 	local list: { string } = {}
 	for key in failedKeys do
@@ -238,12 +168,10 @@ function MissionService.FailedKeysList(failedKeys: { [string]: boolean }): { str
 	return list
 end
 
--- Pure (H2): decides the phase transition on arrival. `"Returning"` with a
--- `"Started"` update means loop back (CourierLoop) - REVIEW-M5C-01 H2: the
--- client only re-arms its tracker on `"Started"` with `returnPosition` set;
--- it tears the WHOLE run down on any other state, including the old
--- `"Cleared"` this used to send. `nil` means the run is actually done
--- (finishRun decides Finished vs. whatever else).
+-- Pure: phase transition on arrival. "Returning" with a "Started" update loops
+-- back (CourierLoop); the client re-arms its tracker only on "Started" with
+-- `returnPosition` set and tears the run down on any other state. `nil` means the
+-- run is done (finishRun decides).
 function MissionService.OnArrival(phase: RunPhase, hasCourierLoop: boolean): (RunPhase?, string?)
 	if phase == "ToDestination" and hasCourierLoop then
 		return "Returning", "Started"
@@ -251,20 +179,15 @@ function MissionService.OnArrival(phase: RunPhase, hasCourierLoop: boolean): (Ru
 	return nil, nil
 end
 
--- Pure (M2, lead decision, Bryan may change it): an interception only pays
--- if the courier is genuinely out on the route - AUDIT H8's remaining gap
--- was two accounts farming the reward by knocking a courier out right next
--- to the board they just opened, with no travel at all.
+-- Pure: an interception only pays if the courier is out on the route
+-- (distance/time gate, Config.Missions.InterceptMin*), so accounts cannot farm by
+-- knocking out a courier next to the board.
 function MissionService.CanIntercept(distanceFromOrigin: number, elapsedSeconds: number): boolean
 	return distanceFromOrigin >= Config.Missions.InterceptMinStuds or elapsedSeconds >= Config.Missions.InterceptMinSeconds
 end
 
--- Pure (M3): the board-roll cache's own get-or-roll logic - extracted so
--- "reopening the board doesn't re-roll" is testable with a fake cache and
--- no Player/DataService/remote involved. `roll` only runs on a cache miss;
--- a hit returns the exact same table every time (the old MissionHandler's
--- `CityMods`, ported: once rolled, a destination's modifiers/pay don't
--- change until a run to it actually starts and clears the entry).
+-- Pure: board-roll cache get-or-roll. `roll` runs only on a miss; a hit returns
+-- the same table until a run to that destination starts and clears the entry.
 function MissionService.GetOrRoll<T>(cache: { [string]: T }, key: string, roll: () -> T): T
 	local cached = cache[key]
 	if cached ~= nil then
@@ -275,11 +198,9 @@ function MissionService.GetOrRoll<T>(cache: { [string]: T }, key: string, roll: 
 	return entry
 end
 
--- Pure: a run "settles" (pays out, fails or is intercepted) exactly once -
--- whichever of the arrival check or a disqualifying event gets there first
--- wins; every other caller sees `settled` already true and does nothing
--- (AUDIT H8 - "the reward is paid exactly once per run"). Unrelated to
--- MarkFailed above: a failed MODIFIER never settles the run by itself.
+-- Pure: a run settles (pays, fails or is intercepted) exactly once; later callers
+-- see `settled` already true and do nothing. A failed modifier never settles the
+-- run.
 export type SettleState = { settled: boolean }
 function MissionService.TrySettle(state: SettleState): boolean
 	if state.settled then
@@ -289,40 +210,29 @@ function MissionService.TrySettle(state: SettleState): boolean
 	return true
 end
 
--- Pure: a completed delivery - the real streak (AUDIT M21) and per-city
--- route history (AUDIT M12) the modifier roll above reads back.
+-- Pure: a completed delivery updates the saved streak and per-city route history.
 function MissionService.ApplySuccess(data: Data, destinationKey: string)
 	data.Progress.DeliveryStreak += 1
 	data.Progress.Routes[destinationKey] = (data.Progress.Routes[destinationKey] or 0) + 1
 end
 
--- Pure: any failed/intercepted run breaks the streak. Route history is only
--- ever earned on a real delivery (ApplySuccess), never touched here.
+-- Pure: any failed/intercepted run breaks the streak; route history is only
+-- earned on delivery.
 function MissionService.ApplyFailure(data: Data)
 	data.Progress.DeliveryStreak = 0
 end
 
--- Pure: the interceptor's own save gets the reward as a Bounty number
--- (Bryan, 2026-09-29: "no board yet" - this is only the running total a
--- later bounty-board milestone will read). Never touches the courier's
--- save - AUDIT H8's "two accounts can farm this back and forth" fix is
--- that the courier's OWN copper is never reduced at all; they just never
--- get their own reward.
+-- Pure: the interceptor's save gets the reward as a Bounty running total. The
+-- courier's own copper is never reduced.
 function MissionService.ApplyInterception(attackerData: Data, reward: number)
 	attackerData.Bounty += reward
 end
 
 -- ==================== runtime types ====================
 
--- REVIEW-M5C-01C H1: deliberately carries NO offerMultiplier/pay of its
--- own - `rank`/`population`/`streak` (baked into `baseAmount`) and the
--- modifier roll are genuinely fixed the moment a destination is rolled
--- (M3's whole point), but the intercepted mark is NOT: it can change while
--- this exact cache entry is still sitting in `boardRolls` (an interception
--- on a DIFFERENT destination's run, a clearing delivery, `.mission mark`),
--- so baking a multiplier in here would go stale exactly like it just did.
--- PreviewPay (below) applies the CURRENT multiplier fresh every time this
--- is read, so the cache can never disagree with `Progress.Intercepted`.
+-- Carries no offerMultiplier/pay: the intercepted mark can change while the entry
+-- sits in `boardRolls`, so PreviewPay applies the current multiplier on every
+-- read.
 type BoardDestination = {
 	key: string,
 	modifiers: { ModifierRoll },
@@ -345,7 +255,7 @@ type Run = {
 	originPosition: Vector3,
 	modifiers: { ModifierRoll }, -- the full rolled set, immutable through the run
 	baseAmount: number,
-	offerMultiplier: number, -- the intercepted mark, fixed at roll time (>= 1 means the courier wasn't marked at start - no Black Rukh withheld from an interceptor)
+	offerMultiplier: number, -- the intercepted mark, fixed at roll time
 	phase: RunPhase,
 	returnPosition: Vector3?,
 	hasCourierLoop: boolean,
@@ -354,17 +264,13 @@ type Run = {
 	hasVip: boolean,
 	hasClearTheRoute: boolean,
 	hasHighlyValuable: boolean,
-	clearedRoute: boolean, -- M4: earned a knockout during the run
-	failedKeys: { [string]: boolean }, -- Bryan's refinement: dropped from the payout, run continues
-	-- F4: a snapshot of failedKeys taken right before the courier's own
-	-- Fragile/VIP react to a landed hit (onHitLanded) - nil until the first
-	-- hit lands. interceptRun uses this (falling back to failedKeys itself
-	-- if a knockout never went through a real landed hit, e.g. a dev
-	-- `.knock`) so the SAME hit that ends the run in an interception never
-	-- also costs the interceptor whatever it just failed.
+	clearedRoute: boolean, -- earned a knockout during the run
+	failedKeys: { [string]: boolean }, -- dropped from the payout, run continues
+	-- failedKeys as it stood before the hit that knocked the courier out; nil
+	-- until the first landed hit (interceptRun falls back to failedKeys).
 	preHitFailedKeys: { [string]: boolean }?,
 	timerEndsAt: number?, -- Workspace:GetServerTimeNow(), also the wire value
-	startedAt: number, -- for M2's elapsed-seconds gate
+	startedAt: number, -- for the interception elapsed-time gate
 	pack: Instance?,
 	valuableHighlight: Highlight?,
 	valuablePhase: ValuablePulsePhase?,
@@ -376,13 +282,11 @@ type Run = {
 }
 
 -- ==================== state ====================
--- Keyed by Player/Model, never by name - same reasoning every other service
--- in this codebase uses (StatusService, MovementService, ...).
+-- Keyed by Player/Model, never by name.
 
 local boards: { [Player]: Board } = {}
--- M3: cached per player per destination key, surviving repeated
--- MissionOpenBoard calls (the old CityMods) - cleared only when a run to
--- that destination actually starts (clearCachedRoll).
+-- Cached per player per destination key across board opens; cleared when a run to
+-- that destination starts (clearCachedRoll).
 local boardRolls: { [Player]: { [string]: BoardDestination } } = {}
 local runs: { [Player]: Run } = {}
 local runByCharacter: { [Model]: Run } = {}
@@ -405,12 +309,10 @@ local function hasModifier(modifiers: { ModifierRoll }, key: string): boolean
 	return false
 end
 
--- BUG-59 (Bryan, 2026-10-03): a city with no `<key>Delivery` part gets a
--- server-side placeholder instead of refusing the run, so every route can be
--- tested end to end. Position, in order: the centre of that city's
--- `<key>REGION` part under Workspace.Regions (dropped onto the ground below
--- it when a raycast finds any), else Config.Missions.PlaceholderDeliveryPoints,
--- else nil (the run is refused, as before).
+-- A city with no `<key>Delivery` part gets a server-side placeholder so every
+-- route can be tested. Position: centre of `<key>REGION` under Workspace.Regions
+-- (dropped to the ground when a raycast hits), else
+-- Config.Missions.PlaceholderDeliveryPoints, else nil (run refused).
 local PLACEHOLDER_SUFFIX = "_PLACEHOLDER"
 local PLACEHOLDER_COLOR = Color3.fromRGB(255, 0, 200)
 local placeholderLogged: { [string]: boolean } = {}
@@ -424,8 +326,7 @@ local function findRegionPart(cityKey: string): BasePart?
 	return nil
 end
 
--- Pure: where a city's placeholder goes - the region part's centre if there
--- is one, else the configured point, else nil.
+-- Pure: the region part's centre, else the configured point, else nil.
 function MissionService.PlaceholderPosition(cityKey: string, regionPart: BasePart?): Vector3?
 	if regionPart then
 		return regionPart.Position
@@ -445,11 +346,8 @@ local function groundBelow(position: Vector3, regionPart: BasePart): Vector3
 	return position
 end
 
--- The part a city's deliveries go to: the real part under `parent` if it
--- exists, else (reusing or creating) the placeholder in the same parent, else
--- nil. `parent` is Workspace.MissionPlaceholders in play (the real part is
--- looked up in the map first by getDeliveryPart); the self-test passes a
--- temp folder.
+-- The part a city's deliveries go to: the real part under `parent` if present,
+-- else the placeholder (reused or created), else nil.
 function MissionService.ResolveDeliveryPart(cityKey: string, parent: Instance): BasePart?
 	local name = Cities.DeliveryPartName(cityKey)
 	local real = parent:FindFirstChild(name)
@@ -538,9 +436,8 @@ local function getDeliveryPart(cityKey: string): BasePart?
 	return MissionService.ResolveDeliveryPart(cityKey, placeholderFolder())
 end
 
--- BUG-46: the one place a city key becomes a world position. Each city's own
--- `<key>Delivery` part (or its BUG-59 placeholder), never a shared fallback;
--- a city with neither is logged once and the caller refuses the run.
+-- The one place a city key becomes a world position: its `<key>Delivery` part or
+-- placeholder. A city with neither is logged once and the caller refuses the run.
 local missingPartLogged: { [string]: boolean } = {}
 
 function MissionService.DestinationPositionFor(cityKey: string): Vector3?
@@ -577,12 +474,10 @@ local function closeBoard(player: Player)
 	Remotes.Server.Fire("MissionBoard", player, nil)
 end
 
--- Pure (REVIEW-M5C-01 H1, exported and self-tested per REVIEW-M5C-01B F5):
--- every modifier sent to the client is `{ key, name, chance, text }` -
--- `key` is the internal name (what a ModifierFailed update's own `key`
--- matches), and `name` is the display name. Never the internal key under
--- `name` - the client's Time Crunch/Courier Loop special-cases and every
--- pop-out title match on it.
+-- Pure: every modifier sent to the client is `{ key, name, chance, text }`: `key`
+-- is the internal name (a ModifierFailed update's `key` matches it) and `name`
+-- the display name, which the client's pop-out titles and Time Crunch/Courier
+-- Loop special-cases match on.
 function MissionService.WireModifiers(modifiers: { ModifierRoll }): { any }
 	local list = {}
 	for _, mod in modifiers do
@@ -592,10 +487,8 @@ function MissionService.WireModifiers(modifiers: { ModifierRoll }): { any }
 end
 
 local function sendBoard(player: Player, board: Board, data: Data)
-	-- REVIEW-M5C-01C H1: computed fresh from the CURRENT save, not cached -
-	-- a board destination's own `baseAmount`/`modifiers` are fixed at roll
-	-- time (M3), but the intercepted mark isn't, so it's applied here every
-	-- single send instead of being baked into the cache.
+	-- Computed fresh from the current save: the intercepted mark is not cached
+	-- with the roll.
 	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
 
 	local destinationsPayload = {}
@@ -614,11 +507,8 @@ local function sendBoard(player: Player, board: Board, data: Data)
 			})
 		end
 	end
-	-- The intercepted mark (Bryan): a headline figure for the board itself -
-	-- `intercepted` the player's CURRENT stack count, `offerMultiplier` what
-	-- it's worth right now - the same multiplier every destination's `pay`
-	-- above was just computed with, so the header and the offers can never
-	-- disagree.
+	-- Board headline: the player's current stack count and what it is worth, the
+	-- same multiplier the destination pays were computed with.
 	Remotes.Server.Fire("MissionBoard", player, {
 		city = board.city,
 		destinations = destinationsPayload,
@@ -627,8 +517,7 @@ local function sendBoard(player: Player, board: Board, data: Data)
 	})
 end
 
--- Rolls one destination fresh (never cached itself - GetOrRoll/
--- getOrRollDestination below own the caching).
+-- Rolls one destination fresh; getOrRollDestination owns the caching.
 local function rollDestination(player: Player, data: Data, destKey: string): BoardDestination
 	local rankIndex = select(1, RankService.GetRank(player))
 	local population = #Players:GetPlayers()
@@ -639,9 +528,8 @@ local function rollDestination(player: Player, data: Data, destKey: string): Boa
 	return { key = destKey, modifiers = modifiers, baseAmount = baseAmount }
 end
 
--- M3: reuses a player's existing roll for `destKey` if one is still cached
--- (AUDIT-adjacent fix - REVIEW-M5C-01 M3: reopening the board used to
--- re-roll every time, letting a player fish for VIP/HighlyValuable).
+-- Reuses a player's cached roll for `destKey`, so reopening the board cannot be
+-- used to fish for VIP/HighlyValuable.
 local function getOrRollDestination(player: Player, data: Data, destKey: string): BoardDestination
 	local cache = boardRolls[player]
 	if cache == nil then
@@ -653,8 +541,8 @@ local function getOrRollDestination(player: Player, data: Data, destKey: string)
 	end)
 end
 
--- The roll is "used up" the moment a run to it actually starts - the next
--- board open rolls that destination fresh again.
+-- The roll is used up when a run to it starts; the next board open rolls it
+-- fresh.
 local function clearCachedRoll(player: Player, destKey: string)
 	local cache = boardRolls[player]
 	if cache then
@@ -662,11 +550,8 @@ local function clearCachedRoll(player: Player, destKey: string)
 	end
 end
 
--- Builds a board from whatever's cached (or freshly rolled) for each
--- destination on the route (AUDIT L14: the preview pay already includes
--- modifiers). Shared by the real MissionOpenBoard handler; the dev
--- `.mission start` shortcut rolls its own one-off instead (bypasses the
--- board/cache entirely by design).
+-- Builds a board from cached (or freshly rolled) destinations on the route. The
+-- dev `.mission start` rolls its own one-off instead.
 local function buildBoard(player: Player, data: Data, cityKey: string, part: BasePart): Board?
 	local route = Cities.Routes[cityKey]
 	if route == nil then
@@ -681,20 +566,14 @@ local function buildBoard(player: Player, data: Data, cityKey: string, part: Bas
 	return { city = cityKey, part = part, destinations = destinations }
 end
 
--- ==================== package model & modifier looks ====================
--- Ported from the old MissionHandler:412-428 (the old `packagetypes`
--- table). ReplicatedFirst.Objects/VFX aren't synced by Rojo (Studio-only
--- art, same as RF.SFX) - missing gracefully degrades (no visible package,
--- or no FragilePackage/HighlyValuable look) instead of erroring, same
--- defensive pattern CharacterService uses for RF.Assets/RF.VFX/RF.SFX.
+-- ReplicatedFirst.Objects/VFX are not synced by Rojo (Studio-only art); missing
+-- art degrades gracefully (no visible package or look) instead of erroring.
 
 local PACKAGE_TEMPLATE_NAMES = { "Package1", "Package2" }
 
--- BUG-56: HeavyCargo draws the package bigger (the old game's look), by
--- Config.Missions.HeavyCargoPackScale. Applied here, when the package is
--- attached; undone for free when cleanupRun destroys the package.
--- Pure (BUG-56): the model scale for a package, and a torso-space offset
--- scaled to match so a bigger pack sits on the back, not in it.
+-- Pure: the model scale for a package (HeavyCargo draws it bigger by
+-- Config.Missions.HeavyCargoPackScale) and a torso-space offset scaled to match,
+-- so a bigger pack sits on the back, not in it.
 function MissionService.PackScale(heavyCargo: boolean): number
 	return if heavyCargo then Config.Missions.HeavyCargoPackScale else 1
 end
@@ -703,9 +582,8 @@ function MissionService.ScaledOffset(offset: number, scale: number): number
 	return offset * scale
 end
 
--- Pure (BUG-55): the courier's beacon schedule at run start - off, first
--- pulse after the ordinary interval, identical for every courier
--- (HighlyValuable included).
+-- Pure: the courier's beacon schedule at run start: off, first pulse after the
+-- ordinary interval, same for every courier.
 function MissionService.InitialBeacon(now: number): (boolean, number)
 	return false, now + Config.Missions.Beacon.everySeconds
 end
@@ -759,9 +637,7 @@ local function attachPackage(character: Model, heavyCargo: boolean): Instance?
 	return pack
 end
 
--- REVIEW-M5C-01 M6: the old FragilePackage look (MissionHandler:276-286) -
--- turns the pack to glass. Cosmetic only; never reverted even once the
--- modifier fails (a landed hit), same as the old code.
+-- Turns the pack to glass. Cosmetic; not reverted when the modifier fails.
 local FRAGILE_COLOR = Color3.fromRGB(168, 187, 208)
 
 local function applyFragileLook(pack: Instance?)
@@ -784,12 +660,8 @@ local function applyFragileLook(pack: Instance?)
 	end
 end
 
--- REVIEW-M5C-01 M6: the old HighlyValuable look (MissionHandler:303-328) -
--- trueSparkle/sparkle1/sparkle2 VFX plus a gold Highlight on the pack that
--- pulses 1s in, 6s on, 1s out, 20s off. The old code drove this with its
--- own per-pack `spawn(function() while pack do ... task.wait(...) end)`
--- loop; here the Play() calls are triggered from the shared tick's phase
--- machine instead (see tickOnce below) - never a per-frame/per-pack loop.
+-- HighlyValuable look: sparkle VFX plus a gold Highlight on the pack, driven by
+-- the shared tick's phase machine (tickOnce), not a per-pack loop.
 local VALUABLE_HIGHLIGHT_COLOR = Color3.fromRGB(239, 187, 65)
 local VALUABLE_FADE_SECONDS = 1
 
@@ -847,18 +719,15 @@ function MissionService.ApplyHighlyValuableLook(pack: Instance?): Highlight?
 	return nil
 end
 
--- Advances the HighlyValuable pulse's phase machine by exactly one step, if
--- its current phase's timer has elapsed - called from the shared tick, not
--- a per-pack loop.
+-- Advances the HighlyValuable pulse phase machine by one step if its timer
+-- elapsed; called from the shared tick.
 local function tickValuablePulse(run: Run, now: number)
 	local hl = run.valuableHighlight
 	if hl == nil or run.valuablePhaseEndsAt == nil or now < run.valuablePhaseEndsAt then
 		return
 	end
 
-	-- Bryan (2026-10-03, after BUG-55): the package glow is PERMANENT for the
-	-- whole run - it fades in once and then holds; nothing pulses but the
-	-- courier's own ordinary beacon. The old FadeOut/Off cycle is gone.
+	-- The package glow fades in once and holds for the whole run.
 	if run.valuablePhase == "FadeIn" then
 		run.valuablePhase = "Hold"
 		run.valuablePhaseEndsAt = nil
@@ -877,11 +746,8 @@ local function sendUpdate(player: Player, run: Run, state: string)
 		destination = run.destination,
 		destinationPosition = vecToTable(run.destinationPosition),
 		modifiers = MissionService.WireModifiers(run.modifiers),
-		-- REVIEW-M5C-01B F3: every already-failed key, so the client can
-		-- re-grey them on ANY rebuild (most importantly the CourierLoop
-		-- return leg's own "Started", which otherwise un-greys a
-		-- TimeCrunch/Fragile/VIP that failed on the first leg) without this
-		-- ever re-firing the one-shot "ModifierFailed" update itself.
+		-- Every already-failed key, so the client can re-grey them on any rebuild
+		-- without re-firing ModifierFailed.
 		failed = MissionService.FailedKeysList(run.failedKeys),
 		pay = currentPay(run),
 	}
@@ -894,10 +760,8 @@ local function sendUpdate(player: Player, run: Run, state: string)
 	Remotes.Server.Fire("MissionUpdate", player, payload)
 end
 
--- Bryan's refinement: a failed modifier only ever drops its own share of
--- the payout and tells the client which pop-out to grey - it never ends
--- the run (that's still only leaving/dying/respawning/interception/
--- `.mission fail` - see failRun/interceptRun below).
+-- A failed modifier drops its share of the payout and greys the client's pop-out;
+-- it never ends the run (see failRun/interceptRun).
 local function failModifier(player: Player, run: Run, key: string)
 	if not MissionService.MarkFailed(run.failedKeys, key) then
 		return
@@ -951,7 +815,6 @@ local function startRun(
 		valuablePhase = nil,
 		valuablePhaseEndsAt = nil,
 		settled = false,
-		-- BUG-55: HighlyValuable couriers use the ordinary occasional beacon.
 		beaconOn = beaconOn,
 		beaconNextAt = beaconNextAt,
 		beaconOffAt = nil,
@@ -982,14 +845,12 @@ local function startRun(
 end
 
 local function cleanupRun(player: Player, run: Run)
-	-- Destroys every clone parented under it too - the package, its glass
-	-- look, the HighlyValuable sparkles and the pulsing Highlight all live
-	-- under `pack` (M6), so nothing needs separate cleanup here.
+	-- Destroys every clone parented under it: the package, its glass look,
+	-- sparkles and Highlight all live under `pack`.
 	if run.pack then
 		run.pack:Destroy()
 	end
-	-- Cleared on ANY end (AUDIT M13: the old heavy-cargo slow only cleared
-	-- on success and stuck around after an interception until respawn).
+	-- Cleared on any end of the run.
 	if run.heavyCargo then
 		MovementService.ClearModifier(run.character, "HeavyCargo")
 	end
@@ -1011,9 +872,8 @@ local function finishRun(player: Player, run: Run)
 		return
 	end
 
-	-- M4: Clear the Route only resolves right here - a knockout could land
-	-- at any point up to arrival, so unlike the other three "can fail"
-	-- modifiers it can't be marked proactively mid-run.
+	-- Clear the Route resolves only here: a knockout can land any time up to
+	-- arrival, so it cannot be marked proactively.
 	if run.hasClearTheRoute and not run.clearedRoute then
 		failModifier(player, run, "CleartheRoute")
 	end
@@ -1026,9 +886,7 @@ local function finishRun(player: Player, run: Run)
 	local data = DataService.Get(player)
 	if data then
 		MissionService.ApplySuccess(data, run.destination)
-		-- The intercepted mark: this delivery already paid at the reduced
-		-- rate (`payout` above, via run.offerMultiplier) - now that it's
-		-- actually landed, the mark is gone.
+		-- This delivery paid at the reduced rate; now the mark is gone.
 		MissionService.ClearIntercepted(data)
 		refreshAttributes(player, data)
 	end
@@ -1041,10 +899,9 @@ local function finishRun(player: Player, run: Run)
 	end
 end
 
--- Ends the whole run early with no payout - only ever called for leaving,
--- dying, respawning, an under-the-gate interception attempt, or the dev
--- `.mission fail` command (Bryan's refinement: a failed MODIFIER never
--- reaches here - see failModifier above).
+-- Ends the run early with no payout: leaving, dying, respawning, a disqualifying
+-- interception attempt, or the dev `.mission fail`. A failed modifier never
+-- reaches here.
 local function failRun(player: Player, run: Run, reason: string)
 	if not MissionService.TrySettle(run) then
 		return
@@ -1064,31 +921,21 @@ local function failRun(player: Player, run: Run, reason: string)
 	end
 end
 
--- AUDIT H8: the attacker is paid the run's full reward INSTANTLY, exactly
--- once (TrySettle), and the courier's own wallet is never touched at all
--- (nothing to farm back and forth - see ApplyInterception's own comment).
--- REVIEW-M5C-01 M2 already gated the CALL to this (CanIntercept) - by the
--- time this runs, the courier was genuinely out on the route.
+-- The attacker is paid the run's full reward instantly, exactly once (TrySettle);
+-- the courier's wallet is never touched. CanIntercept already gated the call.
 local function interceptRun(courier: Player, run: Run, attacker: Player)
 	if not MissionService.TrySettle(run) then
 		return
 	end
 
-	-- F4: the pay as it stood BEFORE the knocking blow's own Fragile/VIP
-	-- reaction (falling back to the current failedKeys if this interception
-	-- didn't come from a real landed hit at all, e.g. a dev `.knock`), and
-	-- Clear the Route never counts for an interceptor either way.
+	-- Pay as it stood before the knocking blow's own Fragile/VIP reaction
+	-- (current failedKeys if the interception was not from a landed hit, e.g. dev
+	-- `.knock`); Clear the Route never counts for an interceptor.
 	local rawPayout = MissionService.InterceptPay(run.baseAmount, run.modifiers, run.preHitFailedKeys or run.failedKeys)
-	-- The intercepted mark: run.offerMultiplier reflects the courier's OWN
-	-- stacks as they stood at roll/start time - i.e. before this very
-	-- interception's own mark. `.mission mark [n]` CAN still edit
-	-- Progress.Intercepted while a run is active (that's the point of the dev
-	-- command), but it only ever changes what the NEXT roll/start reads; this
-	-- run's own offerMultiplier was captured once, at its start, and never
-	-- moves again for it. offerMultiplier < 1 means the courier was ALREADY
-	-- marked from an earlier interception (or a `.mission mark`) at that
-	-- start: the attacker's payout is reduced the same way a board offer
-	-- would be, and (Bryan) no Black Rukh at all while the victim is marked.
+	-- run.offerMultiplier was captured at run start and never changes, even if
+	-- `.mission mark` edits Progress.Intercepted. Below 1 means the courier was
+	-- already marked: the attacker's payout is reduced like a board offer and no
+	-- Black Rukh is awarded.
 	local payout = MissionService.ApplyOfferMultiplier(rawPayout, run.offerMultiplier)
 	EconomyService.GiveCopperValue(attacker, payout, string.format("Delivery interception: %s", run.destination))
 	if MissionService.InterceptorEarnsBlackRukh(run.offerMultiplier) then
@@ -1160,9 +1007,8 @@ local function onMissionStart(player: Player, destinationKey: string)
 		return
 	end
 	local dest = board.destinations[destinationKey]
-	-- H7: rejected unless it's on THIS board's own route - the remote's own
-	-- Validate.string(oneOf = Cities.Keys) already stops a nonsense string,
-	-- this is the real "is it actually reachable from here" check.
+	-- Rejected unless the destination is on this board's own route
+	-- (Validate.string only rejects nonsense strings).
 	if dest == nil or not MissionService.IsOnRoute(board.city, destinationKey) then
 		log:Warn(string.format("%s tried to start a delivery to %s, not on the %s board", player.Name, destinationKey, board.city))
 		return
@@ -1187,17 +1033,13 @@ local function onMissionStart(player: Player, destinationKey: string)
 		return
 	end
 
-	-- REVIEW-M5C-01C H1: the intercepted mark as it stands RIGHT NOW, not
-	-- whatever it was when this destination was rolled/cached - it can
-	-- change while a cache entry sits in boardRolls (a DIFFERENT
-	-- destination's run getting intercepted, a clearing delivery, `.mission
-	-- mark`), and only this moment (the run actually starting) is what
-	-- should fix `run.offerMultiplier` for its whole lifetime.
+	-- The intercepted mark as it is now, not as cached at roll time; it fixes
+	-- run.offerMultiplier for the run.
 	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
 
 	local originPosition = board.part.Position
 	closeBoard(player)
-	clearCachedRoll(player, destinationKey) -- M3: used up - the next board open re-rolls this destination
+	clearCachedRoll(player, destinationKey) -- used up: next board open re-rolls this destination
 	startRun(player, character, originPosition, destinationKey, destinationPosition, dest.modifiers, dest.baseAmount, offerMultiplier)
 
 	if missionLogEnabled then
@@ -1228,16 +1070,14 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 		return
 	end
 
-	-- L3: resolved by UserId (CombatService's byUserId), never by name - an
-	-- NPC model sharing a name with a real player's username used to be
-	-- able to collect someone else's interception payout.
+	-- Resolved by UserId (CombatService's byUserId), never by name, so an NPC
+	-- sharing a player's name cannot collect their payout.
 	local info = StatusService.Get(character, "Knocked")
 	local byUserId = if info and type(info.data) == "table" then (info.data :: any).byUserId else nil
 	local attackerPlayer: Player? = if type(byUserId) == "number" then Players:GetPlayerByUserId(byUserId) else nil
 
-	-- M4: Clear the Route is earned the instant the courier knocks anyone
-	-- out, anywhere - independent of whatever's happening to the character
-	-- that just got knocked (which might not be on a mission at all).
+	-- Clear the Route is earned the instant the courier knocks anyone out,
+	-- regardless of the knocked character's mission state.
 	if attackerPlayer then
 		local attackerRun = runs[attackerPlayer]
 		if attackerRun and attackerRun.hasClearTheRoute and not attackerRun.clearedRoute then
@@ -1264,20 +1104,16 @@ local function onStatusChanged(character: Model, status: string, active: boolean
 	end
 end
 
--- M5: FragilePackage/VIP fail on ANY landed hit. CombatService.HitLanded
--- fires for every landed hit (M3-FIX7-S: nothing applies the bridged `Hit`
--- status any more, so this signal is the only hook).
+-- FragilePackage/VIP fail on any landed hit; CombatService.HitLanded is the only
+-- hook.
 local function onHitLanded(target: Model, _attacker: Model, _hitName: string)
 	local run = runByCharacter[target]
 	if run == nil then
 		return
 	end
 
-	-- F4: snapshot BEFORE this hit's own Fragile/VIP react - if this same
-	-- hit also knocks the courier out (CombatService fires HitLanded before
-	-- the Knocked status, always), interceptRun reads this instead of the
-	-- post-hit failedKeys, so the killing blow itself never also costs the
-	-- interceptor whatever it just failed for the courier.
+	-- Snapshot before this hit's own Fragile/VIP reaction (HitLanded fires before
+	-- Knocked), so interceptRun can exclude it from the interceptor's pay.
 	run.preHitFailedKeys = table.clone(run.failedKeys)
 
 	if run.hasFragilePackage then
@@ -1288,11 +1124,10 @@ local function onHitLanded(target: Model, _attacker: Model, _hitName: string)
 	end
 end
 
--- ==================== shared loop (AUDIT H9: no per-frame/per-board loops) ====================
+-- ==================== shared loop ====================
 
--- Typed as a variadic return (not `()`) so pcall(tickOnce) below
--- type-checks as (boolean, ...any) instead of just (boolean) - same trick
--- Main.server.luau's own ServiceModule type uses for Init/Start.
+-- Typed as a variadic return (not `()`) so pcall(tickOnce) type-checks as
+-- (boolean, ...any).
 local function tickOnce(): ...any
 	local now = Workspace:GetServerTimeNow()
 
@@ -1311,15 +1146,13 @@ local function tickOnce(): ...any
 	for player, run in runs do
 		local character = player.Character
 		if character == nil or character ~= run.character or character.Parent == nil then
-			-- CharacterRemoving already fails the run in the normal case;
-			-- this is a defensive catch for an ordering edge case, never a
-			-- silent leak (AUDIT H9's "everything cleaned on leave/respawn").
+			-- CharacterRemoving normally fails the run; this catches an ordering
+			-- edge case.
 			failRun(player, run, "respawn")
 			continue
 		end
 
-		-- Bryan's refinement: TimeCrunch expiring only fails ITSELF now -
-		-- the run keeps going with a smaller payout, not "Failed".
+		-- TimeCrunch expiring fails only itself; the run continues.
 		if run.timerEndsAt and now >= run.timerEndsAt then
 			failModifier(player, run, "TimeCrunch")
 			run.timerEndsAt = nil
@@ -1348,10 +1181,8 @@ local function tickOnce(): ...any
 
 		local targetPosition = if run.phase == "ToDestination" then run.destinationPosition else run.originPosition
 		if ((root :: BasePart).Position - targetPosition).Magnitude <= Config.Missions.ArriveStuds then
-			-- Explicit annotations, not decoration: luau-lsp 1.54.0 widens a
-			-- required module's returned union type to plain `string` when
-			-- it's read back through a module boundary without one (same
-			-- reproduction as RankService.ApplyDeed's own comment).
+			-- Explicit annotations: luau-lsp widens a required module's returned
+			-- union type to `string` across a module boundary without them.
 			local nextPhase: RunPhase?, state: string? = MissionService.OnArrival(run.phase, run.hasCourierLoop)
 			if nextPhase and state then
 				run.phase = nextPhase
@@ -1364,10 +1195,8 @@ local function tickOnce(): ...any
 	end
 end
 
--- M1: one error (a destroyed character's SetAttribute, a bad economy call,
--- ...) used to kill this loop for the rest of the server - no arrival,
--- timer, beacon or board-close ever ran again for anyone. Now it's caught
--- and logged, and the loop keeps going next tick.
+-- One error (e.g. a destroyed character's SetAttribute) must not kill the loop
+-- for everyone, so each tick is caught and logged.
 local function tick()
 	local ok, err = pcall(tickOnce)
 	if not ok then
@@ -1439,9 +1268,7 @@ local function missionStartDevCommand(caller: Player, args: { string }): string
 	local root = character:FindFirstChild("HumanoidRootPart")
 	local originPosition = if root and root:IsA("BasePart") then (root :: BasePart).Position else destinationPosition
 
-	-- A one-off roll, deliberately not routed through the board cache (M3) -
-	-- this bypasses the board/proximity check entirely already, same spirit
-	-- as every other dev shortcut in this codebase.
+	-- A one-off roll, deliberately bypassing the board cache and proximity check.
 	local dest = rollDestination(target, data, cityKey)
 	local offerMultiplier = MissionService.OfferMultiplier(data.Progress.Intercepted)
 
@@ -1501,11 +1328,10 @@ local function missionStreakDevCommand(caller: Player, args: { string }): string
 	return string.format("%s's delivery streak set to %d", target.Name, data.Progress.DeliveryStreak)
 end
 
--- The intercepted mark: shows or sets a player's own stacks directly.
+-- Shows or sets a player's own intercepted stacks.
 local function missionMarkDevCommand(caller: Player, args: { string }): string
-	-- The first token is the stack count only if it parses as a number -
-	-- otherwise (or if there's no first token at all) it's the optional
-	-- trailing player name and this is a "show" call.
+	-- The first token is the stack count if it parses as a number; otherwise it
+	-- is the optional player name and this is a show call.
 	local maybeN = tonumber(args[1])
 	local n: number?, playerArg: string?
 	if maybeN ~= nil then
@@ -1543,9 +1369,8 @@ local function missionMarkDevCommand(caller: Player, args: { string }): string
 	)
 end
 
--- "Intercepted by nobody": fails the caller's OWN active delivery and adds
--- one stack, with no attacker to pay - so Bryan can test the mark solo,
--- without a second account to actually knock him out.
+-- Fails the caller's own active delivery and adds one stack, with no attacker, to
+-- test the mark solo.
 local function missionInterceptDevCommand(caller: Player, _args: { string }): string
 	local run = runs[caller]
 	if run == nil then
@@ -1569,8 +1394,7 @@ local function missionLogDevCommand(_caller: Player, args: { string }): string
 	return string.format("mission logging %s", mode)
 end
 
--- Dispatches ".mission <sub> ..." to the right handler above - one dev
--- command, several sub-commands, same idiom as ".shop"/".npc"/".dummy".
+-- Dispatches ".mission <sub> ..." to the handler above.
 local function missionCommand(caller: Player, args: { string }): string
 	local sub = args[1] and args[1]:lower()
 	local rest = table.clone(args)
@@ -1626,10 +1450,8 @@ function MissionService:Start()
 		player.CharacterRemoving:Connect(function()
 			onCharacterRemoving(player)
 		end)
-		-- L2: Gender resets to 0 on a new life/wipe (CharacterService sets it
-		-- non-zero once creation finishes) - the same signal RankService
-		-- already uses to know a life just turned over. Refresh whichever
-		-- Mission attributes the fresh save now holds either way.
+		-- Gender resets to 0 on a new life (CharacterService sets it non-zero
+		-- after creation); refresh the Mission attributes from the fresh save.
 		player:GetAttributeChangedSignal("Gender"):Connect(function()
 			local data = DataService.Get(player)
 			if data then
@@ -1642,20 +1464,10 @@ function MissionService:Start()
 		hookPlayer(player)
 	end
 
-	-- REVIEW-M5C-01B F1: the ORIGINAL L1 fix here was wrong - DataService's
-	-- own PlayerRemoving handler (connected during Init, before this
-	-- service's Start ever runs) calls profile:EndSession(), which fires
-	-- ProfileStore's own OnSessionEnd SYNCHRONOUSLY and nils
-	-- `profiles[player]` before that handler even returns - so a plain
-	-- Players.PlayerRemoving connection here, however early it's made,
-	-- would already see DataService.Get return nil on every leave, "by
-	-- luck" of connection order or not. DataService.OnReleasing (a plain
-	-- synchronous callback list, not an event) runs BEFORE EndSession is
-	-- ever called, guaranteed regardless of Init/Start ordering - this is
-	-- the one place the run is actually failed (and the streak reset) on a
-	-- genuine leave; CharacterRemoving already covers the common case
-	-- (player had a character), this also catches a charless leave (e.g.
-	-- mid-load) that CharacterRemoving would never fire for.
+	-- DataService.OnReleasing runs before EndSession nils the profile, so it is
+	-- the one reliable place to fail the run (and reset the streak) on a leave,
+	-- including a charless leave CharacterRemoving never covers. A plain
+	-- PlayerRemoving connection would already see DataService.Get return nil.
 	DataService.OnReleasing(function(player: Player)
 		local run = runs[player]
 		if run then
@@ -1663,9 +1475,7 @@ function MissionService:Start()
 		end
 	end)
 
-	-- Local-table cleanup only, unconditional on how the run ended (or
-	-- whether there ever was one) - the streak/data side is already fully
-	-- handled by OnReleasing above by the time this fires.
+	-- Local-table cleanup only; the streak/data side was handled by OnReleasing.
 	Players.PlayerRemoving:Connect(function(player: Player)
 		boards[player] = nil
 		boardRolls[player] = nil

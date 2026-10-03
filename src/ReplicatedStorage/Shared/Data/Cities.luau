@@ -1,68 +1,43 @@
 --!strict
--- Delivery missions data (M5-PLAN.md Phase 5C, Bryan's rules 2026-09-29):
--- the seven cities, their trade routes, and the modifier table. Pure data
--- (plus the one pure roll function below) - MissionService is the only
--- thing that touches a Player or a save.
+-- Delivery mission data: the seven cities, their trade routes, and the modifier
+-- table. Pure data plus one pure roll function; MissionService is the only thing
+-- that touches a Player or a save.
 --
--- Lore text, colours and personality are moved verbatim from the old
--- RS/Modules/MissionDeliniation.luau's `cityAssests` table and the Studio
--- dump (docs/reference/m5c-studio-dump.md section 1). The trade-route table
--- is the old SSS/MISC/MissionHandler/init.server.luau one (line 26), with
--- its two broken names fixed (AUDIT: "the route table names two cities that
--- don't exist"):
---   - "JADDATYSHUT" (no space) was always meant to be JaddatysHut - the
---     button/city key just has a space ("JADDATYS HUT") the route table
---     never matched, so the lookup silently returned nil.
---   - "CITYF" was never a real city at all (an 8th city that was never
---     built). Routes are placeholders regardless (Bryan, 2026-09-29: only
---     Qarzin is a built city, the rest are markers), so it's pointed at
---     Sahraqin, a real placeholder city, rather than left broken.
+-- Safety is a static 0-1 rating derived from each city's Personality (Busy cities
+-- are safer than War-Torn ones). PlayerActive is the player's own delivery count
+-- to that city (Progress.Routes). Routes are placeholders: only Qarzin is a built
+-- city, the rest are markers.
 --
--- Safety (M12 fix - "city Personality is only used for display; route
--- history and personality never actually shape the modifiers"): the old
--- data only ever had a cosmetic Personality string. Safety is a new, static
--- 0-1 rating derived from that same Personality, standing in for the old
--- (never-updated) global successRate counter: Busy cities read as safer
--- (more people, more eyes) than a War-Torn one. PlayerActive is likewise
--- wired to something real - the PLAYER's own delivery count to that city
--- (Progress.Routes, schema v4), not a global counter nothing ever wrote to.
---
--- Wire contract (REVIEW-M5C-01 H1, and Bryan's own follow-up naming it
--- exactly): every modifier MissionService sends the client - in a
--- MissionBoard destination's `modifiers` and in MissionUpdate's own
--- `modifiers` - is `{ key, name, chance, text }`, where `key` is a
--- ModifierRoll's internal `key` (what the client's own greying-out logic
--- and a ModifierFailed update's own `key` match against) and `name` is
--- `displayName` below. Never send the internal key as `name` - the client
--- matches its Time Crunch/Courier Loop special-cases, and shows every
--- other modifier's pop-out title, off that field.
+-- Wire contract: every modifier MissionService sends the client (in a
+-- MissionBoard destination's `modifiers` and in MissionUpdate's `modifiers`) is
+-- `{ key, name, chance, text }`: `key` is a ModifierRoll's internal key (matched
+-- by the client's greying logic and ModifierFailed updates) and `name` is
+-- `displayName`. Never send the key as `name`: the client matches its Time
+-- Crunch/Courier Loop special-cases and every pop-out title on it.
 
 export type CityKey = "Qarzin" | "Sahraqin" | "IllegalPort" | "AinJamala" | "Saleh" | "Rathole" | "JaddatysHut"
 
 export type City = {
 	key: CityKey,
-	name: string, -- display name, as shown on the old board buttons
-	color: { r: number, g: number, b: number }, -- 0-1, straight from the Studio dump
-	lore: string, -- verbatim from the old MissionDeliniation.cityAssests
-	image: string, -- rbxassetid:// - every city shares one placeholder today (old code's own "TODO: make city images.")
-	personality: string, -- display only, same as before
+	name: string, -- display name
+	color: { r: number, g: number, b: number }, -- 0-1
+	lore: string, -- flavour text
+	image: string, -- rbxassetid:// - every city shares one placeholder
+	personality: string, -- display only
 	safety: number, -- 0-1; > Config.Missions.SafeRouteThreshold = "SafeRoute"
 }
 
 export type ModifierDef = {
 	key: string, -- the internal name (e.g. "TimeCrunch") - what MissionService compares against, and the wire "key" field
-	displayName: string, -- verbatim from the old MissionDeliniation.Modifiers[*].Name (e.g. "Time Crunch") - REVIEW-M5C-01 H1: the client matches modifier pop-outs by this, not the internal key
-	-- REVIEW-M5C-01 L4: this is the roll WEIGHT among the eligible pool
-	-- (RollModifiers below), not a true percentage - the real odds depend
-	-- on which other modifiers are eligible for the same destination. Sent
-	-- to the client as-is (same as the old GUI's "25%" badge); label it as
-	-- a weight, not a percentage, wherever it's described.
+	displayName: string, -- e.g. "Time Crunch"; the client matches modifier pop-outs by this, not the internal key
+	-- The roll WEIGHT among the eligible pool (RollModifiers), not a true
+	-- percentage: the real odds depend on which other modifiers are eligible.
+	-- Sent to the client as-is; label it a weight.
 	chance: number,
-	text: string, -- the pop-out description, verbatim from MissionDeliniation.Modifiers
+	text: string, -- the pop-out description
 	payMultiplier: number, -- 1 = no change; "Nothing" has none, it's the empty draw
-	-- Only the keys actually present are checked (meetsReqs below) - the old
-	-- reqs tables didn't always name both factors (e.g. CleartheRoute only
-	-- ever checked SafeRoute, never PlayerActive).
+	-- Only the keys present are checked (meetsReqs); a def need not name both
+	-- factors.
 	requires: { PlayerActive: boolean?, SafeRoute: boolean? }?,
 }
 
@@ -82,7 +57,6 @@ export type Factors = {
 local Cities = {}
 
 -- ==================== cities ====================
--- Order matches the old Studio dump's button table (section 1).
 
 local cityList: { City } = {
 	{
@@ -159,34 +133,28 @@ for _, city in Cities.List do
 end
 
 -- ==================== trade routes ====================
--- The old table (MissionHandler:26), names fixed (see the header comment).
 
 local routes: { [string]: { string } } = {
 	Qarzin = { "AinJamala", "IllegalPort", "Sahraqin", "Saleh" },
 	Sahraqin = { "AinJamala", "Qarzin" },
 	IllegalPort = { "Qarzin", "Saleh" },
 	AinJamala = { "Sahraqin", "Qarzin" },
-	Saleh = { "Qarzin", "IllegalPort", "Rathole", "JaddatysHut" }, -- was "JADDATYSHUT"
-	Rathole = { "Saleh", "JaddatysHut", "Sahraqin" }, -- was "CITYF"
-	JaddatysHut = { "Saleh", "Rathole", "Sahraqin" }, -- was "CITYF"
+	Saleh = { "Qarzin", "IllegalPort", "Rathole", "JaddatysHut" },
+	Rathole = { "Saleh", "JaddatysHut", "Sahraqin" },
+	JaddatysHut = { "Saleh", "Rathole", "Sahraqin" },
 }
 Cities.Routes = routes
 
--- Delivery drop zone part names (docs/reference/m5c-studio-dump.md section
--- 3): Workspace.MAP.MISSION.<key>Delivery. Only Qarzin is a built city today
--- (Bryan) - the rest are markers, same as before.
+-- Delivery drop zone part names: Workspace.MAP.MISSION.<key>Delivery.
 function Cities.DeliveryPartName(key: string): string
 	return key .. "Delivery"
 end
 
 -- ==================== modifiers ====================
--- One copy (AUDIT D2: "the Modifiers table is copied 3 times" - moved here
--- from MissionHandler/RewardHandler/MissionDeliniation). An ordered array,
--- not the old scripts' dictionaries (`for name, data in Modifiers`, table
--- iteration order is unspecified in Lua) - the weighted roll below needs a
--- stable order to be deterministic/testable. "Nothing" is the empty draw:
--- it occupies a roll same as any other modifier (so real modifiers don't
--- always win a slot) but is never handed back to a caller.
+-- An ordered array (not a dictionary) so the weighted roll below is deterministic
+-- and testable. "Nothing" is the empty draw: it occupies a roll like any
+-- modifier, so real modifiers do not always win a slot, but is never handed back
+-- to a caller.
 
 local modifiers: { ModifierDef } = {
 	{ key = "TimeCrunch", displayName = "Time Crunch", chance = 20, payMultiplier = 1.2, text = "Complete in 3:00." },
@@ -233,9 +201,7 @@ local modifiers: { ModifierDef } = {
 }
 Cities.Modifiers = modifiers
 
--- Only the keys a def's own `requires` actually names are checked (the old
--- reqs tables didn't always name both factors - e.g. CleartheRoute only
--- ever checked SafeRoute, never PlayerActive).
+-- Only the keys a def's own `requires` names are checked.
 local function meetsReqs(def: ModifierDef, factors: Factors): boolean
 	local reqs = def.requires
 	if reqs == nil then
@@ -263,16 +229,11 @@ end
 Cities.EligiblePool = eligiblePool
 
 -- Pure, self-tested: rolls 1-3 modifiers for one destination. `nextRoll(max)`
--- returns an integer in [1, max] - production passes math.random, a
--- self-test passes a canned sequence so the exact draw is deterministic.
--- Ported unchanged from the old modDeterminant (MissionHandler:129-210):
--- draw one (always, weighted by `chance` among the eligible pool, "Nothing"
--- included); 50% chance to draw a second from whatever's left; if a second
--- was drawn, 30% chance to draw a third. Each draw removes its pick from
--- the pool, so nothing is ever picked twice. "Nothing" draws are never
--- added to `selected` - a drawn "Nothing" just means one of the up-to-3
--- rolls turned up empty (AUDIT M12 didn't touch this odds shape; only the
--- eligibility factors feeding it are new).
+-- returns an integer in [1, max] (math.random in production, a canned sequence in
+-- the self-test). Draw one (always, weighted by `chance` among the eligible pool,
+-- "Nothing" included); 50% chance to draw a second from what is left; if a second
+-- was drawn, 30% chance of a third. Each pick leaves the pool. "Nothing" draws
+-- are never added to `selected`.
 function Cities.RollModifiers(factors: Factors, nextRoll: (max: number) -> number): { ModifierRoll }
 	local pool = eligiblePool(factors)
 	local selected: { ModifierRoll } = {}
@@ -318,12 +279,9 @@ function Cities.RollModifiers(factors: Factors, nextRoll: (max: number) -> numbe
 	return selected
 end
 
--- Pure: the combined pay multiplier for a set of rolled modifiers - ADDITIVE
--- (REVIEW-M5C-01B F2, confirmed with Bryan: the old game's own math, not a
--- product of the individual multipliers), the old RewardHandler.
--- citymodifier + 1: `1 + sum(payMultiplier - 1)`. TimeCrunch (1.2) and
--- HeavyCargo (1.3) together give 1.5x total, not 1.2 * 1.3 = 1.56x. A bare
--- mission with none rolled is exactly 1x.
+-- Pure: the combined pay multiplier for a set of rolled modifiers, ADDITIVE: `1 +
+-- sum(payMultiplier - 1)`. TimeCrunch (1.2) and HeavyCargo (1.3) together give
+-- 1.5x, not 1.56x. A bare mission with none rolled is exactly 1x.
 function Cities.CombinedMultiplier(rolled: { ModifierRoll }): number
 	local total = 1
 	for _, mod in rolled do

@@ -1,17 +1,14 @@
 --!strict
--- Face animation for one character's FalseHead: mouth flaps while the
--- player chats, random blinking, and a neutral/hurt face while the
--- character has a Hit or Ragdoll effect. Ported from the old
--- AppearanceController/FaceControl/init.server.luau (a script cloned into
--- every FalseHead) into a plain module CharacterService calls once per
--- character; same timings and asset ids.
+-- Face animation for one character's FalseHead: mouth flaps while the player chats,
+-- random blinking, and a neutral/hurt face while the character has a Hit or Ragdoll
+-- effect. CharacterService calls Start once per character.
 
 local Log = require(game:GetService("ReplicatedStorage").Shared.Log)
 
 local log = Log.new("FaceControl")
 
--- Blink/hurt faces reuse these three "human male 1/2" + "human female 1"
--- face-base ids from Assets.facebase; anything else keeps its normal face.
+-- Blink/hurt faces reuse these three "human male 1/2" + "human female 1" face-base
+-- ids from Assets.facebase; anything else keeps its normal face.
 local BLINK_FACE_BASE: { [string]: string } = {
 	["rbxassetid://13466958587"] = "rbxassetid://13467199372", -- human male 1
 	["rbxassetid://13473200175"] = "rbxassetid://13473251210", -- human female 1
@@ -24,10 +21,8 @@ local YAP_MOUTHS = { "rbxassetid://13473292861", "rbxassetid://13473295251" }
 
 local FaceControl = {}
 
--- REVIEW-M2-01 F3: waits for `character.Effects` with no fixed timeout
--- (EffectsService only creates it once AppearenceLoaded is true, and
--- FaceControl.Start is now called right after that), but still gives up
--- cleanly if the character is destroyed first instead of hanging forever.
+-- Waits for `character.Effects` with no fixed timeout (EffectsService creates it once
+-- AppearenceLoaded is true), but gives up cleanly if the character is destroyed first.
 local function waitForEffects(character: Model): Instance?
 	local existing = character:FindFirstChild("Effects")
 	if existing then
@@ -64,9 +59,7 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 	local eyeColorId = eyeColor.Texture
 	local faceBaseId = faceBase.Texture
 
-	-- F10: clone the two template Values (siblings of this module, moved
-	-- with it from the old FaceControl folder) instead of building fresh
-	-- ones, so they aren't unused dead weight in the place file.
+	-- Clone the two template Values (siblings of this module) rather than building fresh ones.
 	local wateryTemplate = script:FindFirstChild("WateryEyes")
 	local talkCountTemplate = script:FindFirstChild("TalkCount")
 	if not (wateryTemplate and talkCountTemplate) then
@@ -78,9 +71,8 @@ function FaceControl.Start(player: Player, character: Model, falseHead: Instance
 	local talkCount = talkCountTemplate:Clone() :: IntValue
 	talkCount.Parent = falseHead
 
-	-- F5: every connection this character's FaceControl makes, disconnected
-	-- together once, instead of piling up (and running against destroyed
-	-- decals) across every respawn.
+	-- Every connection this character's FaceControl makes is disconnected together once,
+	-- so they don't pile up across respawns.
 	local connections: { RBXScriptConnection } = {}
 	local function track(connection: RBXScriptConnection)
 		table.insert(connections, connection)

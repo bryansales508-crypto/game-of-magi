@@ -1,17 +1,10 @@
 --!strict
--- Builds a character's look from the save, replacing the old
--- Character/AppearanceController/init.server.luau (TRIAGE #3). Strips the
--- default Roblox avatar, then rebuilds skin, FalseHead face, hair colour,
--- combat hitbox, one shared collision group, sounds/particles, the saved
--- (or a fresh starter) outfit, hats, and the custom run/walk/jump/idle/fall
--- animations (old Animations.server.luau). Waits for CreateCharacter on a
--- brand-new life; the gender/skin picker itself is now a client screen
--- (M2-04) that shows while Player attribute Gender == 0.
---
--- Fixes carried in from AUDIT: H4 (server-side gender picker replaced by a
--- checked remote), L2 (magician eye colours reachable, in RF/Assets),
--- L3 (first name matches the chosen gender), L6 (ToolGrip.Part0 wired),
--- M8 (one shared collision group instead of one per player, ever).
+-- Builds a character's look from the save: strips the default Roblox avatar, then
+-- rebuilds skin, FalseHead face, hair colour, combat hitbox, the shared collision
+-- group, sounds/particles, the saved (or a fresh starter) outfit, hats, and the
+-- custom run/walk/jump/idle/fall animations. Waits for CreateCharacter on a
+-- brand-new life; the gender/skin picker is a client screen shown while Player
+-- attribute Gender == 0.
 
 local Players = game:GetService("Players")
 local PhysicsService = game:GetService("PhysicsService")
@@ -35,28 +28,22 @@ local log = Log.new("CharacterService")
 
 type Data = SaveSchema.Data
 
--- M8: one collision group for every player, registered once here instead of
--- once per spawn (the old per-player-name group was never removed, and
--- Roblox only allows 32 total).
+-- One collision group for every player, registered once (Roblox allows only 32 groups).
 local COLLISION_GROUP = "PlayerLimbs"
 local CLOTHING_RACK_GROUP = "ClothingRackGroup"
 
--- Display-only: HeightStuds = Height (HeightHandler's own body-scale ratio,
--- ~0.75-1.25) times a nominal default rig height, so the menu (M2-04) can
--- show a stud figure without knowing HeightHandler's internal scale.
+-- Display-only: HeightStuds = Height (HeightHandler's body-scale ratio, ~0.75-1.25)
+-- times a nominal default rig height, so menus can show a stud figure.
 local BASE_HUMAN_HEIGHT_STUDS = 5
 
 local WAIT_TIMEOUT = 10
 
 local CharacterService = {}
 
--- ==================== pure helpers (self-tested directly) ====================
 
--- P4: by NAME, not by old positional guesses. 1 Black, 2 Brown, 3 White,
--- then the same kingdom overrides the old script used (Kingdom 1 swaps
--- White for the more tan LightTan; Kingdom 2 swaps Black for Tan and Brown
--- for LightTan). REVIEW-M2-01 confirmed each .rbxm template's own colours
--- match its name (darkest to lightest: Black, Tan, Brown, LightTan, White).
+-- Skin templates are chosen by name: 1 Black, 2 Brown, 3 White, with kingdom
+-- overrides (Kingdom 1 swaps White for LightTan; Kingdom 2 swaps Black for Tan
+-- and Brown for LightTan).
 function CharacterService.SkinTemplateName(skinTone: number, kingdom: number): string
 	local base: string
 	if skinTone == 1 then
@@ -77,9 +64,8 @@ function CharacterService.SkinTemplateName(skinTone: number, kingdom: number): s
 	return base
 end
 
--- L3: gender-matched, not the male list rolled before gender is even known
--- (SaveSchema.NewLife's roll at save creation is just a placeholder;
--- CreateCharacter overwrites it here once the player has actually chosen).
+-- Gender-matched first name; SaveSchema.NewLife's roll is only a placeholder that
+-- CreateCharacter overwrites.
 local warnedNoFemaleNames = false
 local function rollFirstName(gender: number): string
 	local names = Assets.FirstNames.sindria
@@ -94,10 +80,9 @@ local function rollFirstName(gender: number): string
 	return list[math.random(1, #list)]
 end
 
--- Applies one CreateCharacter call against `data` directly (no DataService/
--- Remotes involved), so SelfTestService can exercise the validation with a
--- fake save. The real remote handler below calls this, then refreshes the
--- legacy bridge and the player's attributes.
+-- Applies one CreateCharacter call against `data` directly (no DataService/Remotes),
+-- so SelfTestService can test validation with a fake save. The remote handler
+-- calls this, then refreshes the legacy bridge and the player's attributes.
 function CharacterService.ApplyCreateCharacter(data: Data, gender: number, skin: number): boolean
 	if data.Character.Gender ~= 0 then
 		return false
@@ -115,18 +100,12 @@ function CharacterService.ApplyCreateCharacter(data: Data, gender: number, skin:
 	return true
 end
 
--- ==================== build steps ====================
 
--- A stand-in for the old Stats Value folder: RF.Assets' facebase/mouthshape/
--- eyecolor/eyebrow functions all read `stat["Field"].Value`. The folder itself
--- is gone (M6), so this shim is all they see.
--- BUG-10: must cover every key RF/Assets reads via `stat["X"].Value`
--- (grepped: Gender, FaceBase, Race, EyeColor, MouthShape, HairColor -
--- Assets.eyebrow reads HairColor as a Color3 to tint the eyebrow decal).
--- Missing HairColor crashed buildFalseHead, which aborted the whole build
--- before AppearenceLoaded was ever set, hanging every old script waiting
--- on it. SelfTestService.testCharacterService checks this list stays
--- complete against Assets' real reads.
+-- Stand-in for a Stats Value folder: RF.Assets' facebase/mouthshape/eyecolor/eyebrow
+-- functions read `stat["Field"].Value`. It must cover every key they read (Gender,
+-- FaceBase, Race, EyeColor, MouthShape, HairColor; eyebrow reads HairColor as a
+-- Color3): a missing key throws and aborts the build. SelfTestService checks this
+-- list stays complete.
 function CharacterService.StatShim(data: Data): any
 	return {
 		Gender = { Value = data.Character.Gender },
@@ -149,10 +128,8 @@ local function stripDefaultAvatar(character: Model)
 						if specialMesh then
 							specialMesh.TextureId = ""
 						end
-						-- Old code also cleared a child literally named "Mesh"
-						-- (not the SpecialMesh class above): some hair
-						-- accessories keep their texture on a second mesh
-						-- instance under that name.
+						-- Also clears a child named "Mesh" (not the SpecialMesh class): some hair
+						-- accessories keep their texture on a second mesh by that name.
 						local namedMesh = part:FindFirstChild("Mesh")
 						if namedMesh and namedMesh:IsA("SpecialMesh") then
 							namedMesh.TextureId = ""
@@ -231,14 +208,8 @@ local function buildFalseHead(character: Model, data: Data): BasePart?
 		normMeshie.Parent = head
 	end
 
-	-- BUG-10/BUG-13: one broken Assets call (missing HairColor) used to
-	-- throw here, unprotected, aborting the rest of buildCharacter -
-	-- AppearenceLoaded never got set, so AgeService's own spawn-triggered
-	-- resize (gated on it) never ran either, leaving every respawn at
-	-- Roblox's unscaled default size until the next birthday (whose
-	-- resize isn't gated on AppearenceLoaded) fixed it again. Each face
-	-- decal call is now its own pcall, so a future bad Assets read drops
-	-- just that one decal (logged) instead of the whole build.
+	-- Each face decal call is its own pcall so one bad Assets read drops only that
+	-- decal (logged) instead of aborting the build before AppearenceLoaded is set.
 	local stat = statShim(data)
 	local function safeDecal(label: string, build: () -> Decal): Decal?
 		local ok, result = pcall(build)
@@ -292,16 +263,12 @@ local function buildHitbox(character: Model)
 	hitbox.Parent = character
 end
 
--- M2-02 visible aging, REVIEW-M2-02 R3: the shared implementation lives in
--- AgeService.ApplyHairColor (also called from onBirthday, so hair greys
--- in on the birthday it's due, not only on the next respawn). The applied
--- colour lerps toward grey from Config.Aging.GreyStart to GreyEnd; the
--- SAVED HairColor never changes (it's the natural colour).
+-- Shared implementation lives in AgeService.ApplyHairColor (also called on birthday).
+-- The applied colour lerps toward grey from Config.Aging.GreyStart to GreyEnd; the
+-- SAVED HairColor never changes.
 local applyHairColor = AgeService.ApplyHairColor
 
--- ART TASK (Bryan): wrinkle decal. RF.Assets has no wrinkle/aged-face
--- decal yet, so visible aging is hair-only for now; add one to the face
--- decal tables when it exists and blend it in here by AgeService.GreyFactor.
+-- Visible aging is hair-only: RF.Assets has no wrinkle decal yet.
 
 local function setCollisionGroup(character: Model)
 	for _, part in character:GetChildren() do
@@ -311,15 +278,9 @@ local function setCollisionGroup(character: Model)
 	end
 end
 
--- BUG-19: the old AppearanceController built its SoundsTable/ParticleTable
--- from `:GetDescendants()`, so it found these regardless of which subfolder
--- they actually live in (RF/reference/m2-studio-dump.md section 3: VFX's
--- children are split across HitEffects/RukhEffects/StatusEffects/
--- MiscEffects; SFX has its own subfolders like UISounds). A flat
--- `container:FindFirstChild(name)` (immediate children only) found none of
--- them. Resolved once at Init (recursively, by name) instead of per spawn:
--- cheaper, and lets a missing asset warn once at boot instead of once per
--- player who ever spawns.
+-- Sounds/particles are resolved once at Init, recursively by name (assets live in
+-- various subfolders, so a flat FindFirstChild would miss them); a missing asset
+-- warns once at boot.
 local SFX_NAMES = {
 	"CoinReward",
 	"BlockBroken",
@@ -421,12 +382,10 @@ local function attachSoundsAndParticles(character: Model)
 	end
 	cloneNamed("Sparks1", centerAttachment)
 	cloneNamed("Sparks2", centerAttachment)
-	-- Step sounds and the OST playlist are no longer cloned into the Torso: the
-	-- client plays them straight from ReplicatedFirst.SFX (M6).
+	-- Step sounds and the OST playlist are played by the client from ReplicatedFirst.SFX.
 end
 
--- Rolls a random starter rag outfit into `data.Gear` if the player has
--- never had one (Shirt == ""); same items/colours the old script used.
+-- Rolls a random starter rag outfit into `data.Gear` if the player has never had one (Shirt == "").
 local function ensureStarterOutfit(data: Data)
 	if data.Gear.Shirt ~= "" then
 		return
@@ -453,10 +412,7 @@ local function equipGear(character: Model, data: Data)
 	end
 end
 
--- L6: the old block created this Motor6D but never gave it a Part0, so it
--- never actually moved anything; wired here (Part0 = Torso, its own
--- parent) instead of deleted, since the not-yet-rebuilt client tool code
--- (PhysicalHandler.client.luau) still reaches for Torso.ToolGrip.Part1.
+-- ToolGrip's Part0 is the Torso (its own parent); client tool code reaches for Torso.ToolGrip.Part1.
 local function wireToolGrip(character: Model)
 	local torso = character:FindFirstChild("Torso")
 	if not (torso and torso:IsA("BasePart")) then
@@ -475,10 +431,7 @@ local function wireToolGrip(character: Model)
 	end)
 end
 
--- Ported from the old Animations.server.luau: same animation ids, now run
--- as part of the same build instead of its own PlayerAdded listener keyed
--- off Roblox's CharacterAppearanceLoaded (a different signal from our own
--- AppearenceLoaded).
+-- Runs the custom animations as part of the build; ids come from Config.Character.Animations.
 local function applyAnimations(character: Model)
 	local animate = character:WaitForChild("Animate", WAIT_TIMEOUT)
 	if animate == nil then
@@ -494,7 +447,6 @@ local function applyAnimations(character: Model)
 		end
 	end
 
-	-- The ids live in Config.Character.Animations (shared with every NPC).
 	local ids = Config.Character.Animations
 	setAnimId("run", "RunAnim", ids.Run)
 	setAnimId("walk", "WalkAnim", ids.Walk)
@@ -502,9 +454,7 @@ local function applyAnimations(character: Model)
 	setAnimId("idle", "Animation1", ids.Idle)
 	setAnimId("fall", "FallAnim", ids.Fall)
 
-	-- F9: the old script stopped every playing track around the id swap so
-	-- a stale (old-id) track can't keep playing; stopped here, after the
-	-- ids are set, so the next state change starts fresh with the new id.
+	-- Stops every playing track after the ids are swapped so a stale track can't keep playing.
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
 	if animator then
@@ -524,11 +474,9 @@ local function setAttributes(player: Player, data: Data)
 	player:SetAttribute("Age", data.Age.Years)
 end
 
--- Waits until CreateCharacter has been handled (data.Character.Gender ~= 0),
--- the player leaves, or (F8) this character is replaced by a respawn while
--- still waiting. The client shows the Gender screen itself whenever it sees
--- the Gender attribute at 0; the server just waits here, same polling shape
--- as PlayerService.WaitForReady.
+-- Waits until CreateCharacter has been handled (data.Character.Gender ~= 0), the
+-- player leaves, or this character is replaced by a respawn. The client shows the
+-- Gender screen on its own when it sees the Gender attribute at 0.
 local function waitForCharacterCreated(player: Player, character: Model, data: Data): boolean
 	while data.Character.Gender == 0 do
 		if player.Parent ~= Players or player.Character ~= character then
@@ -539,9 +487,8 @@ local function waitForCharacterCreated(player: Player, character: Model, data: D
 	return true
 end
 
--- BUG-51 (Bryan): players never show Roblox's default overhead name or health
--- bar (including the bar that appears when you hit someone). DisplayDistanceType
--- None hides both; NPC trainers keep their own billboards (players only here).
+-- Players never show Roblox's default overhead name or health bar: DisplayDistanceType
+-- None hides both. NPC trainers keep their own billboards.
 local PLAYER_DISPLAY_DISTANCE_TYPE = Enum.HumanoidDisplayDistanceType.None
 
 function CharacterService.HideOverheadDisplay(character: Model)
@@ -556,17 +503,15 @@ function CharacterService.HideOverheadDisplay(character: Model)
 end
 
 local function buildCharacter(player: Player, character: Model, data: Data)
-	CharacterService.HideOverheadDisplay(character) -- second pass; CharacterAdded already did it
+	CharacterService.HideOverheadDisplay(character)
 
 	local appearenceLoaded = Instance.new("BoolValue")
 	appearenceLoaded.Name = "AppearenceLoaded"
 	appearenceLoaded.Value = false
 	appearenceLoaded.Parent = character
 
-	-- F1: set every attribute now, not only at the end. A brand-new
-	-- player's Gender is still 0 here, but that IS the signal M2-04's
-	-- CreationController waits for to show the creation screen; without
-	-- this, the attribute stays nil forever and the screen never appears.
+	-- Set every attribute now: a brand-new player's Gender is still 0, and the
+	-- creation screen waits on that attribute.
 	setAttributes(player, data)
 
 	if data.Character.Gender == 0 then
@@ -578,12 +523,8 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 		return
 	end
 
-	-- F2: the old AppearanceController's "first time height" roll (moved
-	-- out when AppearanceController was removed, not into AgeController).
-	-- Needs gender, so it happens here, once gender is known, rather than
-	-- eagerly on load (AgeService no longer rolls it that early either -
-	-- see AgeService's DataService.Loaded handler). AgeService's own
-	-- resizeCharacter still re-rolls defensively if this is ever skipped.
+	-- First-time height roll; needs gender, so it happens once gender is known.
+	-- AgeService's resizeCharacter re-rolls defensively if this is skipped.
 	if data.Character.Height == 10 then
 		local profileStr, height = AgeHandler.start(data.Age.Years, data.Character.Race, data.Character.Gender)
 		data.Character.GrowthProfile = profileStr
@@ -605,10 +546,8 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 
 	appearenceLoaded.Value = true
 
-	-- F3: FaceControl waits (unbounded) on `Effects`, which EffectsService
-	-- only creates once AppearenceLoaded is true; starting it only after
-	-- that flip (and off this thread) means it no longer stalls every
-	-- spawn for FaceControl's old fixed 10s timeout.
+	-- FaceControl waits on `Effects`, which EffectsService creates once AppearenceLoaded
+	-- is true; start it after that flip and off this thread so spawns don't stall.
 	if falseHead then
 		task.spawn(FaceControl.Start, player, character, falseHead)
 	end
@@ -619,19 +558,14 @@ local function buildCharacter(player: Player, character: Model, data: Data)
 	end
 end
 
--- ==================== service ====================
 
--- F7: a second CreateCharacter after Gender is already set is silently
--- ignored (as before), but now warns once per cooldown instead of never,
--- so a client stuck retrying doesn't go unnoticed.
+-- A second CreateCharacter after Gender is set is ignored, warning once per cooldown.
 local lastDuplicateCreateWarn: { [Player]: number } = {}
 local DUPLICATE_CREATE_WARN_COOLDOWN = 30
 
 function CharacterService:Init()
-	-- F6: register both groups if missing (CollisionService also registers
-	-- them at its own Init; both sides check first, so the order is safe) so
-	-- SetCollidable below always has two real groups to work with, and
-	-- runs with no pcall: a real failure here should be loud, not silent.
+	-- Register both groups if missing (CollisionService also registers them; both sides
+	-- check first) so SetCollidable always has real groups. No pcall: a failure should be loud.
 	if not PhysicsService:IsCollisionGroupRegistered(COLLISION_GROUP) then
 		PhysicsService:RegisterCollisionGroup(COLLISION_GROUP)
 	end
@@ -656,10 +590,8 @@ function CharacterService:Init()
 			end
 			return
 		end
-		-- N2: HeightStuds here is transiently the Height==10 sentinel until
-		-- buildCharacter's own thread rolls the growth profile (F2) and
-		-- calls setAttributes again; harmless today since nothing reads it
-		-- this early, but worth knowing if that ever changes.
+		-- HeightStuds is transiently the Height==10 sentinel until buildCharacter rolls the
+		-- growth profile and calls setAttributes again.
 		setAttributes(player, data)
 	end)
 
@@ -668,8 +600,7 @@ function CharacterService:Init()
 	end)
 end
 
--- BUG-51: hide the default overhead name/health the moment the Humanoid
--- exists, not after PlayerService.Ready (which waits for the client).
+-- Hide the default overhead name/health the moment the Humanoid exists, not after PlayerService.Ready.
 local function hideWhenHumanoidExists(character: Model)
 	if character:FindFirstChildOfClass("Humanoid") == nil then
 		character:WaitForChild("Humanoid", 10)

@@ -1,17 +1,5 @@
 --!strict
--- A small, readable behavior tree (M3-04, TRIAGE #20). Trees are built as
--- plain data (each factory below returns a Node - just a table holding a
--- `Tick` function) and driven by whoever owns the blackboard on their own
--- schedule; this module has no timers, threads or Roblox services of its
--- own, only node semantics, so it's trivially self-tested with a fake
--- blackboard table.
---
--- Standard three-state BT semantics:
---   Success - the node finished, and finished well.
---   Failure - the node finished, and didn't.
---   Running - the node isn't done yet; tick it again next time.
--- A blackboard is just a table the tree's Condition/Action functions read
--- and write; this module never looks inside it.
+-- A small behavior tree. Trees are plain data (each factory returns a Node, a table holding a `Tick` function) driven by whoever owns the blackboard on their own schedule; no timers, threads or Roblox services here, only node semantics. Statuses: Success (finished well), Failure (finished badly), Running (tick again next time). The blackboard is a table the Condition/Action functions read and write; this module never looks inside it.
 
 export type Status = "Success" | "Failure" | "Running"
 
@@ -21,9 +9,7 @@ export type Node = {
 
 local BehaviorTree = {}
 
--- Ticks children in order; the first child that isn't Failure decides the
--- result (Success or Running short-circuits immediately). Failure only if
--- every child fails - "try each option until one works."
+-- Ticks children in order; the first child that isn't Failure decides the result. Failure only if every child fails.
 function BehaviorTree.Selector(children: { Node }): Node
 	return {
 		Tick = function(blackboard: any): Status
@@ -38,9 +24,7 @@ function BehaviorTree.Selector(children: { Node }): Node
 	}
 end
 
--- Ticks children in order; the first child that isn't Success decides the
--- result (Failure or Running short-circuits immediately). Success only if
--- every child succeeds - "do each step in order."
+-- Ticks children in order; the first child that isn't Success decides the result. Success only if every child succeeds.
 function BehaviorTree.Sequence(children: { Node }): Node
 	return {
 		Tick = function(blackboard: any): Status
@@ -55,7 +39,7 @@ function BehaviorTree.Sequence(children: { Node }): Node
 	}
 end
 
--- A boolean check: Success if true, Failure if false. Never Running.
+-- Success if true, Failure if false. Never Running.
 function BehaviorTree.Condition(fn: (blackboard: any) -> boolean): Node
 	return {
 		Tick = function(blackboard: any): Status
@@ -67,9 +51,7 @@ function BehaviorTree.Condition(fn: (blackboard: any) -> boolean): Node
 	}
 end
 
--- A leaf that does something and reports how it went - the only node that
--- can return "Running" on its own (a multi-tick action, e.g. still
--- walking to a waypoint).
+-- A leaf that does something and reports how it went; the only node that can return Running on its own.
 function BehaviorTree.Action(fn: (blackboard: any) -> Status): Node
 	return {
 		Tick = fn,
@@ -91,11 +73,7 @@ function BehaviorTree.Inverter(child: Node): Node
 	}
 end
 
--- Running for `seconds` (real time, os.clock()), then Success once, then
--- resets so the same node can be waited on again the next time it's
--- entered fresh. Each Cooldown/Wait node keeps its own timer in a closure,
--- so a tree built fresh per NPC (Trees.luau's job) never shares timer
--- state between NPCs.
+-- Running for `seconds` (os.clock()), then Success once, then resets. Each Wait/Cooldown keeps its own timer in a closure, so a tree built fresh per NPC never shares timer state.
 function BehaviorTree.Wait(seconds: number): Node
 	local startedAt: number? = nil
 	return {
@@ -113,9 +91,7 @@ function BehaviorTree.Wait(seconds: number): Node
 	}
 end
 
--- Gates `child` behind a cooldown: once `child` returns Success, further
--- ticks return Failure (not Running - a node on cooldown isn't "doing"
--- anything) until `seconds` have passed, then `child` can run again.
+-- Gates `child` behind a cooldown: after `child` returns Success, ticks return Failure (not Running) until `seconds` have passed.
 function BehaviorTree.Cooldown(seconds: number, child: Node): Node
 	local readyAt: number = 0
 	return {

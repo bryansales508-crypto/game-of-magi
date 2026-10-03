@@ -1,9 +1,7 @@
 --!strict
--- One ProfileStore per server, one profile per player. Session-locked,
--- migrated to Config.Data.SchemaVersion, saved on leave and on shutdown
--- (ProfileStore itself binds to game:BindToClose and waits for every save
--- to finish; see the "We're done!" wait loop at the bottom of Packages/
--- ProfileStore.luau, so this module doesn't need its own BindToClose).
+-- One ProfileStore per server, one profile per player. Session-locked, migrated to
+-- Config.Data.SchemaVersion, saved on leave. ProfileStore binds to BindToClose itself, so this
+-- module has none.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -21,38 +19,25 @@ type Profile = ProfileStoreLib.Profile<Data>
 
 local KICK_MESSAGE = "Your save couldn't be loaded. Please rejoin in a moment."
 
--- Created once at module load (ProfileStore.New doesn't yield: it either
--- has the DataStore already or spawns a background wait for it).
---
--- Left untyped (rather than annotated ProfileStoreLib.ProfileStore<Data>):
--- that generic alias intersects an unexported recursive type internally,
--- and luau-lsp can't always unify two separately-instantiated copies of it
--- across a module boundary. Everything downstream of `startSession` works
--- with our own `Profile` alias instead, cast once at that boundary.
+-- Created once at module load. Left untyped: the generic ProfileStore alias intersects an
+-- unexported recursive type that luau-lsp can't unify across modules; downstream code uses our
+-- own `Profile` alias, cast once at startSession.
 local rootStore = ProfileStoreLib.New(Config.Data.StoreName, SaveSchema.Template)
 
--- Flips to true (and stays true) the moment a real StartSessionAsync call
--- errors in Studio, or immediately if Config.Debug.FreshSave is set (also
--- Studio only): every following session in this server then uses
--- ProfileStore.Mock instead (nothing persists, every run starts fresh).
--- Studio play tests should never touch live saves. This must never happen
--- on a live server: a live server that silently switched to Mock would
--- serve every later player a blank save that's never written, with nothing
--- telling them (REVIEW-M1-03 H1) — a live StartSessionAsync error is a real
--- outage and gets a kick instead (see startSession below).
+-- True once a StartSessionAsync call errors in Studio (or Config.Debug.FreshSave is set): later
+-- sessions use ProfileStore.Mock so Studio play tests never touch live saves. Never happens on
+-- a live server: a live error kicks the player instead (see startSession).
 local useMock = Config.Debug.FreshSave and Config.IsStudio
 
 local profiles: { [Player]: Profile } = {}
--- Sessions currently being started, so PlayerAdded firing twice for the same
--- player (once directly, once via Start()'s catch-up loop for a player who
--- joined just before Start ran) only ever runs the pipeline once
--- (REVIEW-M1-03 L6).
+-- Sessions being started, so PlayerAdded and Start()'s catch-up loop don't run the pipeline
+-- twice for one player.
 local loading: { [Player]: boolean } = {}
 
 local loadedBindable = Instance.new("BindableEvent")
--- BUG-50: fires after a player's save is replaced in place (Wipe/NewLife -
--- same `data` table, new contents) so anything mirroring the save onto
--- attributes (the purse, ...) can re-publish. Not fired for a normal load.
+-- Fires after a player's save is replaced in place (Wipe/NewLife: same `data` table, new
+-- contents) so anything mirroring the save onto attributes can re-publish. Not fired for a
+-- normal load.
 local replacedBindable = Instance.new("BindableEvent")
 
 local DataService = {}
@@ -101,10 +86,8 @@ local function startSession(player: Player): Profile?
 			useMock = true
 			ok, profile, err = attemptStartSession(key, cancelled)
 		else
-			-- Never fall back to Mock on a live server: that would silently
-			-- serve every later player a blank save that's never written
-			-- (REVIEW-M1-03 H1). A live StartSessionAsync error is an
-			-- outage; kick and let the player rejoin once it clears.
+			-- Never fall back to Mock on a live server: a blank, never-written save would be
+			-- served silently. Kick and let the player rejoin.
 			log:Error(string.format("StartSessionAsync errored for %s: %s", player.Name, err or "unknown error"))
 			return nil
 		end
@@ -126,8 +109,7 @@ end
 
 local function onPlayerAdded(player: Player)
 	if profiles[player] ~= nil or loading[player] then
-		-- Already loaded, or already loading (PlayerAdded firing while
-		-- Start()'s catch-up loop is also handling this same player).
+		-- Already loaded or loading.
 		return
 	end
 	loading[player] = true
@@ -143,9 +125,7 @@ local function onPlayerAdded(player: Player)
 	end
 
 	if player.Parent ~= Players then
-		-- Rare race: the player left in the moment between StartSessionAsync
-		-- returning and this check running. End the session instead of
-		-- building a bridge for a player who's already gone.
+		-- The player left between StartSessionAsync returning and this check: end the session.
 		loading[player] = nil
 		profile:EndSession()
 		return
@@ -180,32 +160,18 @@ local function onPlayerAdded(player: Player)
 	loadedBindable:Fire(player)
 end
 
--- REVIEW-M5C-01B F1: plain synchronous callbacks, not a Players.
--- PlayerRemoving connection or a BindableEvent (whose Deferred signal
--- behavior wouldn't guarantee running before EndSession either, and either
--- way would depend on Init/Start connection order - "by luck", per the
--- review). profile:EndSession() fires ProfileStore's own OnSessionEnd
--- SYNCHRONOUSLY, before EndSession even returns (ProfileStore.luau), which
--- is what nils `profiles[player]` above - so another service's own
--- Players.PlayerRemoving handler (necessarily connected later, since
--- DataService.Init already ran before any other service's Start) can
--- already see DataService.Get return nil for a player that hasn't
--- technically left yet. A handler registered here is guaranteed to run
--- BEFORE that release, on every leave, regardless of when it registers.
--- Typed as a variadic return (not `()`) so pcall(handler, player) below
--- type-checks as (boolean, ...any) instead of just (boolean) - same trick
--- Main.server.luau's own ServiceModule type uses for Init/Start.
+-- Plain synchronous callbacks run BEFORE the profile is released (EndSession fires OnSessionEnd
+-- synchronously, which nils profiles[player]), so handlers can still call DataService.Get on
+-- every leave regardless of registration order. Typed as a variadic return so pcall(handler,
+-- player) type-checks.
 local releasingHandlers: { (Player) -> ...any } = {}
 
 function DataService.OnReleasing(handler: (Player) -> ...any)
 	table.insert(releasingHandlers, handler)
 end
 
--- Runs every registered OnReleasing handler, then `endSession` - exposed
--- (same reasoning as ResetToTemplate above) so a self-test can prove the
--- ORDER itself (every handler before the release) with a fake player-like
--- stand-in and a plain callback, with no real Player/ProfileStore session
--- involved.
+-- Runs every OnReleasing handler, then `endSession`. Exposed so a self-test can prove the
+-- ordering without a real session.
 function DataService.RunReleasing(player: Player, endSession: () -> ())
 	for _, handler in releasingHandlers do
 		local ok, err = pcall(handler, player)
@@ -237,9 +203,8 @@ function DataService.IsLoaded(player: Player): boolean
 	return profiles[player] ~= nil
 end
 
--- Event-driven, not a per-frame poll (REVIEW-M1-03 L8): suspends the
--- calling thread and resumes it from DataService.Loaded, PlayerRemoving, or
--- a task.delay timeout, whichever comes first.
+-- Suspends the calling thread until DataService.Loaded, PlayerRemoving, or a timeout, whichever
+-- is first.
 function DataService.WaitFor(player: Player, timeout: number?): Data?
 	local existing = DataService.Get(player)
 	if existing then
@@ -302,20 +267,14 @@ local function deepCopy(value: any): any
 	return copy
 end
 
--- Resets `data` in place (same table identity, so every existing
--- DataService.Get(player) caller keeps seeing live data) to a fresh,
--- migrated template with SaveSchema.NewLife's random appearance roll
--- applied. Shared by Wipe and NewLife below - data-only, no Player or
--- ProfileStore involved, so self-tests can exercise the exact reset both of
--- them build on directly.
+-- Resets `data` in place (same table identity, so existing Get callers see live data) to a
+-- fresh migrated template with NewLife's random appearance roll. Data-only; shared by Wipe and
+-- NewLife.
 function DataService.ResetToTemplate(data: any)
 	for key in data do
 		data[key] = nil
 	end
-	-- Deep copy: the template's nested tables (Character, Gear, ...) must
-	-- never be shared with a live profile, or the bridge mutating e.g.
-	-- data.Gear.Hats in place would corrupt the template for every future
-	-- wipe and every new player.
+	-- Deep copy so live profiles never share nested tables with the template.
 	for key, value in (SaveSchema.Template :: any) do
 		data[key] = deepCopy(value)
 	end
@@ -323,11 +282,8 @@ function DataService.ResetToTemplate(data: any)
 	SaveSchema.NewLife(data :: Data)
 end
 
--- Resets Data to a fresh template in place, re-runs the first-load setup,
--- and refreshes the legacy bridge. Used by M1-05's dev "fresh save"
--- command. A wipe makes a brand-new player: Meta.Unlocks.Combat resets to
--- the template's false along with everything else (M3B-01, Bryan
--- 2026-09-28 - unlike NewLife below, nothing here is carried over).
+-- Resets Data to a fresh template in place and re-runs first-load setup (dev 'fresh save'
+-- command). Everything resets, including Meta.Unlocks.Combat.
 function DataService.Wipe(player: Player)
 	local profile = profiles[player]
 	if profile == nil then
@@ -347,12 +303,8 @@ function DataService.Wipe(player: Player)
 	replacedBindable:Fire(player)
 end
 
--- M2-02: a death's "completely fresh life" (DESIGN.md section 3a). Like
--- Wipe, but keeps Meta.Lives (incremented), Meta.Created (the save's
--- original creation time) and Meta.Unlocks.Combat (M3B-01: the combat
--- unlock is per-player forever, not per-life - a death isn't the same as a
--- dev reset, and losing it every life would defeat the point of earning it
--- once via the tutorial).
+-- A death's completely fresh life. Like Wipe, but keeps Meta.Lives (incremented), Meta.Created
+-- and Meta.Unlocks.Combat (earned once, per player forever).
 function DataService.NewLife(player: Player)
 	local profile = profiles[player]
 	if profile == nil then
