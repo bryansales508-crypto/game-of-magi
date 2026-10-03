@@ -415,6 +415,9 @@ Config.Missions = {
 	InterceptedDecay = 0.5,
 	InterceptedFloor = 0.1,
 	HeavyCargoSpeedMult = 0.75,
+	-- BUG-56: HeavyCargo's package model is drawn this many times bigger
+	-- (Model:ScaleTo when it's attached; gone with the package on run end).
+	HeavyCargoPackScale = 1.5,
 	MagoiPerDelivery = 10,
 	-- How often the shared board/run loop ticks (arrival checks, TimeCrunch
 	-- expiry, the beacon) - not a per-frame loop (AUDIT H9).

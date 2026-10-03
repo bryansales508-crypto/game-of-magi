@@ -28,8 +28,10 @@
 -- modifier's own share of the payout and tells the client which pop-out to
 -- grey (`MissionUpdate` state "ModifierFailed", `{key}`). Only leaving,
 -- dying, respawning, an interception, or `.mission fail` end a run early.
--- HighlyValuable also keeps `CourierBeacon` on for the WHOLE run now,
--- instead of pulsing on the shared 30s/3s cycle everyone else uses.
+-- BUG-55 (Bryan, 2026-10-03) supersedes the old "HighlyValuable keeps
+-- `CourierBeacon` on for the whole run": the gold Highlight lives on the
+-- PACKAGE only, and the HV courier gets the same occasional beacon as every
+-- other courier.
 --
 -- Ported from (now removed) SSS/MISC/MissionHandler/init.server.luau,
 -- RS/Modules/MissionDeliniation.luau and RS/Modules/RewardHandler.luau; see
@@ -369,7 +371,6 @@ type Run = {
 	valuablePhaseEndsAt: number?,
 	settled: boolean,
 	beaconOn: boolean,
-	beaconPermanent: boolean, -- HighlyValuable: CourierBeacon stays true for the whole run
 	beaconNextAt: number,
 	beaconOffAt: number?,
 }
@@ -572,7 +573,10 @@ end
 
 local PACKAGE_TEMPLATE_NAMES = { "Package1", "Package2" }
 
-local function attachPackage(character: Model): Instance?
+-- BUG-56: HeavyCargo draws the package bigger (the old game's look), by
+-- Config.Missions.HeavyCargoPackScale. Applied here, when the package is
+-- attached; undone for free when cleanupRun destroys the package.
+local function attachPackage(character: Model, heavyCargo: boolean): Instance?
 	local objects = ReplicatedFirst:FindFirstChild("Objects")
 	if objects == nil then
 		log:Warn("ReplicatedFirst.Objects is missing - starting a delivery with no visible package")
@@ -592,6 +596,9 @@ local function attachPackage(character: Model): Instance?
 
 	local pack = (template:Clone() :: Model)
 	pack.Name = "Pack"
+	if heavyCargo then
+		pack:ScaleTo(pack:GetScale() * Config.Missions.HeavyCargoPackScale)
+	end
 	local primary = pack.PrimaryPart
 	if primary == nil then
 		pack:Destroy()
@@ -812,15 +819,13 @@ local function startRun(
 		preHitFailedKeys = nil,
 		timerEndsAt = if hasTimeCrunch then now + Config.Missions.TimeCrunchSeconds else nil,
 		startedAt = now,
-		pack = attachPackage(character),
+		pack = attachPackage(character, hasModifier(modifiers, "HeavyCargo")),
 		valuableHighlight = nil,
 		valuablePhase = nil,
 		valuablePhaseEndsAt = nil,
 		settled = false,
-		-- Bryan's refinement: HighlyValuable's escort stays lit the whole
-		-- run - beaconPermanent short-circuits the shared 30s/3s cycle below.
-		beaconOn = hasHighlyValuable,
-		beaconPermanent = hasHighlyValuable,
+		-- BUG-55: HighlyValuable couriers use the ordinary occasional beacon.
+		beaconOn = false,
 		beaconNextAt = now + Config.Missions.Beacon.everySeconds,
 		beaconOffAt = nil,
 	}
@@ -832,7 +837,6 @@ local function startRun(
 		applyFragileLook(run.pack)
 	end
 	if hasHighlyValuable then
-		character:SetAttribute("CourierBeacon", true)
 		applyHighlyValuableLook(run)
 	end
 
@@ -1189,22 +1193,18 @@ local function tickOnce(): ...any
 			run.timerEndsAt = nil
 		end
 
-		-- HighlyValuable: CourierBeacon stays true for the whole run
-		-- (Bryan's refinement) - the shared 30s/3s cycle below never
-		-- applies to it at all.
-		if not run.beaconPermanent then
-			if run.beaconOn then
-				if run.beaconOffAt and now >= run.beaconOffAt then
-					run.beaconOn = false
-					run.beaconOffAt = nil
-					character:SetAttribute("CourierBeacon", false)
-					run.beaconNextAt = now + Config.Missions.Beacon.everySeconds
-				end
-			elseif now >= run.beaconNextAt then
-				run.beaconOn = true
-				run.beaconOffAt = now + Config.Missions.Beacon.forSeconds
-				character:SetAttribute("CourierBeacon", true)
+		-- The shared occasional beacon (every courier, HighlyValuable too).
+		if run.beaconOn then
+			if run.beaconOffAt and now >= run.beaconOffAt then
+				run.beaconOn = false
+				run.beaconOffAt = nil
+				character:SetAttribute("CourierBeacon", false)
+				run.beaconNextAt = now + Config.Missions.Beacon.everySeconds
 			end
+		elseif now >= run.beaconNextAt then
+			run.beaconOn = true
+			run.beaconOffAt = now + Config.Missions.Beacon.forSeconds
+			character:SetAttribute("CourierBeacon", true)
 		end
 
 		tickValuablePulse(run, now)
