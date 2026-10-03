@@ -99,11 +99,18 @@ end
 -- so a quarter of it IS 0.25), but wrong while running: half of
 -- Combat.Run.speedMult (1.75) is 0.875, not the old hardcoded 0.5. The
 -- self-test caught this (LowHealthMult(true, 0) was 0.5, not 0.875).
+--
+-- BUG-36 (M3-C playtest, Bryan 2026-10-02): this is a MULTIPLIER on the
+-- baseline that applyWalkSpeed already picks (walk 16 or run 16 *
+-- Combat.Run.speedMult), so it must be relative: 1.0 at full health down
+-- to 0.5 (running) or 0.25 (walking) at 0 health. BUG-23's version scaled
+-- the running case by Combat.Run.speedMult a SECOND time (1.75 at full
+-- health, 0.875 at 0), so a hurt runner went up to 28 * 1.75 = 49 instead
+-- of down toward 14.
 function MovementService.LowHealthMult(running: boolean, ratio: number): number
 	local clamped = math.clamp(ratio, 0, 1)
-	local top = if running then Combat.Run.speedMult else 1.0
-	local floor = if running then top / 2 else top / 4
-	return floor + (top - floor) * clamped
+	local floor = if running then 0.5 else 0.25
+	return floor + (1.0 - floor) * clamped
 end
 
 -- ==================== bridge (IntFold.MovementSpeed / Running?) ====================

@@ -1365,13 +1365,13 @@ local function testMovementService(results: { Check })
 		)
 		expect(
 			results,
-			"MovementService: LowHealthMult at full health (running) is Combat.Run.speedMult",
-			math.abs(MovementService.LowHealthMult(true, 1) - 1.75) < 1e-9
+			"MovementService: LowHealthMult at full health (running) is 1.0 (the baseline already carries Combat.Run.speedMult - BUG-36)",
+			math.abs(MovementService.LowHealthMult(true, 1) - 1.0) < 1e-9
 		)
 		expect(
 			results,
-			"MovementService: LowHealthMult at 0 health (running) is half of Combat.Run.speedMult",
-			math.abs(MovementService.LowHealthMult(true, 0) - 0.875) < 1e-9
+			"MovementService: LowHealthMult at 0 health (running) is half the run baseline (BUG-36)",
+			math.abs(MovementService.LowHealthMult(true, 0) - 0.5) < 1e-9
 		)
 		expect(
 			results,
