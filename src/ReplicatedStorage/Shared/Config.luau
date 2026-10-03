@@ -558,6 +558,12 @@ Config.World = {
 		-- torso the raycast looks for the ground (studs).
 		PrintSeconds = 0.75,
 		PrintRayStuds = 6,
+		-- BUG-48: true logs every step event, the floor material and the sound
+		-- picked (Output), to find out why steps are silent.
+		Debug = false,
+		-- Fallback for when Animate's walk markers don't fire (or while
+		-- running): one step per this many studs walked. 0 = off.
+		FallbackStrideStuds = 5.5,
 	},
 }
 table.freeze(Config.World.Music)
