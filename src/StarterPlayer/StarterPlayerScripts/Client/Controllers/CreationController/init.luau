@@ -1,25 +1,22 @@
 --!strict
 -- The character-creation ("Gender") screen. Clones ReplicatedFirst.GUI.Gender
 -- (Studio-only art, kept exactly), destroys its Studio-only `Decisions`
--- Script (the old server script that could never actually see a player's
--- clicks), and reproduces its behaviour in a LocalScript instead: pick a
--- gender and a skin, Enter lights up once both are picked, Enter fires
--- CreateCharacter. The screen is destroyed once the server confirms the
+-- Script (a server script that could never see a player's clicks), and
+-- reproduces its behaviour here: pick a gender and a skin, Enter lights up
+-- once both are picked, Enter fires CreateCharacter. The screen is destroyed once the server confirms the
 -- pick by setting the Gender attribute to a non-zero value.
 --
--- Contract with the server (M2-01/M2-03):
+-- Contract with the server:
 --   CreateCharacter(gender: 1|2, skin: 1|2|3) -- client -> server.
 --   Player:GetAttribute("Gender") starts at 0 (or nil for a moment at
 --   join) and becomes non-zero once the server accepts the pick.
 --
--- FIX BUG-24: nil means "we don't know yet" (the attribute hasn't
--- replicated), never "not chosen" -- only an explicit 0 means that. Doing
--- nothing on nil and waiting for the next GetAttributeChangedSignal fire
--- is what stops a returning player (whose Gender arrives as their real,
--- already-chosen value) from ever seeing the screen flash on. If the
--- screen is somehow still up when Gender turns out to be non-zero (a
--- pick already recorded), it's torn down without ever firing
--- CreateCharacter -- destroyScreen only removes the GUI.
+-- nil means "we don't know yet" (the attribute hasn't replicated), never
+-- "not chosen" -- only an explicit 0 means that. Doing nothing on nil and
+-- waiting for the next GetAttributeChangedSignal fire stops a returning
+-- player (whose Gender arrives already chosen) from seeing the screen flash
+-- on. If the screen is still up when Gender turns out to be non-zero, it is
+-- torn down without firing CreateCharacter.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -33,7 +30,6 @@ local log = Log.new("CreationController")
 
 local player = Players.LocalPlayer
 
--- Colours and behaviour straight from docs/reference/m2-studio-dump.md §1.
 local MASCULINE_DEFAULT = Color3.fromRGB(84, 126, 189)
 local MASCULINE_SELECTED = Color3.fromRGB(47, 72, 108)
 local FEMININE_DEFAULT = Color3.fromRGB(189, 91, 21)
@@ -58,9 +54,8 @@ local function buildScreen()
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
 	local gui = GENDER_TEMPLATE:Clone()
-	gui.ResetOnSpawn = false -- (REVIEW-M2-04 M1)
-	-- FIX BUG-14: recursive, and destroyed before the clone is parented
-	-- (below), same as MenuController's MenuMechanics fix.
+	gui.ResetOnSpawn = false
+	-- Recursive search; destroyed before the clone is parented.
 	local decisions = gui:FindFirstChild("Decisions", true)
 	if decisions then
 		decisions:Destroy()
@@ -166,8 +161,7 @@ end
 local function onGenderChanged()
 	local gender = player:GetAttribute("Gender")
 	if gender == nil then
-		-- BUG-24: nil is "unknown", not "not chosen" -- do nothing and
-		-- wait for the next attribute change instead of guessing.
+		-- nil is "unknown", not "not chosen": wait for the next attribute change.
 		log:Debug("Gender unknown (nil); waiting for the server")
 	elseif gender == 0 then
 		log:Debug("Gender is 0 (not chosen); showing the creation screen")

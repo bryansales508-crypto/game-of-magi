@@ -1,12 +1,11 @@
 --!strict
 -- Shows the loading screen for every spawn (join and respawn) and holds it
--- up until the server reports the character is placed, instead of racing a
--- fixed timer or a one-time remote against the server's own work.
+-- up until the server reports the character is placed.
 --
--- Contract with the server (PlayerService, M1-04S):
---   Player:GetAttribute("JoinState") goes "Loading" -> "Loaded" -> "Ready",
---   and again "Loading" -> "Loaded" on every respawn. This controller waits
---   for "Loaded", fades out, then fires the ClientReady event once per spawn.
+-- Server contract (PlayerService): Player:GetAttribute("JoinState") goes
+-- "Loading" -> "Loaded" -> "Ready", and again "Loading" -> "Loaded" on every
+-- respawn. This controller waits for "Loaded", fades out, then fires the
+-- ClientReady event once per spawn.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -69,9 +68,8 @@ local function waitForLoaded(myGeneration: number): boolean
 	return coroutine.yield()
 end
 
--- Plays the pulse (tween <-> tween2) forever, same 5s/Linear legs as the
--- old script, until Cancel()'d from outside. Destroys both tweens itself,
--- after its own Wait() calls have settled, rather than have the caller
+-- Plays the pulse (out <-> back) until a Cancel() ends it. Destroys both tweens
+-- itself after its own Wait() calls have settled, rather than have the caller
 -- destroy them out from under a pending Wait().
 local function runPulse(pulseOut: Tween, pulseBack: Tween)
 	while true do

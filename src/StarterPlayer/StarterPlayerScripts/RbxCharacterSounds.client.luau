@@ -1,10 +1,10 @@
 --!nocheck
--- BUG-57 (M7-06): replaces Roblox's default character sound script.
+-- Replaces Roblox's default character sound script.
 --
 -- A LocalScript named "RbxCharacterSounds" in StarterPlayerScripts overrides
 -- the engine's built-in one of the same name. This copy plays every default
 -- sound (jump, land, climb, splash, free-fall, get-up, swim) but NEVER the
--- default "Running" footstep: Bryan's own footsteps (FootstepController,
+-- default "Running" footstep: the game's own footsteps (FootstepController,
 -- ReplicatedFirst.SFX.Steps) are the only step sounds, so there is no second
 -- Roblox step underneath them.
 --

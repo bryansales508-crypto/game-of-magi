@@ -1,14 +1,14 @@
--- Player Varibles
+-- Sinks input while the matching marker (FreezeInput, BigFreezeInput, ActionFreezeInput) sits in character.Effects,
+-- and posts server-sent ForcedChat lines to the general chat channel.
 local player = game.Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local torso = character:WaitForChild("Torso")
 
-while character:WaitForChild("AppearenceLoaded").Value == false do task.wait() end -- Waiting for Appearence
+while character:WaitForChild("AppearenceLoaded").Value == false do task.wait() end
 
 local effects = character:WaitForChild("Effects")
 
--- Variables
 local ContextActionService = game:GetService("ContextActionService")
 local FREEZE_ACTION = "freezeMovement"
 local BIG_FREEZE_ACTION = "bigfreezeMovement"
@@ -19,8 +19,6 @@ local textServ = game:GetService("TextChatService")
 local speech = textServ:WaitForChild("TextChannels"):WaitForChild("RBXGeneral")
 
 local cam = workspace.CurrentCamera
-
--- BRYAN Just to note, you can prevent camera movement with freeze too. That's gonna be perfect for cutscenes. (7/2/2024)
 
 local frozeActions = {
 	Enum.UserInputType.MouseButton1,
@@ -45,8 +43,6 @@ for _,v in Enum.KeyCode:GetEnumItems() do
 	end
 end
 
--- Click Freeze
-
 effects.ChildAdded:Connect(function(child)
 	if child.Name == "FreezeInput" then
 		ContextActionService:BindAction(
@@ -63,8 +59,6 @@ effects.ChildRemoved:Connect(function(child)
 		ContextActionService:UnbindAction(FREEZE_ACTION)
 	end
 end)
-
--- Big Freeze (Just for Shift, but you can update this easily for specific Keybinds)
 
 effects.ChildAdded:Connect(function(child)
 	if child.Name == "BigFreezeInput" then
@@ -83,7 +77,7 @@ effects.ChildRemoved:Connect(function(child)
 	end
 end)
 
--- Freeze everything but the movement keys, allows for better pick up if you relying on the player to quickly start moving again after the freeze.
+-- ActionFreezeInput sinks everything except the movement keys so the player can start moving again right after.
 effects.ChildAdded:Connect(function(child)
 	if child.Name == "ActionFreezeInput" then
 		ContextActionService:BindAction(
@@ -101,8 +95,6 @@ effects.ChildAdded:Connect(function(child)
 	end
 end)
 
-
--- Forced Chat
 
 forcedChatEvent.OnClientEvent:Connect(function(msg)
 	speech:SendAsync(msg)

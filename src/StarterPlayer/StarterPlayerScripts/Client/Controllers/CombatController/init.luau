@@ -1,57 +1,18 @@
 --!strict
 -- Input -> combat intentions, and the swing/dash/run animations that play
--- in lockstep with the server's own timing. See docs/SYSTEMS.md #8-9,
--- docs/AUDIT.md H6/H10/L11, docs/TRIAGE.md #11, docs/M3-PLAN.md M3-05,
--- docs/TINKER.md "Combat" (M3-FIX3/M3-FIX4, Bryan 2026-09-28).
+-- in lockstep with the server's own timing.
 --
--- The client never decides a hit or a cooldown: it only sends
--- AttackStart / AttackHit / AttackCancel / Block / Dash / Run intentions,
--- and only plays an animation once the server's own CombatEvent or
--- attribute confirms it (H6 -- the old script played the swing on click
--- and let clicks stack Hit-marker listeners).
+-- The client never decides a hit or a cooldown: it only sends intentions
+-- (AttackStart / AttackHit / AttackContinue / AttackCancel / Block / Dash /
+-- Run / SetStance) and plays an animation only once the server's CombatEvent
+-- or an attribute confirms it.
 --
--- M3-FIX3/M3-FIX4: one click plays ONE swing animation for the attacker's
--- fighting style (the WeaponSet attribute -- "Fist" or "Dagger" today),
--- containing a chain of several hits. The animation's own markers drive
--- the report: a "wind-up" marker per hit (checked for an interrupt, and
--- gates that hit's own cancel window) and a "hit" marker per hit (reports
--- AttackHit(index) at that instant, so client and server timing agree).
--- The real marker names can't be read from the .rbxm, so they're editable
--- data, per style: Shared/Config.luau's Config.Combat.Markers[styleName],
--- with Config.Combat.LogMarkers logging every keyframe/marker reached on
--- whichever style's track is playing so Bryan can read the real names out
--- of Output.
---
--- M3-FIX4 also adds: per-hit timings (windupAt/cancelUntil/...) read
--- defensively from Shared/Data/Combat.luau's Combat.Styles (server-owned
--- data); the LightStunned
--- and Recovering attributes gating input alongside Stunned/Knocked/
--- TrueStunned; and a purely cosmetic Royal Dagger prop shown on ANY
--- character (not just the local one) whose WeaponSet is "Dagger".
---
--- M3-FIX5 (Bryan, 2026-09-30): one click per hit. The combo is still ONE
--- animation per style (Config.Combat.ComboAnimations), but after hit k
--- lands the track freezes at hit k+1's wind-up marker (AdjustSpeed(0))
--- until the player clicks again; that click sends AttackContinue(k+1) and
--- unfreezes the track straight into the next hit's wind-up. A click that
--- lands early (during hit k's follow-through, or inside Chain.HitGap) is
--- remembered and fires as soon as it's allowed; no click within
--- Chain.ClickTimeout and the server drops the combo (AttackCancelled
--- {reason = "dropped"}), with a local backstop that fades the frozen pose
--- out even if that event never arrives. Right-click while frozen is a
--- cancel the server always honours.
---
--- M3-FIX6 (Bryan, 2026-10-01): the freeze moved onto the PUNCH itself
--- (wind-up -> punch, pause, wind-up -> punch, pause, ...) and the chain
--- loops: after the style's last hit the track wraps to hit 1 and the clicks
--- can keep going. A chain now ends only by dropping (no click in time),
--- cancel, interrupt, or the server's AttackEnded. All of the keyframe
--- logic is SwingTrack's; this file only turns clicks into continues.
---
--- Every animation id lives in Config.Combat (StanceAnimations,
--- ComboAnimations, ComboSpeed, MoveAnimations) - nothing is hardcoded here.
--- The diagonal dash animations were commented out in the old script and
--- never existed (AUDIT H10); cardinal-only is the approved feel for now.
+-- One click starts ONE looping combo animation for the attacker's style (the
+-- WeaponSet attribute); SwingTrack owns its marker logic. The track freezes on
+-- each punch and every further click sends AttackContinue; with no click
+-- within Chain.ClickTimeout the server drops the combo. Marker names are data
+-- (Config.Combat.Markers[style]), as are animation ids (Config.Combat) and
+-- per-hit timings (Combat.Styles in Shared/Data/Combat.luau).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -66,8 +27,7 @@ local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
 local Config = require(Shared:WaitForChild("Config"))
 
--- M3-FIX5: the combo animation's keyframe/freeze/continue logic, shared
--- with NpcAnimController so a dummy's chain looks exactly like a player's.
+-- Shared with NpcAnimController so an NPC's chain looks exactly like a player's.
 local SwingTrack = require(script.SwingTrack)
 
 local log = Log.new("CombatController")
@@ -83,8 +43,8 @@ local CombatController = {}
 local MOVE_ANIMATIONS = Config.Combat.MoveAnimations
 local COMBO_ANIMATIONS: { [string]: string } = Config.Combat.ComboAnimations
 
-local DOUBLE_TAP_WINDOW = 0.5 -- old `dp`
-local RUN_ZOOM_IN_SECONDS = 1 -- old WalkingTween
+local DOUBLE_TAP_WINDOW = 0.5
+local RUN_ZOOM_IN_SECONDS = 1
 
 type Tracks = {
 	swing: { [string]: AnimationTrack },
@@ -106,37 +66,26 @@ local blockHeld = false
 local wantRun = false
 local runAnimPlaying = false
 local runningTween: Tween? = nil
--- The "you don't know how to fight yet" message (Stance section, below);
--- declared here so teardownCharacter can clean it up on respawn without
--- forward-referencing a local declared later in the file.
+-- The "you don't know how to fight yet" message; destroyed on respawn.
 local activeLockedMessageGui: ScreenGui? = nil
 local lockedMessageGeneration = 0
 
--- Forward-declared: referenced by the Humanoid.StateChanged connection
--- below (jump cancels a held block), defined in the Block section further
--- down. Connections close over the local itself, not its value at
--- connect-time, so this is safe.
+-- Forward-declared: used by connections and functions defined above their definitions.
 local cancelBlock: () -> ()
 local tryCancelAttack: () -> ()
--- Forward-declared for the same reason: onCharacterAdded (below) wires
--- the local character's dagger visual, but the function itself lives
--- further down, next to its "other players" counterpart.
 local wireDaggerVisual: (character: Instance) -> ()
 local wireStanceAnimation: (character: Instance) -> ()
 local stopStanceAnimation: (character: Instance) -> ()
 
--- ==================== swing state (M3-FIX3/M3-FIX5: animation-driven punches) ====================
+-- ==================== swing state ====================
 
--- The local character's live combo animation (SwingTrack owns the
--- keyframe/freeze/continue logic; this file adds the hit reports and the
--- clicks on top).
+-- The local character's live combo animation.
 local currentSwing: SwingTrack.Swing? = nil
 -- A click that arrived before the track froze or before Chain.HitGap was
 -- over - fires the continue the moment both allow it. Reset per swing.
 local continueQueued = false
 
--- M3-FIX5: the "next hit" click, defined in the Swing section below but
--- called from tryAttackStart (Attack section) above it.
+-- Defined in the Swing section, called from tryAttackStart.
 local tryContinue: (swing: SwingTrack.Swing) -> ()
 
 -- Idempotent: stops the live swing (with an optional fade), whether called
@@ -322,11 +271,9 @@ local function onCharacterAdded(character: Model)
 	end)
 end
 
--- ==================== input gating (M3-FIX4: LightStunned/Recovering) ====================
+-- ==================== input gating ====================
 
--- Fully incapacitated: nothing (Attack/Block/Dash) is allowed. Stunned/
--- Knocked/TrueStunned "as today" (point 4) -- unchanged from M3-FIX3;
--- Recovering is new and blocks everything the same way.
+-- Fully incapacitated: nothing (Attack/Block/Dash) is allowed.
 local function isIncapacitated(character: Model): boolean
 	return character:GetAttribute("Stunned") == true
 		or character:GetAttribute("Knocked") == true
@@ -334,16 +281,15 @@ local function isIncapacitated(character: Model): boolean
 		or character:GetAttribute("Recovering") == true
 end
 
--- LightStunned still allows Attack/Dash (point 4); only Block is narrower.
--- M3B-03: Block also requires InCombat (point 1), same as attacking/
--- cancelling -- see the Stance section below.
+-- LightStunned still allows Attack/Dash; only Block is narrower. Block also
+-- requires InCombat, same as attacking/cancelling.
 local function canBlock(character: Model): boolean
 	return not isIncapacitated(character)
 		and character:GetAttribute("LightStunned") ~= true
 		and character:GetAttribute("InCombat") == true
 end
 
--- ==================== Stance (M3B: combat is entered with a key) ====================
+-- ==================== Stance (combat is entered with a key) ====================
 -- The style is entirely server-derived from the equipped Tool (WeaponSet)
 -- -- this client never sends or claims a style, only SetStance(bool).
 
@@ -351,9 +297,8 @@ local LOCKED_MESSAGE_TEXT = "You don't know how to fight yet."
 local LOCKED_MESSAGE_COLOR = Color3.fromRGB(255, 224, 152)
 
 -- Same look as RukhController's "Your heart gave out." (menu-style font),
--- centred low on the screen per point 2. Generation-guarded so a second
--- press while one is already showing restarts the clock cleanly instead
--- of an earlier delayed cleanup destroying the newer GUI out from under it.
+-- centred low on the screen. Generation-guarded so a second press restarts
+-- the clock instead of an earlier delayed cleanup destroying the newer GUI.
 local function showLockedMessage()
 	lockedMessageGeneration += 1
 	local myGeneration = lockedMessageGeneration
@@ -397,9 +342,8 @@ local function showLockedMessage()
 	end)
 end
 
--- The C key (Config.Combat.StanceKey): toggles InCombat. Leaving is
--- always sent instantly; entering while locked shows the message instead
--- of sending anything (point 2 -- "no remote sent").
+-- The C key (Config.Combat.StanceKey): toggles InCombat. Leaving is always
+-- sent instantly; entering while locked shows the message instead.
 local function tryToggleStance()
 	local character = currentCharacter
 	if not character then
@@ -407,10 +351,8 @@ local function tryToggleStance()
 	end
 	local wantOn = character:GetAttribute("InCombat") ~= true
 	if wantOn then
-		-- "Entering requires: combat unlocked, alive, not knocked or in a
-		-- scene" (M3B-PLAN.md section 1); the server is the real gate,
-		-- this just avoids a doomed round-trip. "Leaving is instant" --
-		-- no equivalent check when wantOn is false.
+-- Entering requires: combat unlocked, alive, not knocked. The server is
+-- the real gate; this just avoids a doomed round-trip.
 		if player:GetAttribute("CombatUnlocked") ~= true then
 			showLockedMessage()
 			return
@@ -438,16 +380,11 @@ end
 
 -- ==================== Attack ====================
 
--- M1: fires AttackStart() only -- it never plays anything itself. The
--- swing (and its per-hit markers) only starts once the server's own
--- Swing event arrives, below.
---
--- Point 1's exception: outside the stance, a click normally does
--- nothing -- EXCEPT with a weapon Tool equipped, where the click both
--- enters the stance (SetStance(true)) AND becomes the first hit
--- (AttackStart), sent in that order. This never checks CombatUnlocked
--- itself (unlike the C key): the server drops both silently if locked,
--- same as any other rejected SetStance.
+-- Fires AttackStart only; the swing starts when the server's Swing event
+-- arrives. Outside the stance a click does nothing, except with a weapon Tool
+-- equipped: then it both enters the stance (SetStance) and becomes the first
+-- hit (AttackStart), in that order. CombatUnlocked isn't checked here; the
+-- server drops both silently if locked.
 local function tryAttackStart()
 	local character = currentCharacter
 	if not character then
@@ -457,12 +394,10 @@ local function tryAttackStart()
 		return
 	end
 
-	-- M3-FIX5/M3-FIX6: a click mid-combo is the "next hit" click, once the
-	-- current hit has landed (before that it's nothing - mashing during a
-	-- wind-up never buffers). tryContinue (Swing section) waits for
-	-- Chain.HitGap before it actually sends anything. The chain loops, so
-	-- every click while a swing is live is a continue; there is no "last
-	-- hit" after which clicks fall through to a new AttackStart.
+-- A click mid-combo is the "next hit" click once the current hit has landed
+-- (before that it does nothing: mashing during a wind-up never buffers).
+-- tryContinue waits for Chain.HitGap. The chain loops, so every click while
+-- a swing is live is a continue.
 	local swing = currentSwing
 	if swing and not swing.stopped then
 		if swing.landed then
@@ -504,22 +439,18 @@ local function setBlockHeld(held: boolean)
 	Remotes.Client.Fire("Block", held)
 end
 
--- Right-click / jump also releases a held block early, same as letting
--- go of F (independent of tryCancelAttack below, which is what handles
--- the swing/cancel-highlight side of these same two inputs).
+-- Right-click / jump also releases a held block early, same as letting go of F.
 cancelBlock = function()
 	if blockHeld then
 		setBlockHeld(false)
 	end
 end
 
--- Right-click/jump ALSO tries to cancel an in-progress attack (point 3):
--- eligible while the live hit hasn't passed its own cancel point: until
--- `cancelUntil` seconds after its segment started, by this client's own
--- clock (the server enforces the real check). Never stops the track
--- locally -- that only ever happens once the server's own
--- AttackCancelled arrives, so client and server never disagree about
--- whether the swing is still live.
+-- Right-click/jump also tries to cancel an in-progress attack: eligible until
+-- `cancelUntil` seconds after the live hit's segment started, by this client's
+-- own clock (the server enforces the real check). Never stops the track
+-- locally; only the server's AttackCancelled does, so client and server
+-- agree on whether the swing is live.
 tryCancelAttack = function()
 	local character = currentCharacter
 	if not character or character:GetAttribute("InCombat") ~= true then
@@ -530,10 +461,9 @@ tryCancelAttack = function()
 		return
 	end
 
-	-- M3-FIX5: between hits (frozen on the punch, the next click not sent
-	-- yet) a cancel is always honoured: that pause is the decision point.
-	-- Also forgets a queued click, so the cancel can't race its own
-	-- continue.
+-- Between hits (frozen on the punch, the next click not sent yet) a cancel
+-- is always honoured: that pause is the decision point. Also forgets a
+-- queued click, so the cancel can't race its own continue.
 	if swing.landed then
 		continueQueued = false
 		Remotes.Client.Fire("AttackCancel")
@@ -545,8 +475,8 @@ tryCancelAttack = function()
 	if not cancelUntil then
 		return
 	end
-	-- M3-FIX6: hit 1 on a later pass of the loop starts with the last
-	-- hit's follow-through, so its numbers sit loopOffset later.
+-- Hit 1 on a later pass of the loop starts with the last hit's
+-- follow-through, so its numbers sit loopOffset later.
 	if swing.liveHit == 1 and swing.segment > 1 then
 		cancelUntil += SwingTrack.LoopOffsetFor(swing.styleName)
 	end
@@ -562,15 +492,11 @@ end
 -- The dash direction in the CHARACTER'S OWN frame (x = right, z = back,
 -- so (0, -1) is straight ahead), which is what MovementService.Dash
 -- expects - it rotates (x, 0, z) by the HumanoidRootPart's CFrame.
--- (Bryan, 2026-09-30: dashes went the wrong way because this used to send
--- a world-space direction, which the server then rotated by the facing a
--- second time.)
 --
--- WASD is read camera-relative (holding W dashes the way the camera
--- looks, as movement does), then converted into the character's frame;
--- with no key held it's the humanoid's current MoveDirection, and standing
--- still it's straight ahead, the way the character is facing (Q + "last
--- movement direction", point 1). The server normalises the result (H10).
+-- WASD is read camera-relative (holding W dashes the way the camera looks),
+-- then converted into the character's frame; with no key held it's the
+-- humanoid's current MoveDirection, and standing still it's straight ahead.
+-- The server normalises the result.
 local function characterRelativeDashAxes(): (number, number)
 	local rootPart = currentCharacter and currentCharacter:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not rootPart then
@@ -606,9 +532,8 @@ local function tryDash()
 	if not character then
 		return
 	end
-	-- "As today" for Knocked/TrueStunned (point 4: no plain Stunned check
-	-- here, unchanged from before); Recovering is the new addition, and
-	-- LightStunned deliberately does NOT block Dash.
+-- Knocked/TrueStunned/Recovering block dashing; LightStunned deliberately
+-- does not.
 	if
 		character:GetAttribute("Knocked") == true
 		or character:GetAttribute("TrueStunned") == true
@@ -616,8 +541,8 @@ local function tryDash()
 	then
 		return
 	end
-	-- Bryan (2026-09-30): no dashing out of a swing (the server refuses it
-	-- too); this just saves the round trip.
+-- No dashing out of a swing (the server refuses it too); this just saves
+-- the round trip.
 	if character:GetAttribute("Attacking") == true or (currentSwing ~= nil and not (currentSwing :: SwingTrack.Swing).stopped) then
 		return
 	end
@@ -660,11 +585,10 @@ local function stopRun()
 	Remotes.Client.Fire("Run", false)
 end
 
--- ==================== Swing (M3-FIX3/M3-FIX4/M3-FIX5/M3-FIX6: animation-driven hit chains) ====================
--- The keyframe/marker logic (wind-up slowdown, hit markers, the freeze on
--- the punch, continue) lives in SwingTrack, shared with NpcAnimController.
--- This section is only what's specific to the LOCAL player: reporting
--- each hit to the server, and turning clicks into continues.
+-- ==================== Swing ====================
+-- The keyframe/marker logic lives in SwingTrack, shared with
+-- NpcAnimController. This section is only what is specific to the LOCAL
+-- player: reporting each hit to the server and turning clicks into continues.
 
 -- The click for the next hit: sends AttackContinue(next chain index -
 -- wrapping to 1 after the last) and unfreezes the track into the
@@ -725,9 +649,7 @@ local function onLocalSwing(character: Model, tracks: Tracks, data: any)
 	stopSwing(nil)
 	continueQueued = false
 
-	-- A feint arrives as an ordinary Swing (the server starts it as a new
-	-- attack, point 5) -- nothing special-cased here, it just plays this
-	-- style's track from its first hit like any other swing.
+-- A feint arrives as an ordinary Swing and plays from the first hit.
 	local styleName = typeof(data.style) == "string" and data.style or "Fist"
 	local hitCount = if typeof(data.hitCount) == "number" then data.hitCount else 1
 	local track = tracks.swing[styleName] or tracks.swing.Fist
@@ -758,23 +680,10 @@ end
 
 -- ==================== CombatEvent (server -> client) ====================
 
--- Only ever animates the LOCAL character: a swing/dash played on your own
--- Animator replicates to every other client on its own (Roblox networks
--- animations from whichever client owns the character), so there is
--- nothing for this controller to do about another character's Swing or
--- Dash -- that plays on their own client instead.
---
--- This is also why the wind-up slowdown (onLocalSwing's AdjustSpeed
--- calls, Bryan 2026-09-28) doesn't need its own "other characters" path:
--- it's a runtime change to the SAME track that's already replicating, so
--- everyone watching an attacker sees the same slowdown through that
--- existing replication, the same way they already see the swing itself.
--- Deliberately NOT loading and playing a second, independent copy of the
--- track for every observer here -- that would double up with the
--- replicated one and fight it (two tracks driving the same joints).
--- FLAG FOR PLAYTEST: confirm the slowdown is visible to other players;
--- if AdjustSpeed turns out not to replicate reliably, that's the fallback
--- to build instead.
+-- Only animates the LOCAL character: animations played on your own Animator
+-- replicate to other clients on their own, so another character's Swing or
+-- Dash needs nothing here. Playing a second copy for observers would fight
+-- the replicated track (two tracks driving the same joints).
 local function onCombatEvent(kind: any, data: any)
 	if typeof(kind) ~= "string" or typeof(data) ~= "table" then
 		log:Warn("CombatEvent: unexpected payload")
@@ -801,33 +710,17 @@ local function onCombatEvent(kind: any, data: any)
 	end
 end
 
--- The intended read-and-react loop this all serves (Bryan, 2026-09-28):
--- you swing -> the enemy reads your wind-up and swings back to interrupt
--- you -> next time, you cancel before your first wind-up to bait their
--- interrupt-swing -> then swing for real and interrupt THEM mid wind-up.
--- Every step of that is just these pieces: tryAttackStart, tryCancelAttack
--- (only before the next unlanded hit's own cancel point), and the
--- server's own interrupt on a landed Hit -- nothing here plays a role
--- beyond sending the right intention at the right moment.
-
--- ==================== dagger visual (M3-FIX4: purely cosmetic weapon prop) ====================
--- Shows the Royal Dagger, welded into the right hand, on ANY character
--- (own and others -- point 6) whose WeaponSet attribute is "Dagger";
--- removed the moment it changes to anything else. Grip CFrame and the
--- Motor6D-to-"Right Arm" approach are the old RS/Modules/Combat/
--- WeaponHandler.luau's `rig`, kept verbatim (git show a70f9ae:
--- src/ReplicatedStorage/Modules/Combat/WeaponHandler.luau, the commit
--- before that file was deleted). The real, functional tool comes with
--- the M5 shop; this is only ever a look.
+-- ==================== dagger visual ====================
+-- Shows the Royal Dagger, welded into the right hand with a Motor6D to
+-- "Right Arm", on ANY character (own and others) whose WeaponSet attribute is
+-- "Dagger"; removed when it changes. Purely cosmetic.
 
 local DAGGER_TEMPLATE =
 	ReplicatedFirst:WaitForChild("Tools"):WaitForChild("Weapons"):WaitForChild("BasicWeapons"):WaitForChild("Royal Dagger")
 local DAGGER_GRIP_C0 = CFrame.new(0, -1.5, -0.8) * CFrame.Angles(math.rad(-45), 0, 0)
 
--- Weak keys: a character destroyed without ever clearing WeaponSet (e.g.
--- a hard respawn) just drops out of this table on its own; the cloned
--- tool goes with the character model regardless, since it's parented
--- inside it.
+-- Weak keys: a character destroyed without ever clearing WeaponSet just
+-- drops out of this table.
 local daggerToolByCharacter = (setmetatable({}, { __mode = "k" }) :: any) :: { [Instance]: Instance }
 
 local function removeDaggerVisual(character: Instance)
@@ -876,9 +769,7 @@ local function updateDaggerVisual(character: Instance)
 	end
 end
 
--- Shared by the local character (onCharacterAdded) and every other
--- player's (Start's wireOtherPlayer, below) -- the visual is the same
--- either way, only WHICH characters get watched differs.
+-- Shared by the local character and every other player's.
 wireDaggerVisual = function(character: Instance)
 	character:GetAttributeChangedSignal("WeaponSet"):Connect(function()
 		updateDaggerVisual(character)
@@ -886,7 +777,7 @@ wireDaggerVisual = function(character: Instance)
 	updateDaggerVisual(character)
 end
 
--- ==================== stance animation (M3B point 3) ====================
+-- ==================== stance animation ====================
 -- One looping idle per style (Config.Combat.StanceAnimations), played on
 -- ANY character (own and others) while its InCombat attribute is true;
 -- stopped on InCombat clearing, a style change, or CharacterRemoving.
@@ -1028,9 +919,8 @@ function CombatController:Start()
 		onCharacterAdded(player.Character)
 	end
 
-	-- The dagger visual and the stance animation are the only things in
-	-- this controller that care about characters other than the local
-	-- one (points 3 and 6).
+-- Only the dagger visual and the stance animation care about characters
+-- other than the local one.
 	local function wireOtherPlayer(otherPlayer: Player)
 		if otherPlayer == player then
 			return

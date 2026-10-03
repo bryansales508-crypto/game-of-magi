@@ -1,34 +1,24 @@
 --!strict
--- Client-only hover highlight for the Qarzin clothes shop (docs/M5-PLAN.md
--- Phase 5B, docs/reference/m5b-studio-dump.md sections 1-2).
+-- Client-only hover highlight for the Qarzin clothes shop.
 --
--- Contract with the server (M5B-01, ShopService): it stocks
--- Workspace.Qarzin.ClothesStand and creates the ProximityPrompts (always
--- Enabled, RequiresLineOfSight = false, ActionText = the price); purchases
--- are entirely server-side (the prompt's Triggered is handled there) and
--- the server never touches each rack's Highlight child. This controller
--- only ever sets Highlight.Enabled / the part's Transparency LOCALLY, so
--- unlike the old script (which did this server-side and so was visible to
--- everyone) only the hovering player ever sees the outline. No prices are
--- computed here and no purchase is sent -- the client sends nothing new.
+-- Contract with the server (ShopService): it stocks Workspace.Qarzin.ClothesStand
+-- and creates the ProximityPrompts (always Enabled, RequiresLineOfSight =
+-- false, ActionText = the price); purchases are entirely server-side and the
+-- server never touches each rack's Highlight child. This controller only sets
+-- Highlight.Enabled / the part's Transparency LOCALLY, so only the hovering
+-- player sees the outline. No prices are computed and nothing is sent.
 --
--- Hover mechanism (old script, m5b-studio-dump.md section 2): a
--- ClickDetector (MaxActivationDistance 10) on the ShirtHL/PantsHL part,
--- whose MouseHoverEnter/Leave set Transparency 0.999 / 1 and toggle the
--- Highlight child. The M5B-01 contract only promises the ProximityPrompts,
--- so this controller uses a ClickDetector when one shows up on the part
--- (from the server, or the rig itself) and otherwise falls back to
--- Mouse.Target polling on RenderStepped -- gated behind a cheap distance
--- check so it never does real per-frame work while the player is away
--- from the stand.
+-- Hover mechanism: a ClickDetector (MaxActivationDistance 10) on the
+-- ShirtHL/PantsHL part, whose MouseHoverEnter/Leave set Transparency 0.999 / 1
+-- and toggle the Highlight child. The server only promises the
+-- ProximityPrompts, so a ClickDetector is used when one shows up on the part
+-- and otherwise Mouse.Target is polled on RenderStepped, gated behind a cheap
+-- distance check so there is no real per-frame work away from the stand.
 --
--- BUG-49 (M7-06): after M7-04 the racks showed neither prompt nor outline.
--- The poll was gated on distance to ONE anchor (the first rack registered),
--- so every other rack never polled and (prompts being disabled until hovered)
--- never showed anything. One central per-frame pass now measures each rack
--- part on its own, outlines only the truly hovered one, and enables exactly
--- one prompt: the hovered rack's, or -- with no mouse (gamepad/touch) or
--- nothing hovered -- the single rack the player is within reach of.
+-- One central per-frame pass measures each rack part on its own, outlines only
+-- the truly hovered one, and enables exactly one prompt: the hovered rack's,
+-- or, with no mouse (gamepad/touch) or nothing hovered, the single rack the
+-- player is within reach of.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -46,7 +36,7 @@ local ShopController = {}
 local STAND_WAIT_SECONDS = 15
 local HOVER_TRANSPARENCY = 0.999
 local IDLE_TRANSPARENCY = 1
-local DEFAULT_RANGE = 10 -- old ClickDetector's / prompt's MaxActivationDistance
+local DEFAULT_RANGE = 10 -- ClickDetector / prompt MaxActivationDistance
 local HOVERABLE_NAMES = { ShirtHL = true, PantsHL = true }
 
 type HoverTarget = {
@@ -58,7 +48,7 @@ type HoverTarget = {
 	promptOn: boolean,
 	detectorHover: boolean, -- set by a ClickDetector's hover events
 	usingClickDetector: boolean,
-	stocked: boolean, -- BUG-65: an empty (undressed, invisible) rack never highlights or shows a prompt
+	stocked: boolean, -- an empty (undressed, invisible) rack never highlights or shows a prompt
 }
 
 local targets: { [BasePart]: HoverTarget } = {}
@@ -113,10 +103,10 @@ local function recomputeBounds()
 	standRadius = farthest + STAND_MARGIN
 end
 
--- BUG-39: the server leaves every rack prompt Enabled with the default
--- Exclusivity (OnePerButton), so with 18 prompts on E in range the engine
--- showed only ONE. Only one prompt is enabled at a time, locally; Triggered
--- still fires server-side.
+-- The server leaves every rack prompt Enabled with the default Exclusivity
+-- (OnePerButton), so with many prompts on E in range the engine would show
+-- only one arbitrary prompt. Only one prompt is enabled at a time, locally;
+-- Triggered still fires server-side.
 local function setState(target: HoverTarget, hovering: boolean, promptOn: boolean)
 	if target.hovering ~= hovering then
 		target.hovering = hovering
@@ -244,9 +234,8 @@ local function registerTarget(part: BasePart)
 
 	local highlight = part:FindFirstChildOfClass("Highlight")
 	if not highlight then
-		-- The rig's own Highlight (m5b-studio-dump.md section 1) not
-		-- parented yet; pick this part back up once it is, then stop
-		-- watching.
+		-- The rig's own Highlight isn't parented yet; pick this part back up
+		-- once it is, then stop watching.
 		local waitConnection: RBXScriptConnection
 		waitConnection = part.ChildAdded:Connect(function(child)
 			if child:IsA("Highlight") then

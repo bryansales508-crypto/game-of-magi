@@ -1,6 +1,4 @@
--- humanoidAnimatePlayEmote.lua
 
--- Waiting on Appearence
 while game.Players.LocalPlayer.Character:WaitForChild("AppearenceLoaded").Value == false do task.wait() end
 
 local Figure = script.Parent
@@ -19,9 +17,8 @@ local userAnimateScaleRunSuccess, userAnimateScaleRunValue = pcall(function() re
 local userAnimateScaleRun = userAnimateScaleRunSuccess and userAnimateScaleRunValue
 
 local chara = Figure
--- M6-02: steps are handled on this client by FootstepController. Animate
--- fires this BindableEvent (child of the character, local only, never
--- replicated) with "Left" | "Right" | "Jump" instead of a server remote.
+-- Footsteps are handled by FootstepController: Animate fires this local-only BindableEvent with
+-- "Left" | "Right" | "Jump".
 local footEvent = chara:FindFirstChild("FootstepEvent")
 if footEvent == nil then
 	footEvent = Instance.new("BindableEvent")
@@ -29,8 +26,7 @@ if footEvent == nil then
 	footEvent.Parent = chara
 end
 
--- MovementService sets this attribute on the character (replaces the old
--- IntFold "Running?" value).
+-- MovementService sets the Running attribute on the character.
 local function isRunning()
 	return chara:GetAttribute("Running") == true
 end
@@ -77,7 +73,6 @@ local animNames = {
 	},
 	toolslash = {
 		{ id = "http://www.roblox.com/asset/?id=129967390", weight = 10 } 
-		--				{ id = "slash.xml", weight = 10 } 
 	},
 	toollunge = {
 		{ id = "http://www.roblox.com/asset/?id=129967478", weight = 10 } 
@@ -112,7 +107,6 @@ local animNames = {
 }
 local dances = {"dance1", "dance2", "dance3"}
 
--- Existance in this list signifies that it is an emote, the value indicates if it is a looping emote
 local emoteNames = { wave = false, point = false, dance1 = true, dance2 = true, dance3 = true, laugh = false, cheer = false}
 
 function configureAnimationSet(name, fileList)
@@ -126,10 +120,8 @@ function configureAnimationSet(name, fileList)
 	animTable[name].totalWeight = 0	
 	animTable[name].connections = {}
 
-	-- check for config values
 	local config = script:FindFirstChild(name)
 	if (config ~= nil) then
-		--		print("Loading anims " .. name)
 		table.insert(animTable[name].connections, config.ChildAdded:connect(function(child) configureAnimationSet(name, fileList) end))
 		table.insert(animTable[name].connections, config.ChildRemoved:connect(function(child) configureAnimationSet(name, fileList) end))
 		local idx = 1
@@ -146,13 +138,11 @@ function configureAnimationSet(name, fileList)
 				end
 				animTable[name].count = animTable[name].count + 1
 				animTable[name].totalWeight = animTable[name].totalWeight + animTable[name][idx].weight
-				--			print(name .. " [" .. idx .. "] " .. animTable[name][idx].anim.AnimationId .. " (" .. animTable[name][idx].weight .. ")")
 				idx = idx + 1
 			end
 		end
 	end
 
-	-- fallback to defaults
 	if (animTable[name].count <= 0) then
 		for idx, anim in pairs(fileList) do
 			animTable[name][idx] = {}
@@ -162,12 +152,10 @@ function configureAnimationSet(name, fileList)
 			animTable[name][idx].weight = anim.weight
 			animTable[name].count = animTable[name].count + 1
 			animTable[name].totalWeight = animTable[name].totalWeight + anim.weight
-			--			print(name .. " [" .. idx .. "] " .. anim.id .. " (" .. anim.weight .. ")")
 		end
 	end
 end
 
--- Setup animation objects
 function scriptChildModified(child)
 	local fileList = animNames[child.Name]
 	if (fileList ~= nil) then
@@ -194,9 +182,7 @@ for name, fileList in pairs(animNames) do
 	configureAnimationSet(name, fileList)
 end	
 
--- ANIMATION
 
--- declarations
 local toolAnim = "None"
 local toolAnimTime = 0
 
@@ -207,12 +193,10 @@ local toolTransitionTime = 0.1
 local fallTransitionTime = 0.3
 local jumpMaxLimbVelocity = 0.75
 
--- functions
 
 function stopAllAnimations()
 	local oldAnim = currentAnim
 
-	-- return to idle if finishing an emote
 	if (emoteNames[oldAnim] ~= nil and emoteNames[oldAnim] == false) then
 		oldAnim = "idle"
 	end
@@ -242,7 +226,6 @@ function keyFrameReachedFunc(frameName)
 	if (frameName == "End") then
 
 		local repeatAnim = currentAnim
-		-- return to idle if finishing an emote
 		if (emoteNames[repeatAnim] ~= nil and emoteNames[repeatAnim] == false) then
 			repeatAnim = "idle"
 		end
@@ -253,12 +236,10 @@ function keyFrameReachedFunc(frameName)
 	end
 end
 
--- Footsteps
 local conFeet1 = nil
 local conFeet2 = nil
 local conFeet3 = nil
 
--- Preload animations
 function playAnimation(animName, transitionTime, humanoid) 
 
 
@@ -270,16 +251,13 @@ function playAnimation(animName, transitionTime, humanoid)
 		roll = roll - animTable[animName][idx].weight
 		idx = idx + 1
 	end
-	--		print(animName .. " " .. idx .. " [" .. origRoll .. "]")
 	local anim = animTable[animName][idx].anim
 
-	-- switch animation		
 	if (anim ~= currentAnimInstance) then
 
 		if (currentAnimTrack ~= nil) then
 			currentAnimTrack:Stop(transitionTime)
 
-			-- Footsteps
 			if conFeet1 then
 				conFeet1:Disconnect()
 				conFeet2:Disconnect()
@@ -290,7 +268,6 @@ function playAnimation(animName, transitionTime, humanoid)
 
 		currentAnimSpeed = 1.0
 
-		-- load it to the humanoid; get AnimationTrack
 		currentAnimTrack = humanoid:LoadAnimation(anim)
 		if animName ~= ("jump" or "fall") then
 			currentAnimTrack.Priority = Enum.AnimationPriority.Core
@@ -298,52 +275,43 @@ function playAnimation(animName, transitionTime, humanoid)
 			currentAnimTrack.Priority = Enum.AnimationPriority.Action3
 		end
 
-		-- play the animation
 		if animName == "walk" then
 			if not isRunning() then
 				currentAnimTrack:Play(transitionTime)
 
-				-- listen for if running starts to end this anim.
 			end
 		else
 			currentAnimTrack:Play(transitionTime)
 		end
 		currentAnimTrack:Play(transitionTime)
 		if animName == "idle" then
-			-- TODO: When the character is not moving, step blocks spawn slightly in front of them. Maybe account for being idle/not moving and then have the predict not on whatsoever.
 			currentAnimTrack:AdjustSpeed(0.25)
 		end
 		currentAnim = animName
 		currentAnimInstance = anim
 
-		-- set up keyframe name triggers
 		if (currentAnimKeyframeHandler ~= nil) then
 			currentAnimKeyframeHandler:disconnect()
 		end
 		currentAnimKeyframeHandler = currentAnimTrack.KeyframeReached:connect(keyFrameReachedFunc)
 
-		-- footsteps sounds
 		local charaHum = chara:WaitForChild("Humanoid")
 
 		if not isRunning() then
 			if animName == "walk" or animName == "jump" then
-				-- Dealing with Feet
 
 				conFeet1 = currentAnimTrack:GetMarkerReachedSignal("RightFoot"):Connect(function()
-					-- Checking whether or not the player is in the air.
 					if charaHum.FloorMaterial ~= Enum.Material.Air then
 						footEvent:Fire("Right")
 					end
 				end)
 
 				conFeet2 = currentAnimTrack:GetMarkerReachedSignal("LeftFoot"):Connect(function()
-					-- Checking whether or not the player is in the air.
 					if charaHum.FloorMaterial ~= Enum.Material.Air then
 						footEvent:Fire("Left")
 					end
 				end)
 
-				-- Jumping Sound for Feet
 				if animName == "jump" then
 					footEvent:Fire("Jump")
 				end
@@ -353,8 +321,6 @@ function playAnimation(animName, transitionTime, humanoid)
 
 end
 
--------------------------------------------------------------------------------------------
--------------------------------------------------------------------------------------------
 
 local toolAnimName = ""
 local toolAnimTrack = nil
@@ -363,7 +329,6 @@ local currentToolAnimKeyframeHandler = nil
 
 function toolKeyFrameReachedFunc(frameName)
 	if (frameName == "End") then
-		--		print("Keyframe : ".. frameName)	
 		playToolAnimation(toolAnimName, 0.0, Humanoid)
 	end
 end
@@ -378,7 +343,6 @@ function playToolAnimation(animName, transitionTime, humanoid, priority)
 		roll = roll - animTable[animName][idx].weight
 		idx = idx + 1
 	end
-	--		print(animName .. " * " .. idx .. " [" .. origRoll .. "]")
 	local anim = animTable[animName][idx].anim
 
 	if (toolAnimInstance ~= anim) then
@@ -389,13 +353,11 @@ function playToolAnimation(animName, transitionTime, humanoid, priority)
 			transitionTime = 0
 		end
 
-		-- load it to the humanoid; get AnimationTrack
 		toolAnimTrack = humanoid:LoadAnimation(anim)
 		if priority then
 			toolAnimTrack.Priority = priority
 		end
 
-		-- play the animation
 		toolAnimTrack:Play(transitionTime)
 		toolAnimName = animName
 		toolAnimInstance = anim
@@ -423,8 +385,6 @@ function stopToolAnimations()
 	return oldAnim
 end
 
--------------------------------------------------------------------------------------------
--------------------------------------------------------------------------------------------
 
 
 function onRunning(speed)
@@ -559,7 +519,6 @@ function move(time)
 	elseif (pose == "Running") then
 		playAnimation("walk", 0.1, Humanoid)
 		
-		-- stopping walk animation if the character goes into a run.
 		local con
 		con = chara:GetAttributeChangedSignal("Running"):Connect(function()
 			if isRunning() then
@@ -568,7 +527,6 @@ function move(time)
 			end
 		end)
 	elseif (pose == "Dead" or pose == "GettingUp" or pose == "FallingDown" or pose == "Seated" or pose == "PlatformStanding") then
-		--		print("Wha " .. pose)
 		stopAllAnimations()
 		amplitude = 0.1
 		frequency = 1
@@ -584,7 +542,6 @@ function move(time)
 		LeftHip:SetDesiredAngle(-desiredAngle)
 	end
 
-	-- Tool Animation handling
 	local tool = getTool()
 	if tool and tool:FindFirstChild("Handle") then
 
@@ -592,7 +549,6 @@ function move(time)
 
 		if animStringValueObject then
 			toolAnim = animStringValueObject.Value
-			-- message recieved, delete StringValue
 			animStringValueObject.Parent = nil
 			toolAnimTime = time + .3
 		end
@@ -611,7 +567,6 @@ function move(time)
 	end
 end
 
--- connect events
 Humanoid.Died:connect(onDied)
 Humanoid.Running:connect(onRunning)
 Humanoid.Jumping:connect(onJumping)
@@ -629,7 +584,6 @@ Humanoid.Seated:connect(onSeated)
 Humanoid.PlatformStanding:connect(onPlatformStanding)
 Humanoid.Swimming:connect(onSwimming)
 
----- setup emote chat hook
 game:GetService("Players").LocalPlayer.Chatted:connect(function(msg)
 	local emote = ""
 	if msg == "/e dance" then
@@ -646,25 +600,19 @@ game:GetService("Players").LocalPlayer.Chatted:connect(function(msg)
 
 end)
 
--- emote bindable hook
 script:WaitForChild("PlayEmote").OnInvoke = function(emote)
-	-- Only play emotes when idling
 	if pose ~= "Standing" then
 		return
 	end
 	if emoteNames[emote] ~= nil then
-		-- Default emotes
 		playAnimation(emote, EMOTE_TRANSITION_TIME, Humanoid)
 
 		return true, currentAnimTrack
 	end
 
-	-- Return false to indicate that the emote could not be played
 	return false
 end
--- main program
 
--- initialize to idle
 playAnimation("idle", 0.1, Humanoid)
 pose = "Standing"
 

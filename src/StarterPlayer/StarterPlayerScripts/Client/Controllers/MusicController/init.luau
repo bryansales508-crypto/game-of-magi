@@ -1,8 +1,5 @@
 --!strict
--- Region music, ambient loops and the city banner (M6 Phase 6A,
--- docs/M6-PLAN.md). Replaces the old RegionHandlerPart1 + SoundController,
--- which cloned the whole soundtrack into every character and faded the wrong
--- way (AUDIT L21).
+-- Region music, ambient loops and the city banner.
 --
 --  * Music: the highest-priority region we are in that has a playlist plays
 --    it, shuffled without repeating the last track, crossfading between
@@ -10,7 +7,7 @@
 --    region fades to silence.
 --  * Ambient: each region's `ambient` loop is its own layer, started on
 --    enter and faded on leave, independent of the music.
---  * Banner: the MsgHold[CITY] template with the old bounce-in.
+--  * Banner: the MsgHold[CITY] template, bouncing in.
 -- Tracks are Sounds under ReplicatedFirst.SFX.OSTs, cloned into one client
 -- folder in SoundService (one soundtrack per client, not per life).
 
@@ -37,8 +34,8 @@ local NO_MUSIC_KEY = "\0none"
 
 local MusicController = {}
 
--- FEAT-62: the player's own music volume (0-1), remembered for the session in
--- a client attribute so the panel and `.music` agree; Config is the default.
+-- The player's own music volume (0-1), kept in a client attribute so the panel
+-- and `.music` agree; Config is the default.
 local VOLUME_ATTRIBUTE = "MusicVolume"
 local userVolume: number = settings.Volume
 local fadeTweens: { [Sound]: Tween } = {}
@@ -251,7 +248,7 @@ end
 
 -- ==================== banner ====================
 
--- The old TranMsg: bounce in over 1 s, hold 5 s, drop out over 0.5 s.
+-- Bounce in over 1 s, hold 5 s, drop out over 0.5 s.
 local function animateBanner(label: GuiObject)
 	local finalPosition = label.Position
 	label.Position = finalPosition + UDim2.fromOffset(0, -100)
@@ -390,10 +387,10 @@ function MusicController.OnChanged(callback: () -> ())
 	table.insert(changedCallbacks, callback)
 end
 
--- ==================== music panel (FEAT-62) ====================
+-- ==================== music panel ====================
 
--- Bottom-left: track name, play/stop, volume slider. Bryan's board palette
--- (m2/m5c dumps: brown fill, orange accent, tan text, Merriweather Bold).
+-- Bottom-left: track name, play/stop, volume slider. Colours match the board
+-- palette (brown fill, orange accent, tan text, Merriweather Bold).
 local PANEL_FILL = Color3.fromRGB(75, 54, 36)
 local PANEL_ACCENT = Color3.fromRGB(229, 151, 62)
 local PANEL_TEXT = Color3.fromRGB(255, 224, 152)
@@ -413,9 +410,9 @@ local function buildPanel()
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
 	frame.AnchorPoint = Vector2.new(0, 1)
-	-- Bottom-left on desktop (Bryan). Touch devices keep the thumbstick
-	-- there, so the panel moves up above the stick area; a UIScale follows
-	-- the screen height so it stays touchable on phones.
+	-- Bottom-left on desktop. Touch devices keep the thumbstick there, so the
+	-- panel moves up above it; a UIScale follows the screen height so it stays
+	-- touchable on phones.
 	local touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 	frame.Position = if touch then UDim2.new(0, 12, 1, -(TOUCH_STICK_CLEARANCE + 12)) else UDim2.new(0, 12, 1, -12)
 	frame.Size = UDim2.fromOffset(210, 62)
@@ -431,8 +428,7 @@ local function buildPanel()
 		if height <= 0 then
 			return
 		end
-		-- 1.0 at 720 px tall and up; larger on small/high-DPI phone screens
-		-- the panel would otherwise be tiny on, never below 1.
+		-- 1.0 at 720 px tall and up; larger on small/high-DPI phone screens, never below 1.
 		scale.Scale = if touch then math.clamp(720 / height * 1.15, 1, 1.6) else 1
 	end
 	gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateScale)

@@ -1,47 +1,25 @@
 --!strict
--- Old-age heart attacks and the return-to-the-Rukh death scene, ported
--- from the old OldGameScripts/WipeHandlerPart2 (docs/reference/
--- old-game-scripts.txt line 6503) and DeathHandlerPart1 (line 6064).
+-- Old-age heart attacks and the return-to-the-Rukh death scene.
 --
--- Contract with the server (M2-02, plus M3B-05/M3B-06 for lives):
---   HeartAttack(age: number, fatal: boolean) -- server -> client. Every
---   online birthday from 60 fires a short non-fatal moment; a fatal one
---   (old age -- always wipes, regardless of lives left) leads into the
---   scene below.
---   Died({cause: "lastLife"}) -- server -> client. Fired instead of
---   HeartAttack for the death that takes a character's LAST life
---   (Bryan's rule: 4 lives per character; an ordinary death with lives
---   left just respawns the same character with no client involvement at
---   all -- nothing here reacts to Humanoid.Died itself, only to this
---   remote). Goes straight into the same return-to-the-Rukh scene, with
---   no heartbeat pulses and no "Your heart gave out." line first.
---   RukhSceneDone() -- client -> server, no args, fired once the scene
---   finishes; the server starts the fresh life then, or after a 30s
---   timeout regardless.
---   Player:GetAttribute("Dying") is true for the duration of either
---   sequence -- informational on the server's side; this controller
---   drives entirely off the HeartAttack/Died remotes' own arguments.
+-- Server contract:
+--   HeartAttack(age: number, fatal: boolean) -- server -> client. Every online
+--   birthday from 60 fires a short non-fatal pulse; a fatal one (old age, always
+--   wipes) leads into the scene.
+--   Died({cause: "lastLife"}) -- server -> client, fired instead of HeartAttack
+--   when a death takes a character's last life; goes straight into the scene.
+--   Ordinary deaths never reach the client.
+--   RukhSceneDone() -- client -> server, fired when the scene finishes; the
+--   server starts the fresh life then, or after 30s regardless.
 --
--- Bryan tunes the scene himself (M2-FIX-C, BUG-16): every timing here
--- comes from Config.Scene, and the return-to-the-Rukh scene's own LOOK
--- lives in his ReplicatedFirst.AfterLife model, not in this file. This
--- controller only ever reads three children of that model -- documented
--- in docs/SYSTEMS.md section 4 -- and otherwise leaves it alone:
---   AfterlifeCamera (BasePart)     -- the scene's camera CFrame/subject.
---   AfterlifeSpawnBlock (BasePart) -- where the character is moved to.
---   AfterlifeCore (BasePart, optional) -- what the character walks
---     toward; a plain stand-in marker is built instead when it's absent
---     (or when the model itself is absent).
+-- Timings come from Config.Scene. The scene's look lives in
+-- ReplicatedFirst.AfterLife; this file reads only AfterlifeCamera (BasePart),
+-- AfterlifeSpawnBlock (BasePart) and AfterlifeCore (BasePart, optional; a
+-- stand-in marker is built when absent).
 --
--- Only one heart-attack pulse or death scene is ever active at a time
--- (REVIEW-M2-05 #1/#2): a fresh HeartAttack, and a respawn mid-sequence,
--- both cancel whatever's currently running -- gui, sound, frozen input,
--- camera, clones -- through the shared generation/cleanup list below.
--- FIX BUG-22 (Bryan): for a fatal HeartAttack, input is frozen (the
--- ContextActionService sink, Roblox's own PlayerModule controls, the
--- humanoid's own movement fields, and the camera) for the *whole*
--- pulse-then-scene sequence, not just once the scene itself starts, and
--- every piece of it is restored together on the same cleanup.
+-- Only one pulse or scene runs at a time: a new HeartAttack or a respawn cancels
+-- the current one through the shared generation/cleanup list. A fatal sequence
+-- freezes input (action sink, PlayerModule controls, humanoid movement, camera)
+-- for the whole pulse-then-scene run and restores it all on cleanup.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -112,8 +90,7 @@ end
 
 -- ==================== heartbeat sound ====================
 
--- FIX (REVIEW-M2-05 #3): a fallback destroy in case the placeholder
--- asset never loads and Sound.Ended never fires.
+-- Fallback destroy in case the asset never loads and Sound.Ended never fires.
 local HEARTBEAT_FALLBACK_DESTROY = 5
 
 local function playHeartbeatSound(): Sound
@@ -131,7 +108,7 @@ local function playHeartbeatSound(): Sound
 	return sound
 end
 
--- ==================== input freeze (BUG-22) ====================
+-- ==================== input freeze ====================
 
 -- The default PlayerModule's Controls object (WASD/gamepad/touch
 -- movement input); GetControls()/Disable()/Enable() is its public API.
@@ -162,13 +139,10 @@ local function getControls(): any
 	return controlsOrErr
 end
 
--- Locks down every input path at once -- the ContextActionService sink
--- (WipeHandlerPart2's own trick), Roblox's own PlayerModule controls,
--- the current humanoid's WalkSpeed/JumpPower/AutoRotate, and the camera
--- -- and registers the matching restore for each, so whichever cleanup
--- eventually runs (a cancelling HeartAttack, or the next CharacterAdded)
--- puts all of it back together. Covers the whole fatal sequence: called
--- once, before the fatal pulse even starts, not just once the scene does.
+-- Locks down every input path at once (the action sink, PlayerModule controls,
+-- humanoid movement, camera) and registers the matching restores, so whichever
+-- cleanup runs next puts it all back together. Called once, before the fatal
+-- pulse starts.
 local function freezeInput(myGeneration: number)
 	if not isCurrent(myGeneration) then
 		return
@@ -253,12 +227,10 @@ local function tweenFrame(frame: Frame, goal: { [string]: any }, duration: numbe
 	tween.Completed:Wait()
 end
 
--- FIX BUG-16 (Bryan, design): a heartbeat is "lub-dub" -- two quick
--- beats BeatGap apart -- not one long pulse. Plays both beats (each
--- dipping to `dip`), then eases to `rest` over PairGap: either the pause
--- before the next cycle, or the final hold after the last one. Returns
--- false the moment this generation goes stale, so callers can bail
--- immediately instead of scheduling more tweens/sounds.
+-- A heartbeat is "lub-dub": two quick beats BeatGap apart. Plays both beats
+-- (each dipping to `dip`), then eases to `rest` over PairGap: the pause before
+-- the next cycle, or the final hold after the last one. Returns false the
+-- moment this generation goes stale so callers can bail immediately.
 local function playBeatCycle(
 	myGeneration: number,
 	frame: Frame,
@@ -296,10 +268,8 @@ local function playBeatCycle(
 	return true
 end
 
--- "a full-screen red Frame ... Then it passes: everything removed, no
--- message. Keep it short and not flashy." -- Config.Scene.NonFatalCycles
--- lub-dubs, fully clearing between and after each. (Never freezes input
--- -- BUG-22 only calls for that on the fatal path.)
+-- Short, not flashy: Config.Scene.NonFatalCycles lub-dubs, fully clearing
+-- between and after each. Never freezes input.
 local NON_FATAL_COLOR = Color3.fromRGB(170, 0, 0)
 local NON_FATAL_DIP = 0.55
 local NON_FATAL_REST = 1
@@ -317,9 +287,7 @@ local function playNonFatalPulse(myGeneration: number)
 	local gui, frame = newPulseGui(900, NON_FATAL_COLOR, 1)
 	gui.Parent = playerGui
 
-	-- FIX (REVIEW-M2-05 #1/#2): whoever cancels this generation (a new
-	-- HeartAttack, or a respawn) tears down this gui and any sound this
-	-- pulse has started that hasn't self-destroyed yet.
+-- Cancelling this generation tears down this gui and any sound not yet self-destroyed.
 	local sounds: { Sound } = {}
 	local cleanup = addActiveCleanup(function()
 		gui:Destroy()
@@ -340,13 +308,10 @@ local function playNonFatalPulse(myGeneration: number)
 	removeActiveCleanup(cleanup)
 end
 
--- "three slower, heavier beats while the red deepens ... and does not
--- fade; on the last beat the screen goes to near-black ... and a
--- centred TextLabel ... appears ... Then the scene." -- each of
--- Config.Scene.FatalCycles cycles deepens the colour/dip further and
--- only partially recovers between cycles (never back to clear); the
--- last holds near-black. Each cycle's BeatGap/PairGap is stretched by
--- FatalSlowFactor again, compounding, so the beats visibly slow down.
+-- Each of Config.Scene.FatalCycles cycles deepens the colour/dip and only
+-- partially recovers between cycles; the last holds near-black and shows a
+-- message. Each cycle's BeatGap/PairGap is stretched by FatalSlowFactor again,
+-- compounding, so the beats visibly slow down.
 local FATAL_START_COLOR = Color3.fromRGB(170, 0, 0)
 local FATAL_END_COLOR = Color3.fromRGB(90, 0, 0)
 local FATAL_DIP_START = 0.5
@@ -414,7 +379,7 @@ end
 
 -- ==================== return-to-the-Rukh scene ====================
 
--- WipeHandlerPart2's character-golden-neon setup, unchanged.
+-- Turns the character golden and neon.
 local function applyRukhAppearance(chara: Model)
 	for _, child in chara:GetChildren() do
 		if child:IsA("BodyColors") then
@@ -449,11 +414,9 @@ local function applyRukhAppearance(chara: Model)
 	end
 end
 
--- The walk target: Bryan's own AfterlifeCore if his AfterLife model has
--- one, else a plain stand-in marker positioned ahead of the spawn point
--- (or the character, if there's no AfterLife model at all). Nothing
--- else is built here -- no particles, no extra geometry -- so the scene
--- stays Bryan's to art-direct in his own model.
+-- The walk target: AfterlifeCore if the AfterLife model has one, else a
+-- stand-in marker ahead of the spawn point (or the character, if there is no
+-- AfterLife model).
 local function resolveCoreTarget(rootPart: BasePart, afterlifeClone: Instance?, spawnBlock: BasePart?): (Vector3, Part?)
 	if afterlifeClone then
 		local afterlifeCore = afterlifeClone:FindFirstChild("AfterlifeCore") :: BasePart?
@@ -496,11 +459,9 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	-- 1. Camera to AfterlifeCamera + character to AfterlifeSpawnBlock,
-	-- from Bryan's AfterLife model if present, or the simple stand-in
-	-- (keep the world, camera 12 studs in front looking back) if not.
-	-- Input/camera-scriptable itself is freezeInput's job, already
-	-- running since before the fatal pulse.
+	-- 1. Camera and character go to AfterlifeCamera / AfterlifeSpawnBlock, or to a
+	-- stand-in (camera 12 studs in front looking back) if the model is absent.
+	-- freezeInput has already made the camera Scriptable.
 	local afterlifeTemplate = ReplicatedFirst:FindFirstChild("AfterLife")
 	local afterlifeClone: Instance? = nil
 	local spawnBlock: BasePart? = nil
@@ -517,8 +478,7 @@ local function playRukhScene(myGeneration: number)
 		spawnBlock = clone:FindFirstChild("AfterlifeSpawnBlock") :: BasePart?
 		if afterlifeCameraPart then
 			camera.CFrame = afterlifeCameraPart.CFrame
-			-- WipeHandlerPart2 also pointed CameraSubject at
-			-- AfterlifeCamera; harmless under Scriptable, kept for parity.
+			-- Harmless under Scriptable.
 			camera.CameraSubject = afterlifeCameraPart
 		end
 		if spawnBlock then
@@ -536,7 +496,6 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	-- 2. The golden body.
 	applyRukhAppearance(character)
 
 	local corePosition, standInCore = resolveCoreTarget(rootPart, afterlifeClone, spawnBlock)
@@ -546,11 +505,9 @@ local function playRukhScene(myGeneration: number)
 		end)
 	end
 
-	-- 3. The walk toward the core over Config.Scene.WalkSeconds; fade to
-	-- white over the last Config.Scene.FadeSeconds of it. AutoRotate is
-	-- re-enabled just for this scripted walk so the character visibly
-	-- turns to face the core; Controls stays disabled throughout
-	-- regardless (freezeInput), so this is never player-driven.
+	-- 3. Walk toward the core over Config.Scene.WalkSeconds, fading to white over
+	-- the last Config.Scene.FadeSeconds. AutoRotate is re-enabled so the character
+	-- faces the core; Controls stays disabled, so this is never player-driven.
 	humanoid.AutoRotate = true
 	humanoid.WalkSpeed = 7
 	humanoid:MoveTo(corePosition)
@@ -586,10 +543,8 @@ local function playRukhScene(myGeneration: number)
 		return
 	end
 
-	-- 4. Done. Cleanup (camera, frozen input/controls, clones) happens
-	-- on the next CharacterAdded, below, not here -- the white screen is
-	-- meant to keep hiding the transition until the fresh life actually
-	-- spawns.
+	-- 4. Cleanup (camera, input, clones) runs on the next CharacterAdded, not here:
+	-- the white screen keeps hiding the transition until the fresh life spawns.
 	Remotes.Client.Fire("RukhSceneDone")
 end
 
@@ -609,15 +564,11 @@ function RukhController:Start()
 			return
 		end
 
-		-- FIX (REVIEW-M2-05 #1): starting a new generation cancels
-		-- whatever pulse/scene is currently running, so a second
-		-- HeartAttack can never stack overlays/sounds/labels.
+		-- A new generation cancels any running pulse/scene so overlays never stack.
 		local myGeneration = startGeneration()
 
 		if fatal then
 			task.spawn(function()
-				-- FIX BUG-22: freeze input for the whole fatal
-				-- sequence, starting here, before the pulse even plays.
 				freezeInput(myGeneration)
 				if not isCurrent(myGeneration) then
 					return
@@ -634,12 +585,9 @@ function RukhController:Start()
 		end
 	end)
 
-	-- M3B-06: the death that takes a character's last life. Same
-	-- generation/cleanup machinery as HeartAttack above, so a Died mid-
-	-- pulse cancels the pulse, a HeartAttack mid-Died-scene cancels the
-	-- scene, and a respawn cancels either -- point 2's guards are just
-	-- this shared mechanism, not anything new. Straight into
-	-- freezeInput + playRukhScene: no pulses, no "Your heart gave out.".
+	-- The death that takes a character's last life. Shares the generation/cleanup
+	-- machinery above, so it cancels a running pulse and is cancelled in turn.
+	-- Goes straight to the scene: no pulses, no message.
 	Remotes.Client.On("Died", function(data: any)
 		if typeof(data) ~= "table" or data.cause ~= "lastLife" then
 			log:Warn("Died: unexpected payload")

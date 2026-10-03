@@ -1,5 +1,4 @@
--- setting up guis
-
+-- Hotbar and inventory UI (a customised Roblox default backpack); frames are cloned from ReplicatedFirst.GUI.
 local rsGUI = game.ReplicatedFirst.GUI:GetChildren()
 local GUIs = {}
 
@@ -8,14 +7,12 @@ for _,r in rsGUI do
 end
 
 
--- Services
 local PlayersService = game:GetService('Players')
 local UserInputService = game:GetService('UserInputService')
 local StarterGui = game:GetService('StarterGui')
 local GuiService = game:GetService('GuiService')
 local ContextActionService = game:GetService('ContextActionService')
 
--- calls for backpack
 local BackpackScript = {}
 BackpackScript.OpenClose = nil -- Function to toggle open/close
 BackpackScript.IsOpen = false
@@ -26,7 +23,6 @@ BackpackScript.KeepVRTopbarOpen = true
 BackpackScript.VRIsExclusive = true
 BackpackScript.VRClosesNonExclusive = true
 
--- variables
 local player = game.Players.LocalPlayer
 local chara = player.Character or player.CharacterAdded:Wait()
 local hum = chara:FindFirstChild("Humanoid")
@@ -61,7 +57,6 @@ local ModeFrame = nil
 
 local lastEquippedSlot = nil
 
--- design aspects
 
 local ICON_BUFFER = 5
 local ICON_SIZE = 60
@@ -70,7 +65,7 @@ local FONT_SIZE = Enum.FontSize.Size14
 local ARROW_IMAGE_OPEN = 'rbxasset://textures/ui/Backpack_Open.png'
 local ARROW_IMAGE_CLOSE = 'rbxasset://textures/ui/Backpack_Close.png'
 local ARROW_SIZE = UDim2.new(0, 14, 0, 9)
-local ARROW_HOTKEY = Enum.KeyCode.Backquote.Value --TODO: Hookup '~' too?
+local ARROW_HOTKEY = Enum.KeyCode.Backquote.Value
 local ARROW_HOTKEY_STRING = '`'
 local ARROW_HOVER_COLOR = Color3.new(0,162/255,1)
 
@@ -100,14 +95,11 @@ local SEARCH_BACKGROUND_COLOR = Color3.new(0.37, 0.37, 0.37)
 local SEARCH_BACKGROUND_FADE = 0.15
 
 
--- quick references
 local ZERO_KEY_VALUE = Enum.KeyCode.Zero.Value
 local DROP_HOTKEY_VALUE = Enum.KeyCode.Backspace.Value
 local DOUBLE_CLICK_TIME = 0.5
 
--- functions
 
--- easeoflife functions
 local function FindLowestEmpty()
 	for i = 1, NumberOfHotbarSlots do
 		local slot = Slots[i]
@@ -227,11 +219,9 @@ local function GetOffset(guiObject, point)
 end
 
 
--- main slot function
 local function MakeSlot(parent, index)
 	index = index or (#Slots + 1)
 
-	-- Slot Definition --
 
 	local slot = {}
 	slot.Tool = nil
@@ -247,13 +237,10 @@ local function MakeSlot(parent, index)
 	local HighlightFrame = nil
 	local SelectionObj = nil
 
-	--NOTE: The following are only defined for Hotbar Slots
 	local ToolTip = nil
 	local SlotNumber = nil
 
-	-- Slot Functions --
 
-	-- easeoflife slot functions
 	local function UpdateSlotFading()
 		SlotFrame.SelectionImageObject = nil
 		SlotFrame.BackgroundTransparency = (SlotFrame.Draggable) and 0 or SLOT_FADE_LOCKED
@@ -267,10 +254,8 @@ local function MakeSlot(parent, index)
 		local factor = visualIndex - midpointish
 		SlotFrame.Position = UDim2.new(0, centered - (ICON_SIZE / 2) + (sizePlus * factor), 0, ICON_BUFFER)
 	end
-	-- connections
 	local con
 	
-	-- putting in a tool
 	function slot:Fill(tool)
 		
 		if not tool then
@@ -279,7 +264,6 @@ local function MakeSlot(parent, index)
 
 		self.Tool = tool
 
-		-- tool info
 		local function assignToolData()
 			local icon = tool.TextureId
 			ToolIcon.Image = icon
@@ -288,7 +272,6 @@ local function MakeSlot(parent, index)
 				ToolName.Visible = false 
 			end
 			
-			-- setting name
 			ToolName.Text = tool.Name
 
 			if ToolTip and tool:IsA("Tool") then
@@ -301,7 +284,6 @@ local function MakeSlot(parent, index)
 
 		assignToolData()
 
-		-- updating the tool information
 		if ToolChangeConn then
 			ToolChangeConn:disconnect()
 			ToolChangeConn = nil
@@ -326,19 +308,16 @@ local function MakeSlot(parent, index)
 			FullHotbarSlots = FullHotbarSlots + 1
 		end
 		
-		-- for mode tools
 		if tool:FindFirstChild("Mode") then
 			ModeFrame = GUIs["ModeFrame"]:Clone()
 			ModeFrame.Parent = SlotFrame
 			
-			-- setting color just in case mode is already activated
 			if tool.Mode.Value == 1 then
 				ModeFrame.BackgroundColor3 = Color3.new(0, 0.666667, 0)
 			else
 				ModeFrame.BackgroundColor3 = Color3.fromRGB(189, 32, 32)
 			end
 			
-			-- listening for it being activated
 			con = tool.Mode.Changed:connect(function(v)
 				if v == 1 then
 					ModeFrame.BackgroundColor3 = Color3.new(0, 0.666667, 0)
@@ -352,7 +331,6 @@ local function MakeSlot(parent, index)
 		LowestEmptySlot = FindLowestEmpty()
 	end
 
-	-- removing a tool
 	function slot:Clear()
 		if not self.Tool then return end
 
@@ -375,7 +353,6 @@ local function MakeSlot(parent, index)
 			FullHotbarSlots = FullHotbarSlots - 1
 		end
 		
-		-- getting rid of any mode
 		if ModeFrame then
 			ModeFrame:Destroy()
 			con:Disconnect()
@@ -386,13 +363,11 @@ local function MakeSlot(parent, index)
 		LowestEmptySlot = FindLowestEmpty()
 	end
 
-	-- when tool is equipped
 	function slot:UpdateEquipView(unequippedOverride)
 		if not unequippedOverride and IsEquipped(self.Tool) then -- Equipped
 			lastEquippedSlot = slot
 			if not HighlightFrame then
 
-				-- TODO: Make a Highlight Frame
 				HighlightFrame = Instance.new("Frame")
 				HighlightFrame.Name = "HighLight"
 				HighlightFrame.ZIndex = SlotFrame.ZIndex
@@ -407,7 +382,6 @@ local function MakeSlot(parent, index)
 					{1 - 2*t, t, t,     1 - t},
 				}
 				for _, data in pairs(dataTable) do
-					-- TODO: Make the edge of the equipped frame.
 					local edgeFrame = Instance.new("Frame")
 					edgeFrame.BackgroundTransparency = 0.25
 					edgeFrame.BackgroundColor3 = SLOT_EQUIP_COLOR
@@ -431,13 +405,11 @@ local function MakeSlot(parent, index)
 		return IsEquipped(self.Tool)
 	end
 
-	-- slot deleted
 	function slot:Delete()
 		SlotFrame:Destroy() --NOTE: Also clears connections
 		table.remove(Slots, self.Index)
 		local newSize = #Slots
 
-		-- Now adjust the rest (both visually and representationally)
 		for i = self.Index, newSize do
 			Slots[i]:SlideBack()
 		end
@@ -445,7 +417,6 @@ local function MakeSlot(parent, index)
 		UpdateScrollingFrameCanvasSize()
 	end
 
-	-- one slot is swapped for another
 	function slot:Swap(targetSlot) --NOTE: This slot (self) must not be empty!
 		local myTool, otherTool = self.Tool, targetSlot.Tool
 		self:Clear()
@@ -460,7 +431,6 @@ local function MakeSlot(parent, index)
 		end
 	end
 
-	-- moves the slots around
 	function slot:SlideBack() -- For inventory slot shifting
 		self.Index = self.Index - 1
 		SlotFrame.Name = self.Index
@@ -484,7 +454,6 @@ local function MakeSlot(parent, index)
 		end
 	end
 
-	-- item search
 	function slot:CheckTerms(terms)
 		local hits = 0
 		local function checkEm(str, term)
@@ -504,11 +473,9 @@ local function MakeSlot(parent, index)
 		return hits
 	end
 
-	-- slot select: click or hotkey press
 	function slot:Select()
 		local tool = slot.Tool
 		if tool then
-			-- TODO: Where you play around with multiple select.
 			if IsEquipped(tool) then --NOTE: HopperBin
 				UnequipAllTools()
 			elseif tool.Parent == backPack then
@@ -517,9 +484,7 @@ local function MakeSlot(parent, index)
 		end
 	end
 
-	-- Slot Init Logic --
 
-	-- TODO: Make a frame for the actual slots
 	SlotFrame = GUIs["SlotFrame"]:Clone()
 	SlotFrame.Text = ""
 	SlotFrame.AutoButtonColor = false
@@ -528,15 +493,12 @@ local function MakeSlot(parent, index)
 	SlotFrame.MouseButton1Click:connect(function() changeSlot(slot) end)
 	slot.Frame = SlotFrame
 
-	-- BRYAN isolates variables, never knew about this so.
 	do
-		--TODO: I don't know what this is yet, figure out later. But you need to make it.
 		local selectionObjectClipper = Instance.new("Frame")
 		selectionObjectClipper.Name = "UnknownGUI"
 		selectionObjectClipper.Visible = false
 		selectionObjectClipper.Parent = SlotFrame
 
-		-- TODO: Same here.
 		SelectionObj = Instance.new("ImageLabel")
 		SelectionObj.Size = UDim2.new(1, 0, 1, 0)
 		SelectionObj.Image = "rbxasset://textures/ui/Keyboard/key_selection_9slice.png"
@@ -554,8 +516,6 @@ local function MakeSlot(parent, index)
 	slot.Frame.LayoutOrder = slot.Index
 
 	if index <= NumberOfHotbarSlots then -- Hotbar-Specific Slot Stuff
-		-- ToolTip stuff
-		-- TODO: Tooltip frame. Make one.
 		ToolTip = Instance.new("TextLabel")
 		ToolTip.TextWrapped = false
 		ToolTip.TextYAlignment = Enum.TextYAlignment.Top
@@ -570,7 +530,6 @@ local function MakeSlot(parent, index)
 		end)
 		SlotFrame.MouseLeave:connect(function() ToolTip.Visible = false end)
 
-		-- Removed from the Hotbar to Inventory
 		function slot:MoveToInventory()
 			if slot.Index <= NumberOfHotbarSlots then -- From a Hotbar slot
 				local tool = slot.Tool
@@ -580,7 +539,6 @@ local function MakeSlot(parent, index)
 				if IsEquipped(tool) then -- Also unequip it --NOTE: HopperBin
 					UnequipAllTools()
 				end
-				-- Also hide the inventory slot if we're showing results right now
 				if ViewingSearchResults then
 					newSlot.Frame.Visible = false
 					newSlot.Parent = InventoryFrame
@@ -588,7 +546,6 @@ local function MakeSlot(parent, index)
 			end
 		end
 
-		-- Show label and assign hotkeys for 1-9 and 0 (zero is always last slot when > 10 total)
 		if index < 10 or index == NumberOfHotbarSlots then -- NOTE: Hardcoded on purpose!
 			local slotNum = (index < 10) and index or 0
 
@@ -611,7 +568,6 @@ local function MakeSlot(parent, index)
 
 			SlotFrame.BorderSizePixel = 2
 
-			-- Raise above other slots
 			SlotFrame.ZIndex = 2
 			ToolIcon.ZIndex = 2
 			ToolName.ZIndex = 2
@@ -625,7 +581,6 @@ local function MakeSlot(parent, index)
 				end
 			end
 
-			-- Circumvent the ScrollingFrame's ClipsDescendants property
 			startParent = SlotFrame.Parent
 			if startParent == UIGridFrame then
 				local oldAbsolutPos = SlotFrame.AbsolutePosition
@@ -633,7 +588,6 @@ local function MakeSlot(parent, index)
 				SlotFrame.Parent = InventoryFrame
 				SlotFrame.Position = newPosition
 
-				-- TODO: The empty slot GUI
 				FakeSlotFrame = Instance.new("Frame")
 				FakeSlotFrame.LayoutOrder = SlotFrame.LayoutOrder
 				FakeSlotFrame.Size = SlotFrame.Size
@@ -653,7 +607,6 @@ local function MakeSlot(parent, index)
 
 			SlotFrame.BorderSizePixel = 0
 
-			-- Restore height
 			SlotFrame.ZIndex = 1
 			ToolIcon.ZIndex = 1
 			ToolName.ZIndex = 1
@@ -669,17 +622,14 @@ local function MakeSlot(parent, index)
 
 			Dragging[SlotFrame] = nil
 
-			-- Make sure the tool wasn't dropped
 			if not slot.Tool then
 				return
 			end
 
-			-- Check where we were dropped
 			if CheckBounds(InventoryFrame, x, y) then
 				if slot.Index <= NumberOfHotbarSlots then
 					slot:MoveToInventory()
 				end
-				-- Check for double clicking on an inventory slot, to move into empty hotbar slot
 				if slot.Index > NumberOfHotbarSlots and now - lastUpTime < DOUBLE_CLICK_TIME then
 					if LowestEmptySlot then
 						local myTool = slot.Tool
@@ -709,7 +659,6 @@ local function MakeSlot(parent, index)
 							if IsEquipped(tool) then --NOTE: HopperBin
 								UnequipAllTools()
 							end
-							-- Also hide the inventory slot if we're showing results right now
 							if ViewingSearchResults then
 								slot.Frame.Visible = false
 								slot.Frame.Parent = InventoryFrame
@@ -718,11 +667,6 @@ local function MakeSlot(parent, index)
 					end
 				end
 			else
-				-- local tool = slot.Tool
-				-- if tool.CanBeDropped then --TODO: HopperBins
-				-- tool.Parent = workspace
-				-- --TODO: Move away from character
-				-- end
 				if slot.Index <= NumberOfHotbarSlots then
 					slot:MoveToInventory() --NOTE: Temporary
 				end
@@ -732,13 +676,11 @@ local function MakeSlot(parent, index)
 		end)
 	end
 
-	-- All ready!
 	SlotFrame.Parent = parent
 	Slots[index] = slot
 
 	if index > NumberOfHotbarSlots then
 		UpdateScrollingFrameCanvasSize()
-		-- Scroll to new inventory slot, if we're open and not viewing search results
 		if InventoryFrame.Visible and not ViewingSearchResults then
 			local offset = ScrollingFrame.CanvasSize.Y.Offset - ScrollingFrame.AbsoluteSize.Y
 			ScrollingFrame.CanvasPosition = Vector2.new(0, math.max(0, offset))
@@ -748,17 +690,11 @@ local function MakeSlot(parent, index)
 	return slot
 end
 
--- NOTE: We should probably migrate to a 2 collection system:
--- One collection for the hotbar and another collection for the inventory
 local function SetNumberOfHotbarSlots(numSlots)
 	if NumberOfHotbarSlots ~= numSlots then
 		local prevNumberOfSlots = NumberOfHotbarSlots
 		local newNumberOfSlots = numSlots
-		-- If we are shrinking the number of slots we need
-		-- to move around our tools to the right locations
 		if prevNumberOfSlots > newNumberOfSlots then
-			-- Delete the slots that are now no longer in the Hotbar
-			-- Iterate backwards as to not corrupt our iterator
 			for i = prevNumberOfSlots, newNumberOfSlots + 1, -1 do
 				local slot = Slots[i]
 				if slot then
@@ -766,7 +702,6 @@ local function SetNumberOfHotbarSlots(numSlots)
 					slot:Delete()
 				end
 			end
-			-- Also need to slide-back the inventory slots now that they are indexed earlier
 			for i = prevNumberOfSlots, newNumberOfSlots + 1, -1 do
 				local slot = Slots[i]
 				if not slot.Tool then
@@ -775,10 +710,8 @@ local function SetNumberOfHotbarSlots(numSlots)
 			end
 		else -- If we added more slots
 			for i = prevNumberOfSlots, newNumberOfSlots do
-				-- Incrementally add hotbar slots
 				NumberOfHotbarSlots = i
 				if Slots[i] then
-					-- Move old
 					local oldSlot = Slots[i]
 					local oldTool = Slots[i].Tool
 
@@ -829,7 +762,6 @@ local function OnChildAdded(child) -- To Character or Backpack
 		DisableActiveHopper()
 	end
 
-	--TODO: Optimize / refactor / do something else
 	if not StarterToolFound and tool.Parent == Character and not SlotsByTool[tool] then
 		local starterGear = player:FindFirstChild('StarterGear')
 		if starterGear then
@@ -846,7 +778,6 @@ local function OnChildAdded(child) -- To Character or Backpack
 						curr:Fill(tool)
 					end
 				end
-				-- Have to manually unequip a possibly equipped tool
 				for _, child in pairs(Character:GetChildren()) do
 					if child:IsA('Tool') and child ~= tool then
 						child.Parent = Backpack
@@ -858,7 +789,6 @@ local function OnChildAdded(child) -- To Character or Backpack
 		end
 	end
 
-	-- The tool is either moving or new
 	local slot = SlotsByTool[tool]
 	if slot then
 		slot:UpdateEquipView()
@@ -907,7 +837,6 @@ local function OnChildRemoved(child) -- From Character or Backpack
 end
 
 local function OnCharacterAdded(character)
-	-- First, clean up any old slots
 	for i = #Slots, 1, -1 do
 		local slot = Slots[i]
 		if slot.Tool then
@@ -919,22 +848,18 @@ local function OnCharacterAdded(character)
 	end
 	ActiveHopper = nil --NOTE: HopperBin
 
-	-- And any old connections
 	for _, conn in pairs(CharConns) do
 		conn:disconnect()
 	end
 	CharConns = {}
 
-	-- Hook up the new character
 	Character = character
 	table.insert(CharConns, character.ChildRemoved:connect(OnChildRemoved))
 	table.insert(CharConns, character.ChildAdded:connect(OnChildAdded))
 	for _, child in pairs(character:GetChildren()) do
 		OnChildAdded(child)
 	end
-	--NOTE: Humanoid is set inside OnChildAdded
 
-	-- And the new backpack, when it gets here
 	Backpack = player:WaitForChild('Backpack')
 	table.insert(CharConns, Backpack.ChildRemoved:connect(OnChildRemoved))
 	table.insert(CharConns, Backpack.ChildAdded:connect(OnChildAdded))
@@ -964,7 +889,6 @@ local function OnUISChanged(property)
 	end
 end
 
--- main frame
 local sgooey = Instance.new("ScreenGui")
 sgooey.Parent = player.PlayerGui
 sgooey.IgnoreGuiInset = true
@@ -976,14 +900,12 @@ MainFrame.Transparency = 1
 MainFrame.Visible = true
 MainFrame.Parent = sgooey
 
--- hotbar frame
 HotbarFrame = Instance.new("Frame")
 HotbarFrame.Name = "HotbarFrame"
 HotbarFrame.Transparency = 1
 HotbarFrame.Parent = MainFrame
 
 
--- hotbar slots
 for i=1, NumberOfHotbarSlots do
 	local slot = MakeSlot(HotbarFrame, i)
 	slot.Frame.Visible = false
@@ -993,10 +915,7 @@ for i=1, NumberOfHotbarSlots do
 	end
 end
 
--- Up arrow to open the inventory
 
--- i am drunk so recheck this coding when sober
--- TODO: Create a open inventory image button
 
 OpenInventoryButton = Instance.new("ImageButton")
 do
@@ -1006,13 +925,11 @@ do
 		BackpackScript.OpenClose()
 	end)
 
-	-- TODO: Create a frame for selection, once again I have no clue what this is.
 	local openInventoryButtonSelectionObject = Instance.new("Frame")
 	openInventoryButtonSelectionObject.Visible = false
 	OpenInventoryButton.SelectionImageObject = openInventoryButtonSelectionObject
 end
 
---TODO: Make a clove inventory button.
 CloseInventoryButton = Instance.new("ImageButton")
 CloseInventoryButton.Position = UDim2.new(0, 0, 0, -50)
 CloseInventoryButton.MouseButton1Click:connect(function()
@@ -1022,8 +939,6 @@ CloseInventoryButton.MouseButton1Click:connect(function()
 	end
 end)
 
--- Make the Inventory, which holds the ScrollingFrame, the header, and the search box
--- TODO: Make a inventory frame.
 InventoryFrame = Instance.new("Frame")
 InventoryFrame.BackgroundTransparency = BACKGROUND_FADE
 InventoryFrame.BackgroundColor3 = BACKGROUND_COLOR
@@ -1031,7 +946,6 @@ InventoryFrame.Active = true
 InventoryFrame.Visible = false
 InventoryFrame.Parent = MainFrame
 
--- TODO: Image label for selector image.
 local selectorImage = Instance.new("ImageLabel")
 selectorImage.Size = UDim2.new(1, 0, 1, 0)
 selectorImage.Image = "rbxasset://textures/ui/Keyboard/key_selection_9slice.png"
@@ -1039,14 +953,11 @@ selectorImage.ScaleType = Enum.ScaleType.Slice
 selectorImage.SliceCenter = Rect.new(12,12,52,52)
 selectorImage.Visible = false
 
--- Make the ScrollingFrame, which holds the rest of the Slots (however many)
---TODO: Scrolling Frame for the GUI
 ScrollingFrame = Instance.new("ScrollingFrame")
 ScrollingFrame.Selectable = false
 ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 ScrollingFrame.Parent = InventoryFrame
 
--- TODO: Frame for UIGrid
 UIGridFrame = Instance.new("Frame")
 UIGridFrame.Selectable = false
 UIGridFrame.Size = UDim2.new(1, -(ICON_BUFFER*2), 1, 0)
@@ -1066,12 +977,10 @@ ScrollingFrame.Changed:connect(function(prop)
 	end
 end)
 
--- Position the frames and sizes for the Backpack GUI elements
 UpdateBackpackLayout()
 
 do -- Search stuff
 
-	--TODO: Frame for Search
 	local searchFrame = Instance.new("Frame")
 	searchFrame.BackgroundColor3 = SEARCH_BACKGROUND_COLOR
 	searchFrame.BackgroundTransparency = SEARCH_BACKGROUND_FADE
@@ -1079,7 +988,6 @@ do -- Search stuff
 	searchFrame.Position = UDim2.new(1, -searchFrame.Size.X.Offset - SEARCH_BUFFER, 0, SEARCH_BUFFER)
 	searchFrame.Parent = InventoryFrame
 
-	--TODO: TextBox for SearchBox
 	local searchBox = Instance.new("TextBox")
 	searchBox.Text = SEARCH_TEXT
 	searchBox.ClearTextOnFocus = false
@@ -1089,7 +997,6 @@ do -- Search stuff
 	searchBox.Position = UDim2.new(0, SEARCH_TEXT_OFFSET_FROMLEFT, 0, 0)
 	searchBox.Parent = searchFrame
 
-	--TODO: Textbutton for X
 	local xButton = Instance.new("TextButton")
 	xButton.Text = 'x'
 	xButton.TextColor3 = SLOT_EQUIP_COLOR
@@ -1180,7 +1087,6 @@ do -- Search stuff
 
 	local function focusLost(enterPressed)
 		if enterPressed then
-			--TODO: Could optimize
 			search()
 		elseif searchBox.Text == '' then
 			searchBox.Text = SEARCH_TEXT
@@ -1254,34 +1160,28 @@ do -- Make the Inventory expand/collapse arrow (unless TopBar)
 	BackpackScript.OpenClose = openClose -- Exposed
 end
 
--- Listen to current and all future characters of our player
 player.CharacterAdded:connect(OnCharacterAdded)
 if player.Character then
 	OnCharacterAdded(player.Character)
 end
 
 do -- Hotkey stuff
-	-- Init HotkeyStrings, used for eating hotkeys
 	for i = 0, 9 do
 		table.insert(HotkeyStrings, tostring(i))
 	end
 	table.insert(HotkeyStrings, ARROW_HOTKEY_STRING)
 
-	-- Listen to key down
 	UserInputService.InputBegan:connect(OnInputBegan)
 
-	-- Listen to ANY TextBox gaining or losing focus, for disabling all hotkeys
 	UserInputService.TextBoxFocused:connect(function() TextBoxFocused = true end)
 	UserInputService.TextBoxFocusReleased:connect(function() TextBoxFocused = false end)
 
-	-- Manual unequip for HopperBins on drop button pressed
 	HotkeyFns[DROP_HOTKEY_VALUE] = function() --NOTE: HopperBin
 		if ActiveHopper then
 			UnequipAllTools()
 		end
 	end
 
-	-- Listen to keyboard status, for showing/hiding hotkey labels
 	UserInputService.Changed:connect(OnUISChanged)
 	OnUISChanged('KeyboardEnabled')
 end

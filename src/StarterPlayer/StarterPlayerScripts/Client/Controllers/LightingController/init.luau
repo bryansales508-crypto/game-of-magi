@@ -1,6 +1,5 @@
 --!strict
--- The shared day/night clock and the city lights (M6 Phase 6B,
--- docs/M6-PLAN.md).
+-- The shared day/night clock and the city lights.
 --
 -- Clock: the server (WorldClockService) sets Workspace attributes
 --   DayStart  = server time (GetServerTimeNow) the day began, at DawnHour

@@ -1,8 +1,7 @@
 --!strict
--- Every NPC gets the player's full animation set (Bryan, 2026-09-30:
--- "give dummies the same animations, all of them - walk, run, fight").
--- NPCs have no Animate script and no client of their own, so this
--- controller animates them from the server's own state, on every client:
+-- Every NPC gets the player's full animation set. NPCs have no Animate script
+-- and no client of their own, so this controller animates them from the
+-- server's own state, on every client:
 --
 --   locomotion   idle / walk / run / jump / fall - Config.Character.
 --                Animations, the SAME ids CharacterService gives a
@@ -165,8 +164,7 @@ local function onSwing(rig: Rig, data: any)
 		styleName = styleName,
 		hitCount = hitCount,
 		log = log,
-		-- The player's own markers already fill Output; an NPC's would only
-		-- double it. Flip this to Config.Combat.LogMarkers to read them.
+		-- NPC marker logging is off; use Config.Combat.LogMarkers to read them.
 		logMarkers = false,
 		onStopped = function()
 			if rig.currentSwing == swing then

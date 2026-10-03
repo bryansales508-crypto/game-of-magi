@@ -1,27 +1,19 @@
 --!strict
--- The Rukh flutter and the epithet card (M4-02, DESIGN.md section 3a).
+-- The Rukh flutter and the epithet card.
 --
--- Contract with the server (M4-01, Shared/Remotes.luau):
---   RankUp(title: string, rankIndex: number, alignment: string,
---          choices: {string, string, string}, origin: boolean) -- server -> client.
---   AlignmentChanged(alignment: string) -- server -> client, flutter only.
+-- Server contract (Shared/Remotes.luau):
+--   RankUp({title: string, rankIndex: number, alignment: string,
+--          choices: {string, string, string}, origin: boolean}) -- server -> client.
+--   AlignmentChanged({alignment: string}) -- server -> client, flutter only.
 --   ChooseEpithet(index: number 1-3) -- client -> server; the server holds
---     the real choices and only ever trusts the index.
--- Player attributes read: Alignment (indirectly, via the remote payloads)
--- and EpithetPending. The client never computes rank/alignment/epithet
--- itself -- it only shows what RankUp/AlignmentChanged send and reacts to
--- EpithetPending going false.
+--     the real choices and only trusts the index.
+-- Player attribute read: EpithetPending (the card fades when it goes false).
+-- Both remotes go to the player concerned only, so the flutter is local-only.
 --
--- Both remotes are sent to the player concerned only (never broadcast), so
--- the flutter here is local-player-only; playing another player's flutter
--- for onlookers is a later polish (not this task).
---
--- Card look: reuses the exact menu-card assets (m2-studio-dump.md section
--- 2) -- the Outline/BackgroundFill images and fill colour -- but its fonts
--- are copied live from the real MenuGUI template's TitleBox/NameBox/
--- StatBox (their FontFace, not a guessed Font.new(...)): HighwayGothic and
--- Balthazar are custom uploaded fonts, and only the template's own
--- instances are guaranteed to carry the right one.
+-- Card look: reuses the menu-card images and fill colour, but copies its fonts
+-- live from the MenuGUI template's TitleBox/NameBox/StatBox: HighwayGothic and
+-- Balthazar are custom uploaded fonts, and only the template's own instances
+-- are guaranteed to carry the right one.
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
@@ -163,8 +155,8 @@ local function findTemplateLabel(name: string): TextLabel?
 	return if found and found:IsA("TextLabel") then found else nil
 end
 
--- Copies the real template's FontFace rather than reconstructing a Font by
--- name (see the file header comment on HighwayGothic/Balthazar).
+-- Copies the template's FontFace rather than reconstructing a Font by name
+-- (see the file header).
 local function copyFont(source: TextLabel?, target: TextLabel | TextButton)
 	if source then
 		(target :: any).FontFace = source.FontFace
@@ -414,13 +406,11 @@ function RankController:Start()
 		end)
 	end
 
-	-- Registered here (not Init) so this file follows the same convention
-	-- as RukhController: only Start() ever touches remotes/GUI. RankUp
-	-- always carries the fresh choices needed to render the card, including
-	-- on rejoin with a pending choice (the server re-sends it); the
-	-- EpithetPending attribute below is what actually decides when to fade.
+	-- RankUp always carries the fresh choices needed to render the card, including
+	-- on rejoin with a pending choice (the server re-sends it); the EpithetPending
+	-- attribute below decides when to fade.
 	Remotes.Client.On("RankUp", function(payload: any)
-		-- BUG-28: the server sends ONE table (M4-PLAN contract), not five values.
+		-- The server sends one table, not separate values.
 		local p: any = if typeof(payload) == "table" then payload else {}
 		local title: any, rankIndex: any, alignment: any, choices: any, origin: any =
 			p.title, p.rankIndex, p.alignment, p.choices, p.origin

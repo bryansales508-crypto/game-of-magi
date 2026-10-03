@@ -1,11 +1,8 @@
 --!strict
--- The coin purse HUD (StarterGui.Currency, m2-studio-dump.md section 5) and
--- the coin flavour lines the old game posted as the character "saying"
--- them (old InputHandler.client.luau: TextChatService.TextChannels.
--- RBXGeneral:SendAsync(msg), which BUG-02 confirms still runs under
--- TextChatService in this place) -- kept as-is, no fallback needed.
+-- The coin purse HUD (StarterGui.Currency) and the coin flavour lines, posted
+-- as the character "saying" them via TextChatService (TextChannels.RBXGeneral).
 --
--- Contract with the server (M5A-01, Shared/Remotes.luau):
+-- Contract with the server (Shared/Remotes.luau):
 --   Player attributes Copper/Silver/Gold (integers), kept current by
 --   EconomyService.
 --   CoinMessage(text: string) -- server -> client, a flavour line to post.
@@ -15,13 +12,8 @@
 -- ResetOnSpawn-true assumption as HUD (HudController's file header), so
 -- it's rebound on every CharacterAdded, not just once.
 --
--- No client-side money logic: the labels only ever mirror the Copper/
--- Silver/Gold attributes the server already computed.
---
--- Follow-up (Bryan, 2026-09-29): the CoinReward sound (CharacterService
--- clones it onto character.Torso, the same one the old save script and
--- LegacyBridge played) must play on every real Copper/Silver/Gold change,
--- up or down, so the player is alerted even without looking at the purse --
+-- No client-side money logic: the labels only mirror the Copper/Silver/Gold
+-- attributes. The CoinReward sound plays on every real change, up or down,
 -- but never on the initial fill at join/respawn.
 
 local Players = game:GetService("Players")
@@ -89,13 +81,10 @@ local function findPurseLabels(): { [string]: TextLabel }?
 	return labels
 end
 
--- CharacterService clones CoinReward onto the character's Torso (the same
--- sound the old save script and LegacyBridge played). BUG-40: the old code
--- held that character-bound instance, so a replaced/not-yet-replicated Torso
--- sound (or a Play() while it was still playing) meant a purchase or a paid
--- interception stayed silent. Now ONE client-owned Sound is cloned from it the
--- first time it can be found (looked up at play time, never held across
--- lives) and restarted on every change.
+-- CharacterService clones CoinReward onto the character's Torso. One
+-- client-owned Sound is cloned from it the first time it is found (looked up
+-- at play time, never held across lives, since the Torso sound can be replaced
+-- or not yet replicated) and restarted on every change.
 local coinSound: Sound? = nil
 
 local function ensureCoinSound(): Sound?
@@ -125,9 +114,8 @@ local function playCoinSound()
 end
 
 -- Binds the purse labels and the coin alert sound to the Copper/Silver/Gold
--- attributes. The sound plays on every real change (gain or spend, every coin
--- type) but never on the initial fill below (join or respawn) -- only
--- GetAttributeChangedSignal firings count as a "change".
+-- attributes. Only GetAttributeChangedSignal firings play the sound, not the
+-- initial fill below.
 local function bindCurrency(): { RBXScriptConnection }
 	local labels = findPurseLabels()
 

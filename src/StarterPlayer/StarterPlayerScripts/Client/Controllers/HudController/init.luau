@@ -1,8 +1,6 @@
 --!strict
--- The health and block bars. Same look and tween animation as the old
--- src/StarterGui/HUD/HealthHandler.client.luau and BlockHandler.client.luau
--- (now removed), driven by the Health/MaxHealth/Block/MaxBlock player
--- attributes instead of Humanoid.Health / the old IntFold Values.
+-- The health and block bars, driven by the Health/MaxHealth/Block/MaxBlock
+-- player attributes.
 --
 -- The HUD ScreenGui itself stays StarterGui-sourced (ResetOnSpawn is the
 -- class default, true), so PlayerGui.HUD is destroyed and recloned on

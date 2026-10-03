@@ -1,18 +1,14 @@
 --!strict
 -- The M-key character menu card. Clones ReplicatedFirst.GUI.UIGUI.MenuGUI
--- once (kept for the whole session; StarterGui doesn't own it, so it isn't
--- reset on respawn), destroys its Studio-only `MenuMechanics` LocalScript,
--- and fills it from player attributes instead of Stats/OnCharacter Values.
+-- once (kept for the whole session; ResetOnSpawn is off), destroys its
+-- Studio-only `MenuMechanics` LocalScript, and fills it from player attributes.
 --
 -- Reads (may be nil for a moment at join; rendered as "..." until set):
 --   FirstName, Kingdom (1/2/3), Age, HeightStuds, Rank, Epithet, Alignment,
 --   Lives.
 --
--- FIX P3: the stat line used to clip; it now scales to fit instead
--- (UITextSizeConstraint), and a second line (alignment + lives) is added
--- in code under it in the same style.
--- FIX L13: an unknown inventory item code is skipped with a Log:Warn
--- instead of erroring.
+-- The stat line scales to fit (UITextSizeConstraint); a second line
+-- (alignment + lives) is added in code under it in the same style.
 
 local Players = game:GetService("Players")
 local ContextActionService = game:GetService("ContextActionService")
@@ -29,8 +25,8 @@ local player = Players.LocalPlayer
 local GUI = ReplicatedFirst:WaitForChild("GUI")
 local UIGUI = GUI:WaitForChild("UIGUI")
 local MENU_TEMPLATE = UIGUI:WaitForChild("MenuGUI") :: ScreenGui
--- Assets/init.luau isn't --!strict (check.sh ignores its own diagnostics);
--- `:: any` keeps its loose inference from leaking into this strict file.
+-- Assets/init.luau isn't --!strict; `:: any` keeps its loose inference from
+-- leaking into this strict file.
 
 local KINGDOM_NAMES: { [number]: string } = {
 	[1] = "MIDLANDER",
@@ -38,15 +34,11 @@ local KINGDOM_NAMES: { [number]: string } = {
 	[3] = "WESTERNER",
 }
 
--- Old Height scale was 0.725..1.450 in 0.025 steps, mapped to 4'5..7'0,
--- with 1.000 = 5'6" (docs/reference/m2-studio-dump.md §2). HeightStuds
--- (the new server attribute) = Height * a base-height-in-studs constant;
--- SYSTEMS.md doesn't yet pin that constant down (M2-01 lands it), so this
--- reads Config.Character.BaseHeightStuds if the server-builder has since
--- added it, and otherwise falls back to a documented guess. Ask the lead
--- if the menu height ends up off by a constant factor.
+-- The height scale runs 0.725..1.450 (4'5" to 7'0"), with 1.000 = 5'6".
+-- HeightStuds = scale * a base-height-in-studs constant: read from
+-- Config.Character.BaseHeightStuds when present, else a fallback estimate.
 local Config = require(Shared:WaitForChild("Config"))
-local DEFAULT_BASE_HEIGHT_STUDS = 5.708 -- Bryan: replace once M2-01 documents the real scale
+local DEFAULT_BASE_HEIGHT_STUDS = 5.708
 local function baseHeightStuds(): number
 	local characterConfig = (Config :: any).Character
 	if typeof(characterConfig) == "table" and typeof(characterConfig.BaseHeightStuds) == "number" then
@@ -55,10 +47,8 @@ local function baseHeightStuds(): number
 	return DEFAULT_BASE_HEIGHT_STUDS
 end
 
--- The old per-0.025-step table wasn't preserved anywhere we can read, only
--- its two endpoints and the 1.000 anchor, so this rebuilds it as two
--- linear segments through those three known points and rounds to the
--- nearest inch.
+-- Two linear segments through the endpoints and the 1.000 anchor, rounded to
+-- the nearest inch.
 local function heightScaleToFeetInches(scale: number): string
 	local inches: number
 	if scale <= 1.0 then
@@ -126,8 +116,8 @@ local function playSound(template: Sound?)
 	end)
 end
 
--- "a ViewportFrame ... showing a clone of the local character (a
--- WorldModel, camera looking at the head, refreshed on open)".
+-- A ViewportFrame showing a clone of the local character in a WorldModel,
+-- with the camera looking at the head.
 local function buildCharacterPreview(viewCharaFrame: Instance)
 	local character = player.Character
 	if not character then
@@ -138,9 +128,8 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 		return
 	end
 
-	-- FIX BUG-12: player characters aren't Archivable by default, so
-	-- Clone() silently returns nil; flip it on for the clone, then
-	-- restore it so the live character's own replication is unaffected.
+	-- Player characters aren't Archivable by default, so Clone() would return
+	-- nil; enable it for the clone, then restore it.
 	local wasArchivable = character.Archivable
 	character.Archivable = true
 	local clone = character:Clone()
@@ -166,12 +155,8 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 	worldModel.Parent = viewport
 	clone.Parent = worldModel
 
-	-- FIX BUG-21 (Bryan, design): a mirror, not a side/back view. The old
-	-- offset was a fixed world direction, so it showed whatever side
-	-- happened to be there depending on the character's spawn facing.
-	-- Using the head's own CFrame keeps the camera in front of the face
-	-- (along its LookVector) and looking back at it, regardless of which
-	-- way the character is actually facing.
+	-- A mirror view: the camera sits in front of the face (along the head's
+	-- LookVector) and looks back at it, whichever way the character faces.
 	local headCFrame = head.CFrame
 	local cameraPosition = headCFrame.Position + headCFrame.LookVector * 2.5 + Vector3.new(0, 0.3, 0)
 
@@ -184,16 +169,9 @@ local function buildCharacterPreview(viewCharaFrame: Instance)
 	viewport.Parent = viewCharaFrame
 end
 
--- docs/SYSTEMS.md §14 / m2-studio-dump.md §2: the item lookup and token
--- template path. Walked defensively (FindFirstChild, not WaitForChild):
--- unlike the templates above this nested path was read from a binary
--- rbxm, not confirmed byte-for-byte, so a mismatch here should warn once
--- instead of hanging or erroring.
+-- Placeholder: nothing publishes inventory yet, so the apparel tab shows no
+-- tokens.
 local function fillInventoryTokens(_inventoryFrame: Instance)
-	-- REVIEW-M6-01 F2: the old player.OnCharacter.Inventory.Row1 mirror is
-	-- gone with the legacy bridge, and nothing writes Gear.Inventory yet, so
-	-- the apparel tab shows no tokens (as it effectively did before). When
-	-- inventory becomes real the server publishes it and this gets rebuilt.
 	return
 end
 
@@ -246,10 +224,9 @@ function MenuController:Start()
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 
 	local gui = MENU_TEMPLATE:Clone()
-	gui.ResetOnSpawn = false -- cloned GUIs are destroyed on respawn otherwise (REVIEW-M2-04 H1)
-	-- FIX BUG-14: MenuMechanics sits under MasterFrame.MenuGUIFrame, not
-	-- directly under the ScreenGui, so this needs a recursive search --
-	-- and must run before the clone is parented (it is, below).
+	gui.ResetOnSpawn = false
+	-- MenuMechanics sits under MasterFrame.MenuGUIFrame, so the search is
+	-- recursive; it must run before the clone is parented.
 	local menuMechanics = gui:FindFirstChild("MenuMechanics", true)
 	if menuMechanics then
 		menuMechanics:Destroy()
@@ -264,8 +241,7 @@ function MenuController:Start()
 	local buttons = menuGUIFrame:WaitForChild("Buttons") :: Frame
 	local appButton = buttons:WaitForChild("App") :: ImageButton
 
-	-- FIX P3: TextScaled + a max keeps the line inside the box instead of
-	-- clipping, at any age/name/kingdom length.
+	-- TextScaled with a max size keeps the line inside the box at any length.
 	applyTextScale(statBox, 12)
 
 	local statLine2 = statBox:Clone()

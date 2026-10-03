@@ -1,8 +1,8 @@
 --!strict
--- Dev tools: an F8 status overlay and an backquote command panel. Both just send
--- text through DevCommand and render whatever the server sends back
--- (DevReply/DevState); the server alone decides who is a dev (DevService,
--- M1-05S) -- a non-dev who opens either one just gets no replies.
+-- Dev tools: an F8 status overlay and a backquote command panel. Both send
+-- text through DevCommand and render what the server sends back
+-- (DevReply/DevState); the server alone decides who is a dev (DevService), so
+-- a non-dev who opens either one just gets no replies.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -36,9 +36,6 @@ local STATE_KEYS = {
 	"walkSpeed",
 	"health",
 	"maxHealth",
-	-- M3B-06: shown once DevService's snapshot has it (M3B-05, built in
-	-- parallel); formatSnapshotValue already renders "n/a" for a missing
-	-- key, so this is harmless before that lands.
 	"livesLeft",
 	"position",
 	"saveScope",
@@ -107,8 +104,8 @@ local function newInstance<T>(className: string, props: { [string]: any }): T
 	return instance :: any
 end
 
--- Local-only commands (M6): they act on this client's own world, so they are
--- answered here and never sent to the server.
+-- Local-only commands: they act on this client's own world, so they are answered
+-- here and never sent to the server.
 local function handleLocalCommand(text: string, reply: (string) -> ()): boolean
 	local matchedCommand, matchedRest = string.match(text, "^%.(%a+)%s*(.-)%s*$")
 	if matchedCommand == nil then
@@ -182,7 +179,6 @@ function DevController:Start()
 		Parent = playerGui,
 	}) :: ScreenGui
 
-	-- ==================== F8 status overlay ====================
 
 	local overlayFrame = newInstance("Frame", {
 		Name = "Overlay",
@@ -241,7 +237,6 @@ function DevController:Start()
 		return Enum.ContextActionResult.Sink
 	end, false, Enum.KeyCode.F8)
 
-	-- ==================== backquote dev panel ====================
 
 	local panelFrame = newInstance("Frame", {
 		Name = "Panel",
@@ -310,8 +305,8 @@ function DevController:Start()
 		end
 		replyText.Text = table.concat(replyLines, "\n")
 
-		-- BUG-52: the panel is hidden unless opened, so every reply (server
-		-- or local command) also shows as a local-only chat system message.
+		-- The panel is hidden unless opened, so every reply (server or local command)
+		-- also shows as a local-only chat system message.
 		local channels = TextChatService:FindFirstChild("TextChannels")
 		local general = channels and channels:FindFirstChild("RBXGeneral")
 		if general ~= nil and general:IsA("TextChannel") then
@@ -323,9 +318,8 @@ function DevController:Start()
 		appendReply(tostring(text))
 	end)
 
-	-- BUG-47: chat commands go to the server's DevService, which forwards the
-	-- ones it doesn't know (.region, .music, .lights) back here (`text` has no
-	-- leading dot).
+	-- Chat commands go to the server's DevService, which forwards the ones it
+	-- doesn't know (.region, .music, .lights) back here (`text` has no leading dot).
 	Remotes.Client.On("DevLocalCommand", function(text: any)
 		if typeof(text) ~= "string" or #text == 0 then
 			return

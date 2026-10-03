@@ -1,5 +1,5 @@
 --!strict
--- Which regions is my character standing in? (M6 Phase 6A, docs/M6-PLAN.md)
+-- Which regions is my character standing in?
 --
 -- Every BasePart named "<Key>REGION" under Workspace.Regions (a folder may
 -- group several parts into one region) is a box. Every

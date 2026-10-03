@@ -1,59 +1,41 @@
 --!strict
--- The delivery mission board, quest tracker and courier beacon (M5-PLAN
--- Phase 5C, docs/reference/m5c-studio-dump.md). Visuals and flow are ported
--- from the old RS/Modules/MissionDeliniation.luau (city panel, start
--- button, tracker, modifier pop-outs); its LISTENER pattern is not reused --
--- see the FIX M14 notes below.
+-- The delivery mission board, quest tracker and courier beacon.
 --
--- Contract with the server (M5C-01, Shared/Remotes.luau):
+-- Server contract (Shared/Remotes.luau):
 --   MissionBoard (server -> client): one table
---     { city, destinations = { {key, name, color = {r,g,b} (0-1), lore,
---       image, pay, modifiers = { {name, chance, text} } } }, intercepted?,
---       offerMultiplier? }
---     or nil to close. `pay` already has offerMultiplier folded in
---     (Bryan, follow-up): when intercepted > 0, one line on the board says
---     so (offers at floor(offerMultiplier*100)%); hidden otherwise.
+--     { city, destinations = { {key, name, color = {r,g,b} (0-1), lore, image,
+--       pay, modifiers = { {name, chance, text} } } }, intercepted?, offerMultiplier? }
+--     or nil to close. `pay` already includes offerMultiplier; when
+--     intercepted > 0 one line on the board says offers are at
+--     floor(offerMultiplier*100)%.
 --   MissionOpenBoard(cityKey), MissionStart(destinationKey), MissionExit()
 --     (client -> server intentions only).
 --   MissionUpdate (server -> client):
 --     { state = "Started"|"Finished"|"Failed"|"Intercepted"|"Cleared"
 --              |"ModifierFailed", destination, destinationPosition = {x,y,z},
 --       modifiers, returnPosition?, timerEnds?, pay, key?, failed? }
---     ModifierFailed (Bryan, follow-up): failing a modifier never ends the
---     run by itself -- `key` names which modifier failed (matched against
---     that modifier's own `key`, falling back to its `name`); that one
---     modifier's BONUS button and pop-out grey out, everything else (run,
---     tracker, quest box) stays exactly as it is. TimeCrunch's own 0:00 is
---     just a countdown reaching zero -- the server is the one that decides
---     the timer failed and sends this same state for it.
---     `failed` (Bryan, follow-up): the CourierLoop return leg's own
---     "Started" carries `{ "TimeCrunch", ... }`, the modifier keys that
---     already failed on the outbound leg -- rebuilt greyed out instead of
---     showing as active again on the fresh return board.
+--     ModifierFailed: `key` names the modifier that failed (matched against
+--     its own `key`, falling back to its `name`); only that modifier's BONUS
+--     button and pop-out grey out, the run itself continues. TimeCrunch's 0:00
+--     is a countdown only; the server decides it failed and sends this state.
+--     `failed`: the CourierLoop return leg's "Started" carries the modifier
+--     keys that already failed on the outbound leg, rebuilt greyed out.
 --   Player attributes: OnMission, MissionDestination, MissionStreak, Bounty
---     (consumed elsewhere; nothing here needs them directly). Character
---     attribute: CourierBeacon (true while the beacon is on).
+--     (consumed elsewhere). Character attribute: CourierBeacon (true while the
+--     beacon is on).
 --
--- The client never computes reward/pay math (board.pay and update.pay are
--- already final, modifiers included -- FIX L14) and never decides which
--- city is reachable -- MissionOpenBoard/MissionStart just send intentions,
--- the server decides everything.
+-- The client never computes pay (board.pay and update.pay are final) and never
+-- decides which city is reachable; it only sends intentions.
 --
--- FIX M14 (both halves of it): the old code added a NEW StartButton
--- listener and a NEW modifier-button listener on every single city click,
--- so old listeners from earlier clicks stayed alive and could fire for a
--- stale city. Here the StartButton gets exactly ONE connection per board
--- (reading a mutable `selectedDestinationKey`, updated per click, so
--- Start always fires for the LAST click only), and every modifier
--- button's clone (and its popout) is destroyed and rebuilt from scratch on
--- every city click -- never accumulated.
+-- The StartButton gets exactly one connection per board (reading a mutable
+-- `selectedDestinationKey`, so Start fires for the LAST click only), and every
+-- modifier button clone (and its popout) is rebuilt from scratch on each city
+-- click, never accumulated.
 --
--- ReplicatedFirst.GUI.MissionGUI's children are synced .rbxm assets (art);
--- this file only ever clones them and sets Text/Image/Parent on the
--- clones, it never edits the templates themselves. Known rbxm-sourced
--- children are accessed through `:: any` casts (same pattern as
--- RankController's `copyFont`) since the Rojo sourcemap can't type an
--- .rbxm's internal structure.
+-- ReplicatedFirst.GUI.MissionGUI's children are synced .rbxm assets (art); this
+-- file only clones them and sets Text/Image/Parent on the clones. rbxm-sourced
+-- children are accessed through `:: any` casts since the Rojo sourcemap can't
+-- type an .rbxm's internal structure.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -70,39 +52,29 @@ local player = Players.LocalPlayer
 
 local MissionController = {}
 
--- Connections that live for the whole controller (Start() runs once, so
--- these are never torn down -- tracked anyway for consistency with the
--- board/run connections below rather than left dangling off the stack).
+-- Connections that live for the whole controller (Start() runs once, so they are never torn down).
 -- selene: allow(unused_variable) -- write-only on purpose; nothing ever
 -- needs to read this back since the controller itself never tears down.
 local controllerConnections: { RBXScriptConnection } = {}
 
--- ==================== constants ====================
 
 local WAIT_SECONDS = 15
-local PROMPT_RANGE = 12 -- studs; the old feel was a click, this is its proximity equivalent
-local BOARD_CLOSE_RANGE = 20 -- studs; matches the old board's walk-away distance
+local PROMPT_RANGE = 12
+local BOARD_CLOSE_RANGE = 20
 local BOARD_WATCH_INTERVAL = 0.5
 local RUN_UPDATE_INTERVAL = 0.2 -- distance/timer tick, only while a run is active
 local ANNOUNCE_SECONDS = 4
 
--- MissionHandler.luau:316, the old courier beacon's Highlight colours.
 local BEACON_COLOR = Color3.fromRGB(239, 187, 65)
 
 local TIME_CRUNCH_NAME = "Time Crunch"
 local COURIER_LOOP_NAME = "Courier Loop"
 local COURIER_LOOP_RETURN_TEXT = "Return with the package to complete the Quest."
 local MODIFIER_FAILED_TEXT = "Failed."
--- Old code's modifier fail state (MissionDeliniation.luau's TimeCrunch/
--- FragilePackage branches): the Constraint text says "Failed." and the
--- BONUS button's own text goes this grey. Now server-driven for every
--- modifier via MissionUpdate "ModifierFailed", not just TimeCrunch/
--- FragilePackage.
+-- Text colour of a failed modifier's BONUS button (its Constraint label reads "Failed.").
 local MODIFIER_FAILED_COLOR = Color3.fromRGB(43, 43, 43)
 
--- Cosmetic only (ProximityPrompt.ObjectText before the board replies with
--- real destination data) -- exact text from m5c-studio-dump.md section 1,
--- keeping the old city button lettering.
+-- Cosmetic only: ProximityPrompt.ObjectText before the board replies with real destination data.
 local CITY_DISPLAY_NAMES: { [string]: string } = {
 	Saleh = "SALEH",
 	AinJamala = "AIN JAMALA",
@@ -113,7 +85,6 @@ local CITY_DISPLAY_NAMES: { [string]: string } = {
 	JaddatysHut = "JADDATY'S HUT",
 }
 
--- ==================== templates ====================
 
 local GUI = ReplicatedFirst:WaitForChild("GUI")
 local MISSION_GUI = GUI:WaitForChild("MissionGUI")
@@ -143,7 +114,6 @@ local TRACKER_HEIGHT = 90
 
 local MERRIWEATHER_BOLD = Font.new(Font.fromEnum(Enum.Font.Merriweather).Family, Enum.FontWeight.Bold, Enum.FontStyle.Normal)
 
--- ==================== types ====================
 
 type Modifier = { key: string?, name: string, chance: number, text: string }
 type Destination = {
@@ -156,9 +126,8 @@ type Destination = {
 	modifiers: { Modifier },
 }
 
--- One entry per modifier in an active run, keyed by that modifier's own
--- `key` (falling back to `name`) -- how a MissionUpdate "ModifierFailed"
--- finds the right BONUS button/pop-out to grey out.
+-- One entry per modifier in an active run, keyed by its `key` (falling back to `name`),
+-- so "ModifierFailed" can find the right BONUS button/pop-out.
 type ModifierUiEntry = {
 	constraint: TextLabel,
 	bonusButton: TextButton?,
@@ -180,10 +149,8 @@ type RunState = {
 	loopThread: thread?,
 }
 
--- ==================== small helpers ====================
 
--- BUG-41: the server sends `{ r, g, b }` (0-1); the old read of `[1..3]`
--- fell back to white for every channel. Accepts both shapes.
+-- The server sends colours as `{ r, g, b }` (0-1); also accepts `[1..3]`.
 local function toColor3(rgb: { [any]: number }?): Color3
 	if not rgb then
 		return Color3.new(1, 1, 1)
@@ -191,9 +158,7 @@ local function toColor3(rgb: { [any]: number }?): Color3
 	return Color3.new(rgb.r or rgb[1] or 1, rgb.g or rgb[2] or 1, rgb.b or rgb[3] or 1)
 end
 
--- BUG-46: positions come over the wire as `{ x, y, z }` (MissionService
--- vecToTable); reading `[1..3]` put every tracker anchor at the origin, the
--- same wrong spot for every city. Accepts both shapes.
+-- Positions arrive as `{ x, y, z }` (MissionService vecToTable); also accepts `[1..3]`.
 local function toVector3(position: { [any]: number }?): Vector3?
 	if not position then
 		return nil
@@ -257,8 +222,7 @@ local function findMessageLabel(root: Instance): TextLabel?
 	return nil
 end
 
--- Old RegionHandlerPart1.client.luau's TranMsg: bounce the text in from
--- above, then the caller destroys the clone after ANNOUNCE_SECONDS.
+-- Bounces the text in from above; the caller destroys the clone after ANNOUNCE_SECONDS.
 local function announce(text: string, tone: "Good" | "Bad")
 	local frame = findAnnouncerFrame()
 	if not frame then
@@ -282,7 +246,6 @@ local function announce(text: string, tone: "Good" | "Bad")
 	end)
 end
 
--- ==================== delivery prompts ====================
 
 local function setupDeliveryPrompt(part: BasePart, cityKey: string)
 	if part:FindFirstChildOfClass("ProximityPrompt") then
@@ -323,7 +286,6 @@ local function watchMissionFolder(folder: Instance)
 	end
 end
 
--- ==================== the board ====================
 
 local boardGui: ScreenGui? = nil
 local boardConnections: { RBXScriptConnection } = {}
@@ -331,8 +293,8 @@ local boardModifierInstances: { Instance } = {}
 local boardWatchThread: thread? = nil
 local selectedDestinationKey: string? = nil
 
--- BUG-45: only one board modifier pop-out is open at a time (clicking
--- another chip replaces it, clicking the same chip closes it).
+-- Only one board modifier pop-out is open at a time (clicking another chip replaces it,
+-- clicking the same chip closes it).
 type OpenBoardPopOut = { popOut: Frame, chip: TextButton, idleTransparency: number, connections: { RBXScriptConnection } }
 local openBoardPopOut: OpenBoardPopOut? = nil
 
@@ -379,20 +341,18 @@ end
 
 -- Clones MODCONTAINER (the "!!!" BONUS button) + ModPopOut (the name/desc
 -- card) + ModChance (the percentage badge, parented into the popout so it
--- shows/hides together with it) per modifier. One Activated connection per
--- BONUS button, created fresh here every time -- FIX M14.
+-- shows/hides with it) per modifier. Each BONUS button gets one fresh
+-- Activated connection.
 --
--- `uiByKey`, when given (an active run only -- the board has no fail
--- state), records each modifier's Constraint label and BONUS button under
--- its own key so a later MissionUpdate "ModifierFailed" can find them.
+-- `uiByKey`, when given (an active run only), records each modifier's
+-- Constraint label and BONUS button under its own key so a later
+-- "ModifierFailed" can find them.
 --
--- Placement (BUG-42/45): the template pop-out is a screen-wide {1,0} frame,
--- which is what made it overlap everything. On the BOARD (`boardFrame` given)
--- chips sit in their own row and a chip's pop-out is one fixed-size card
--- below the board, left-aligned with the chip, one open at a time. IN A RUN
--- (`boardFrame` nil) the pop-outs are listed in QuestLine.ModFrame, a column
--- (UIListLayout) of name + one-line description cards, one per active
--- modifier, never on top of each other.
+-- Placement: the template pop-out is a screen-wide {1,0} frame. On the BOARD
+-- (`boardFrame` given) chips sit in their own row and a chip's pop-out is one
+-- fixed-size card below the board, left-aligned with the chip, one open at a
+-- time. IN A RUN (`boardFrame` nil) the pop-outs are listed in
+-- QuestLine.ModFrame, a column (UIListLayout) of cards, one per modifier.
 local function buildModifierRow(
 	modifiers: { Modifier },
 	row: Instance,
@@ -432,9 +392,8 @@ local function buildModifierRow(
 		cardPadding.Parent = popOut
 		table.insert(sink, popOut)
 
-		-- BUG-54: the badge's own "!!!" label was drawn over the description.
-		-- Only its Percentage child is kept, in the card's top-right corner
-		-- on the name row; the "!!!" label is dropped.
+		-- Only the badge's Percentage child is kept, in the card's top-right corner on the
+		-- name row; its own "!!!" label would draw over the description.
 		local chanceBadge = MOD_CHANCE_TEMPLATE:Clone()
 		local percentage = (chanceBadge :: any).Percentage :: TextLabel
 		percentage.Text = formatChance(modifier.chance)
@@ -514,10 +473,9 @@ local function selectDestination(destination: Destination, textContainer: Instan
 	buildModifierRow(destination.modifiers or {}, modifierRow, screenGui, boardModifierInstances, nil, boardFrame)
 end
 
--- BUG-53: the old board's button structure (m5c-studio-dump.md section 1):
--- a 56 px slot holding a per-city coloured Frame (0.9 wide, anchored centre)
--- with a TextButton on it (0.9 x 0.7, Merriweather Bold 18, black border;
--- Rathole's border matches its fill). Colours come from the server as before.
+-- Board buttons: a 56 px slot holding a per-city coloured Frame (0.9 wide,
+-- anchored centre) with a TextButton on it (0.9 x 0.7, Merriweather Bold 18,
+-- black border; Rathole's border matches its fill). Colours come from the server.
 local function buildCityButton(destination: Destination, parent: Instance, layoutOrder: number, onClick: (Destination) -> ())
 	local color = toColor3(destination.color)
 
@@ -560,11 +518,10 @@ end
 
 local INTERCEPTED_NOTICE_FORMAT = "Merchants doubt you. Offers at %d%% until you deliver."
 
--- Bryan (follow-up): board.intercepted/offerMultiplier -- the pay numbers
--- shown are already multiplied by the server, this is just the one line
--- explaining why. `fontSource` is an existing Balthazar Italic 14 label
--- from the same clone (CityDesc) -- copied rather than guessed, same
--- reasoning as RankController's `copyFont` (this file's header comment).
+-- board.intercepted/offerMultiplier: the pay numbers shown are already
+-- multiplied by the server; this line just explains why. `fontSource` is an
+-- existing Balthazar Italic 14 label from the same clone (CityDesc), copied
+-- rather than guessed.
 local function buildInterceptedNotice(board: any, outsideFrame: Instance, fontSource: TextLabel)
 	local intercepted = board.intercepted
 	local offerMultiplier = board.offerMultiplier
@@ -594,10 +551,9 @@ local function watchBoardDistance(originPart: BasePart)
 			local character = player.Character
 			local root = character and character:FindFirstChild("HumanoidRootPart")
 			if root and root:IsA("BasePart") and (root.Position - originPart.Position).Magnitude > BOARD_CLOSE_RANGE then
-				-- Clear the handle to our OWN thread before calling closeBoard(),
-				-- which task.cancel()s it -- cancelling the thread you're
-				-- currently running on aborts the rest of this function, which
-				-- would abort closeBoard() itself mid-cleanup (REVIEW-M5C-02 #1).
+				-- Clear the handle to our OWN thread before calling closeBoard(), which
+				-- task.cancel()s it: cancelling the running thread would abort closeBoard()
+				-- mid-cleanup.
 				boardWatchThread = nil
 				closeBoard()
 				return
@@ -619,8 +575,8 @@ local function openBoard(board: any)
 	local frame = outsideFrame and outsideFrame:FindFirstChild("Frame")
 	local descriptionFrame = frame and frame:FindFirstChild("DescriptionFrame")
 	local textContainer = descriptionFrame and descriptionFrame:FindFirstChild("TextContainer")
-	-- BUG-32: the ScrollingFrame sits under OutsideFrame.Frame (next to
-	-- DescriptionFrame), not directly under OutsideFrame.
+	-- The ScrollingFrame sits under OutsideFrame.Frame (next to DescriptionFrame),
+	-- not directly under OutsideFrame.
 	local scrollingFrame = frame and frame:FindFirstChild("ScrollingFrame")
 	local xButtonFrame = outsideFrame and outsideFrame:FindFirstChild("XButtonFrame")
 
@@ -630,8 +586,8 @@ local function openBoard(board: any)
 		return
 	end
 
-	-- the old X-button LocalScript fired the retired `Delivery` remote
-	-- (m5c-studio-dump.md section 2); kill it and wire MissionExit instead.
+	-- The template's X-button LocalScript fires the retired `Delivery` remote;
+	-- kill it and wire MissionExit instead.
 	for _, descendant in xButtonFrame:GetDescendants() do
 		if descendant:IsA("LocalScript") then
 			descendant:Destroy()
@@ -643,22 +599,19 @@ local function openBoard(board: any)
 			boardConnections,
 			xButton.Activated:Connect(function()
 				Remotes.Client.Fire("MissionExit")
-				-- Don't wait on the server's MissionBoard nil reply (REVIEW-M5C-02
-				-- #2): the X should feel instant even if the reply is slow or
-				-- M5C-01 isn't wired up yet. Start stays server-driven.
+				-- Don't wait on the server's MissionBoard nil reply: the X should feel instant.
+				-- Start stays server-driven.
 				closeBoard()
 			end)
 		)
 	end
 
-	-- The board's own modifier preview row has no slot in the synced rbxm
-	-- (m5c-studio-dump.md has no board-side modifier container) -- built in
-	-- code, in its own row under the pay row.
+	-- The synced rbxm has no board-side modifier container, so the preview row is
+	-- built in code, in its own row under the pay row.
 	local modifierRow = Instance.new("Frame")
 	modifierRow.Name = "ModifierRow"
 	modifierRow.BackgroundTransparency = 1
-	-- BUG-42: its own row under the pay row (PayRow ends at 0.9225), not
-	-- inside or over it.
+	-- Its own row under the pay row (PayRow ends at 0.9225), not inside or over it.
 	modifierRow.Size = UDim2.fromScale(0.9, 0.07)
 	modifierRow.Position = UDim2.fromScale(0.5, 0.96)
 	modifierRow.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -716,7 +669,6 @@ local function openBoard(board: any)
 	log:Info("board opened: " .. tostring(board.city))
 end
 
--- ==================== the active run ====================
 
 local activeRun: RunState? = nil
 
@@ -775,11 +727,10 @@ local function createTrackerAnchor(position: { [any]: number }?): Part
 	return anchor
 end
 
--- MissionUpdate's own destinationPosition/returnPosition is authoritative
--- (REVIEW-M5C-02 #3: with placeholder routes it can differ from the
--- `<City>Delivery` part) -- an anchor Part is created there and destroyed
--- with the run. The named MISSION part is only a fallback for when the
--- server sends no position at all.
+-- MissionUpdate's destinationPosition/returnPosition is authoritative (it can
+-- differ from the `<City>Delivery` part): an anchor Part is created there and
+-- destroyed with the run. The named MISSION part is only a fallback for when
+-- the server sends no position at all.
 local function resolveTrackerTarget(cityKey: string?, position: { [any]: number }?): (BasePart, boolean)
 	if toVector3(position) then
 		return createTrackerAnchor(position), true
@@ -812,17 +763,15 @@ local function updateRunDistances(run: RunState)
 
 	if run.timeCrunchKey and run.timerEnds then
 		local entry = run.modifierUiByKey[run.timeCrunchKey]
-		-- Once MissionUpdate "ModifierFailed" marks this one, stop
-		-- overwriting its "Failed." text with the (now meaningless,
-		-- past-zero) countdown -- the server owns the fail moment, this
-		-- loop only ever counts down to it.
+		-- Once "ModifierFailed" marks this one, stop overwriting its "Failed." text
+		-- with the past-zero countdown; the server owns the fail moment.
 		if entry and not entry.failed then
 			entry.constraint.Text = formatCountdown(run.timerEnds - Workspace:GetServerTimeNow())
 		end
 	end
 
-	-- old feel: the QuestLineBox's own distance label only shows once the
-	-- tracker billboard itself has scrolled off screen.
+	-- The QuestLineBox's own distance label only shows once the tracker billboard
+	-- itself has scrolled off screen.
 	local camera = Workspace.CurrentCamera
 	if camera then
 		local _, onScreen = camera:WorldToViewportPoint(run.trackerAnchor.Position)
@@ -833,10 +782,8 @@ local function updateRunDistances(run: RunState)
 	end
 end
 
--- The same grey-out MissionUpdate "ModifierFailed" applies live, shared
--- with startRun's own handling of the return leg's `failed` list (modifiers
--- that already failed on the outbound leg, so a fresh CourierLoop return
--- board doesn't show them as active again).
+-- The grey-out "ModifierFailed" applies live, shared with startRun's handling of
+-- the return leg's `failed` list.
 local function applyModifierFailure(run: RunState, key: string): boolean
 	local entry = run.modifierUiByKey[key]
 	if not entry then
@@ -867,9 +814,9 @@ local function startRun(update: any)
 	if not modFrame then
 		log:Warn("QuestLine.ModFrame missing; modifier pop-outs disabled")
 	elseif modFrame:IsA("Frame") then
-		-- BUG-42: the template column is only 0.1 of the screen wide, too
-		-- narrow to read a name + description. Widen it, right edge just left
-		-- of the quest list (Set, centred 0.917, 0.15 wide), growing leftward.
+		-- The template column is only 0.1 of the screen wide, too narrow for a name +
+		-- description. Widen it, right edge just left of the quest list (Set, centred
+		-- 0.917, 0.15 wide), growing leftward.
 		modFrame.AnchorPoint = Vector2.new(1, 0)
 		modFrame.Size = UDim2.fromScale(0.2, 0.4)
 		modFrame.Position = UDim2.fromScale(0.835, 0.5)
@@ -891,11 +838,11 @@ local function startRun(update: any)
 	questLineGui.Enabled = true
 
 	local trackerGui = QUEST_TRACKER_TEMPLATE:Clone()
-	-- BUG-44: the template is sized in STUDS ({1000,0}), so the camera's run
-	-- zoom (CombatController tweens Camera.FieldOfView) stretched it and its
-	-- distance text. Fixed pixel size, no world offsets, AlwaysOnTop: a pixel-
-	-- sized billboard is not scaled by FOV. The distance text is computed from
-	-- the character's root to the anchor (updateRunDistances), never the camera.
+	-- The template is sized in STUDS ({1000,0}), so the camera's run zoom
+	-- (CombatController tweens Camera.FieldOfView) would stretch it. Fixed pixel
+	-- size, no world offsets, AlwaysOnTop: a pixel-sized billboard is not scaled
+	-- by FOV. The distance text is computed from the character's root to the
+	-- anchor (updateRunDistances), never the camera.
 	trackerGui.Size = UDim2.fromOffset(TRACKER_WIDTH, TRACKER_HEIGHT)
 	trackerGui.StudsOffset = Vector3.zero
 	trackerGui.StudsOffsetWorldSpace = Vector3.zero
@@ -942,9 +889,8 @@ local function startRun(update: any)
 		end
 	end
 
-	-- CourierLoop's return leg (Bryan, follow-up): `failed` lists modifier
-	-- keys that already failed on the outbound leg, so they come back
-	-- greyed out instead of showing as active again on the fresh board.
+	-- CourierLoop's return leg: `failed` lists modifier keys that already failed on
+	-- the outbound leg, so they come back greyed out.
 	if typeof(update.failed) == "table" then
 		for _, key in update.failed :: { any } do
 			if typeof(key) == "string" then
@@ -967,9 +913,8 @@ local function startRun(update: any)
 	log:Info(string.format("mission %s: %s", if returning then "returning" else "started", tostring(update.destination)))
 end
 
--- Bryan (follow-up): failing a modifier never ends the run by itself. This
--- only greys out that one modifier's BONUS button/pop-out; the run,
--- tracker and quest box stay exactly as they are.
+-- Failing a modifier never ends the run by itself; this only greys out that
+-- modifier's BONUS button/pop-out.
 local function handleModifierFailed(update: any)
 	local run = activeRun
 	if not run then
@@ -1017,13 +962,11 @@ local function handleMissionUpdate(update: any)
 	end
 end
 
--- ==================== courier beacon ====================
 
--- BUG-43: the highlight fades in and out instead of popping. The server
--- toggles the CourierBeacon attribute (Config.Missions.Beacon: every
--- everySeconds, for forSeconds), the client eases the Highlight in over
--- BEACON_FADE_SECONDS, holds while the attribute stays on, and eases out when
--- it turns off before destroying it.
+-- The highlight fades in and out instead of popping. The server toggles the
+-- CourierBeacon attribute (Config.Missions.Beacon); the client eases the
+-- Highlight in over BEACON_FADE_SECONDS, holds while the attribute stays on,
+-- and eases out when it turns off before destroying it.
 local BEACON_FADE_SECONDS = 0.6
 local BEACON_FADE_INFO = TweenInfo.new(BEACON_FADE_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 local BEACON_FILL_TRANSPARENCY = 0.5 -- the Highlight default fill at full strength
@@ -1076,7 +1019,6 @@ local function wireOtherPlayer(otherPlayer: Player)
 	end
 end
 
--- ==================== wiring ====================
 
 function MissionController:Init() end
 

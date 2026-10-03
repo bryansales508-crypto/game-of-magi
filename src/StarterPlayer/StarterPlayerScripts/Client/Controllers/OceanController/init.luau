@@ -1,7 +1,6 @@
 --!strict
--- The ocean, driven from one place (M6 Phase 6D, docs/M6-PLAN.md).
--- Replaces 766 per-part server scripts. Off until Config.World.Ocean.Enabled
--- (Bryan deletes the old scripts first, docs/TINKER.md).
+-- The ocean, driven from one place. Off until Config.World.Ocean.Enabled (the
+-- old per-part ocean scripts must be deleted first).
 --
 -- Every BasePart named MovingPart or OceanWaves under Workspace.MAP.OCEAN
 -- is a tile: it rises Amplitude studs over RiseSeconds, holds HoldSeconds,
