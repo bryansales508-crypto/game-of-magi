@@ -21,6 +21,14 @@
 -- Mouse.Target polling on RenderStepped -- gated behind a cheap distance
 -- check so it never does real per-frame work while the player is away
 -- from the stand.
+--
+-- BUG-49 (M7-06): after M7-04 the racks showed neither prompt nor outline.
+-- The poll was gated on distance to ONE anchor (the first rack registered),
+-- so every other rack never polled and (prompts being disabled until hovered)
+-- never showed anything. One central per-frame pass now measures each rack
+-- part on its own, outlines only the truly hovered one, and enables exactly
+-- one prompt: the hovered rack's, or -- with no mouse (gamepad/touch) or
+-- nothing hovered -- the single rack the player is within reach of.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -38,44 +46,48 @@ local ShopController = {}
 local STAND_WAIT_SECONDS = 15
 local HOVER_TRANSPARENCY = 0.999
 local IDLE_TRANSPARENCY = 1
-local HOVER_RANGE = 10 -- old ClickDetector's MaxActivationDistance
-local POLL_GATE_RANGE = 12 -- only poll Mouse.Target within this of the stand
+local DEFAULT_RANGE = 10 -- old ClickDetector's / prompt's MaxActivationDistance
 local HOVERABLE_NAMES = { ShirtHL = true, PantsHL = true }
 
 type HoverTarget = {
 	part: BasePart,
 	highlight: Highlight,
 	connections: { RBXScriptConnection },
-	hovering: boolean,
+	hovering: boolean, -- outline + hover transparency shown
+	promptOn: boolean,
+	detectorHover: boolean, -- set by a ClickDetector's hover events
 	usingClickDetector: boolean,
 }
 
 local targets: { [BasePart]: HoverTarget } = {}
-local pollCandidates: { [BasePart]: HoverTarget } = {}
-local standAnchor: Vector3? = nil
-local fallbackConnection: RBXScriptConnection? = nil
+local standConnections: { RBXScriptConnection } = {}
+local frameConnection: RBXScriptConnection? = nil
 local mouse = player:GetMouse()
+
+local function findPrompt(part: BasePart): ProximityPrompt?
+	return part:FindFirstChildOfClass("ProximityPrompt")
+end
+
+local function rangeOf(target: HoverTarget): number
+	local prompt = findPrompt(target.part)
+	return if prompt then prompt.MaxActivationDistance else DEFAULT_RANGE
+end
 
 -- BUG-39: the server leaves every rack prompt Enabled with the default
 -- Exclusivity (OnePerButton), so with 18 prompts on E in range the engine
--- showed only ONE (the closest, which was whichever pants part). Like the old
--- game, only the hovered part's prompt is enabled, locally; the rest are
--- hidden, so the hovered one always wins. Triggered still fires server-side.
-local function applyPrompt(part: BasePart, enabled: boolean)
-	local prompt = part:FindFirstChildOfClass("ProximityPrompt")
-	if prompt then
-		prompt.Enabled = enabled
+-- showed only ONE. Only one prompt is enabled at a time, locally; Triggered
+-- still fires server-side.
+local function setState(target: HoverTarget, hovering: boolean, promptOn: boolean)
+	if target.hovering ~= hovering then
+		target.hovering = hovering
+		target.part.Transparency = if hovering then HOVER_TRANSPARENCY else IDLE_TRANSPARENCY
+		target.highlight.Enabled = hovering
 	end
-end
-
-local function setHover(target: HoverTarget, hovering: boolean)
-	if target.hovering == hovering then
-		return
+	local prompt = findPrompt(target.part)
+	target.promptOn = promptOn
+	if prompt and prompt.Enabled ~= promptOn then
+		prompt.Enabled = promptOn
 	end
-	target.hovering = hovering
-	applyPrompt(target.part, hovering)
-	target.part.Transparency = if hovering then HOVER_TRANSPARENCY else IDLE_TRANSPARENCY
-	target.highlight.Enabled = hovering
 end
 
 local function teardownTarget(part: BasePart)
@@ -84,50 +96,76 @@ local function teardownTarget(part: BasePart)
 		return
 	end
 	targets[part] = nil
-	pollCandidates[part] = nil
 	for _, connection in target.connections do
 		connection:Disconnect()
 	end
 end
 
-local function pollHover()
-	local character = player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not (rootPart and rootPart:IsA("BasePart") and standAnchor) then
-		return
-	end
-
-	if (rootPart.Position - standAnchor).Magnitude > POLL_GATE_RANGE then
-		for _, target in pollCandidates do
-			setHover(target, false)
-		end
-		return
-	end
-
-	local mouseTarget = mouse.Target
-	for part, target in pollCandidates do
-		local hovering = mouseTarget == part and (rootPart.Position - part.Position).Magnitude <= HOVER_RANGE
-		setHover(target, hovering)
+local function hideAll()
+	for _, target in targets do
+		setState(target, false, false)
 	end
 end
 
-local function ensureFallbackLoop()
-	if fallbackConnection then
+local function refresh()
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not (rootPart and rootPart:IsA("BasePart")) then
+		hideAll()
 		return
 	end
-	fallbackConnection = RunService.RenderStepped:Connect(pollHover)
+
+	local origin = rootPart.Position
+	local mouseTarget = mouse.Target
+	local hoveredTarget: HoverTarget? = nil
+	local hoveredDistance = math.huge
+	local nearTarget: HoverTarget? = nil
+	local nearCount = 0
+	local nearDistance = math.huge
+
+	for part, target in targets do
+		local distance = (origin - part.Position).Magnitude
+		if distance <= rangeOf(target) then
+			nearCount += 1
+			if distance < nearDistance then
+				nearDistance = distance
+				nearTarget = target
+			end
+			local pointed = if target.usingClickDetector then target.detectorHover else mouseTarget == part
+			if pointed and distance < hoveredDistance then
+				hoveredDistance = distance
+				hoveredTarget = target
+			end
+		end
+	end
+
+	-- Nothing hovered: a single rack in reach keeps its prompt on (no mouse
+	-- on gamepad/touch); with several in reach and no hover, none shows.
+	local promptTarget = hoveredTarget
+	if not promptTarget and nearCount == 1 then
+		promptTarget = nearTarget
+	end
+
+	for _, target in targets do
+		setState(target, target == hoveredTarget, target == promptTarget)
+	end
+end
+
+local function ensureFrameLoop()
+	if frameConnection then
+		return
+	end
+	frameConnection = RunService.RenderStepped:Connect(refresh)
 end
 
 local function bindClickDetector(target: HoverTarget, clickDetector: ClickDetector)
 	target.usingClickDetector = true
-	pollCandidates[target.part] = nil
-	setHover(target, false)
-
+	target.detectorHover = false
 	table.insert(
 		target.connections,
 		clickDetector.MouseHoverEnter:Connect(function(hoveringPlayer: Player)
 			if hoveringPlayer == player then
-				setHover(target, true)
+				target.detectorHover = true
 			end
 		end)
 	)
@@ -135,7 +173,7 @@ local function bindClickDetector(target: HoverTarget, clickDetector: ClickDetect
 		target.connections,
 		clickDetector.MouseHoverLeave:Connect(function(hoveringPlayer: Player)
 			if hoveringPlayer == player then
-				setHover(target, false)
+				target.detectorHover = false
 			end
 		end)
 	)
@@ -158,6 +196,7 @@ local function registerTarget(part: BasePart)
 				registerTarget(part)
 			end
 		end)
+		table.insert(standConnections, waitConnection)
 		return
 	end
 
@@ -166,23 +205,25 @@ local function registerTarget(part: BasePart)
 		highlight = highlight,
 		connections = {},
 		hovering = false,
+		promptOn = false,
+		detectorHover = false,
 		usingClickDetector = false,
 	}
 	targets[part] = target
-	applyPrompt(part, false)
+	setState(target, false, false)
+
+	-- A prompt the server adds (or re-adds on restock) after we registered
+	-- starts hidden; the next frame's refresh decides if it shows.
 	table.insert(
 		target.connections,
 		part.ChildAdded:Connect(function(child)
 			if child:IsA("ProximityPrompt") then
-				child.Enabled = target.hovering
+				child.Enabled = target.promptOn
+			elseif child:IsA("ClickDetector") and not target.usingClickDetector then
+				bindClickDetector(target, child)
 			end
 		end)
 	)
-
-	if not standAnchor then
-		standAnchor = part.Position
-	end
-
 	table.insert(
 		target.connections,
 		part.Destroying:Connect(function()
@@ -193,18 +234,8 @@ local function registerTarget(part: BasePart)
 	local existingDetector = part:FindFirstChildOfClass("ClickDetector")
 	if existingDetector then
 		bindClickDetector(target, existingDetector)
-	else
-		pollCandidates[part] = target
-		ensureFallbackLoop()
-		table.insert(
-			target.connections,
-			part.ChildAdded:Connect(function(child)
-				if child:IsA("ClickDetector") and not target.usingClickDetector then
-					bindClickDetector(target, child :: ClickDetector)
-				end
-			end)
-		)
 	end
+	ensureFrameLoop()
 end
 
 local function tryRegisterDescendant(instance: Instance)
@@ -214,7 +245,7 @@ local function tryRegisterDescendant(instance: Instance)
 end
 
 local function watchStand(stand: Instance)
-	stand.DescendantAdded:Connect(tryRegisterDescendant)
+	table.insert(standConnections, stand.DescendantAdded:Connect(tryRegisterDescendant))
 	for _, descendant in stand:GetDescendants() do
 		tryRegisterDescendant(descendant)
 	end
