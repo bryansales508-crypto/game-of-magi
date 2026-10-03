@@ -92,7 +92,7 @@ function DevService.GetTimeScale(): number
 	return timeScale
 end
 
--- ==================== Mortality (BUG-20) ====================
+-- ==================== Mortality ====================
 -- Runtime-adjustable override of Config.Debug.DeathRolls (Config is frozen). Off by default in
 -- Studio so dev aging can't kill a test character; AgeService reads this.
 
