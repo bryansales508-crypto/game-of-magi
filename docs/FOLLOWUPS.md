@@ -6,6 +6,7 @@ Every item has a "where and how" section in `docs/TINKER.md`.
 
 | Item | Where | Status |
 |---|---|---|
+| Particles: how the VFX work (mission sparkles, hit effects, dash lines) - Bryan wants to rework them himself (2026-10-03) | `ReplicatedFirst.VFX` in Studio; code that clones them: `Server/Services/MissionService.luau` (HighlyValuable sparkles), `Client/Controllers/EffectsController/init.luau` (hit, dash trail) - TINKER.md "Effects" | open |
 | Combat feel: the glitches Bryan found in the M3 pass; tune numbers and fix in place | `docs/TINKER.md` section "Combat": `Shared/Data/Combat.luau` for numbers, `CombatService` / `StatusService` / `MovementService` / `HealthService` on the server, `CombatController` / `EffectsController` on the client | open |
 | Animation marker names and times per style: with `Config.Combat.LogMarkers` on, one swing prints every event name and time; set `Config.Combat.Markers.Fist` / `.Dagger` to your names, then each hit's `windupAt`, `cancelUntil`, `hitWindow` in `Shared/Data/Combat.luau` to the logged times | `Shared/Config.luau`, `Shared/Data/Combat.luau` (TINKER.md "Combat") | open |
 | Stance animations: one looping idle per style | `Shared/Config.luau` -> `Config.Combat.StanceAnimations = { Fist = "", Dagger = "" }` (empty = none) | open |
