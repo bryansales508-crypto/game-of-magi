@@ -56,11 +56,24 @@ local standAnchor: Vector3? = nil
 local fallbackConnection: RBXScriptConnection? = nil
 local mouse = player:GetMouse()
 
+-- BUG-39: the server leaves every rack prompt Enabled with the default
+-- Exclusivity (OnePerButton), so with 18 prompts on E in range the engine
+-- showed only ONE (the closest, which was whichever pants part). Like the old
+-- game, only the hovered part's prompt is enabled, locally; the rest are
+-- hidden, so the hovered one always wins. Triggered still fires server-side.
+local function applyPrompt(part: BasePart, enabled: boolean)
+	local prompt = part:FindFirstChildOfClass("ProximityPrompt")
+	if prompt then
+		prompt.Enabled = enabled
+	end
+end
+
 local function setHover(target: HoverTarget, hovering: boolean)
 	if target.hovering == hovering then
 		return
 	end
 	target.hovering = hovering
+	applyPrompt(target.part, hovering)
 	target.part.Transparency = if hovering then HOVER_TRANSPARENCY else IDLE_TRANSPARENCY
 	target.highlight.Enabled = hovering
 end
@@ -156,6 +169,15 @@ local function registerTarget(part: BasePart)
 		usingClickDetector = false,
 	}
 	targets[part] = target
+	applyPrompt(part, false)
+	table.insert(
+		target.connections,
+		part.ChildAdded:Connect(function(child)
+			if child:IsA("ProximityPrompt") then
+				child.Enabled = target.hovering
+			end
+		end)
+	)
 
 	if not standAnchor then
 		standAnchor = part.Position
