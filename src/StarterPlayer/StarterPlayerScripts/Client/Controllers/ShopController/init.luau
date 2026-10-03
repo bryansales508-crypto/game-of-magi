@@ -53,6 +53,7 @@ type HoverTarget = {
 	part: BasePart,
 	highlight: Highlight,
 	connections: { RBXScriptConnection },
+	prompt: ProximityPrompt?, -- cached; kept current by ChildAdded/ChildRemoved
 	hovering: boolean, -- outline + hover transparency shown
 	promptOn: boolean,
 	detectorHover: boolean, -- set by a ClickDetector's hover events
@@ -61,15 +62,38 @@ type HoverTarget = {
 
 local targets: { [BasePart]: HoverTarget } = {}
 local frameConnection: RBXScriptConnection? = nil
+-- The stand's centre and reach, recomputed from the racks whenever one is
+-- added or removed; the per-frame pass does nothing beyond it (plus a margin).
+local STAND_MARGIN = 10 -- studs beyond the farthest rack part
+local standCenter = Vector3.zero
+local standRadius = 0
+local boundsDirty = false
+local allHidden = true
 local mouse = player:GetMouse()
 
-local function findPrompt(part: BasePart): ProximityPrompt?
-	return part:FindFirstChildOfClass("ProximityPrompt")
+local function rangeOf(target: HoverTarget): number
+	local prompt = target.prompt
+	return if prompt then prompt.MaxActivationDistance else DEFAULT_RANGE
 end
 
-local function rangeOf(target: HoverTarget): number
-	local prompt = findPrompt(target.part)
-	return if prompt then prompt.MaxActivationDistance else DEFAULT_RANGE
+local function recomputeBounds()
+	boundsDirty = false
+	local sum = Vector3.zero
+	local count = 0
+	for part in targets do
+		sum += part.Position
+		count += 1
+	end
+	if count == 0 then
+		standRadius = 0
+		return
+	end
+	standCenter = sum / count
+	local farthest = 0
+	for part, target in targets do
+		farthest = math.max(farthest, (part.Position - standCenter).Magnitude + rangeOf(target))
+	end
+	standRadius = farthest + STAND_MARGIN
 end
 
 -- BUG-39: the server leaves every rack prompt Enabled with the default
@@ -82,7 +106,7 @@ local function setState(target: HoverTarget, hovering: boolean, promptOn: boolea
 		target.part.Transparency = if hovering then HOVER_TRANSPARENCY else IDLE_TRANSPARENCY
 		target.highlight.Enabled = hovering
 	end
-	local prompt = findPrompt(target.part)
+	local prompt = target.prompt
 	target.promptOn = promptOn
 	if prompt and prompt.Enabled ~= promptOn then
 		prompt.Enabled = promptOn
@@ -95,12 +119,21 @@ local function teardownTarget(part: BasePart)
 		return
 	end
 	targets[part] = nil
+	boundsDirty = true
 	for _, connection in target.connections do
 		connection:Disconnect()
+	end
+	if next(targets) == nil and frameConnection then
+		frameConnection:Disconnect()
+		frameConnection = nil
 	end
 end
 
 local function hideAll()
+	if allHidden then
+		return
+	end
+	allHidden = true
 	for _, target in targets do
 		setState(target, false, false)
 	end
@@ -109,12 +142,21 @@ end
 local function refresh()
 	local character = player.Character
 	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not (rootPart and rootPart:IsA("BasePart")) then
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not (rootPart and rootPart:IsA("BasePart") and humanoid) or humanoid.Health <= 0 then
 		hideAll()
 		return
 	end
 
+	if boundsDirty then
+		recomputeBounds()
+	end
 	local origin = rootPart.Position
+	if (origin - standCenter).Magnitude > standRadius then
+		hideAll() -- away from the stand: one hide on leaving, then nothing per frame
+		return
+	end
+	allHidden = false
 	local mouseTarget = mouse.Target
 	local hoveredTarget: HoverTarget? = nil
 	local hoveredDistance = math.huge
@@ -202,6 +244,7 @@ local function registerTarget(part: BasePart)
 		part = part,
 		highlight = highlight,
 		connections = {},
+		prompt = part:FindFirstChildOfClass("ProximityPrompt"),
 		hovering = false,
 		promptOn = false,
 		detectorHover = false,
@@ -216,9 +259,18 @@ local function registerTarget(part: BasePart)
 		target.connections,
 		part.ChildAdded:Connect(function(child)
 			if child:IsA("ProximityPrompt") then
+				target.prompt = child
 				child.Enabled = target.promptOn
 			elseif child:IsA("ClickDetector") and not target.usingClickDetector then
 				bindClickDetector(target, child)
+			end
+		end)
+	)
+	table.insert(
+		target.connections,
+		part.ChildRemoved:Connect(function(child)
+			if child == target.prompt then
+				target.prompt = part:FindFirstChildOfClass("ProximityPrompt")
 			end
 		end)
 	)
@@ -229,6 +281,8 @@ local function registerTarget(part: BasePart)
 		end)
 	)
 
+	boundsDirty = true
+	allHidden = false
 	local existingDetector = part:FindFirstChildOfClass("ClickDetector")
 	if existingDetector then
 		bindClickDetector(target, existingDetector)

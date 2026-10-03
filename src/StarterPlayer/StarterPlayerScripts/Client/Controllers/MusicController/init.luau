@@ -385,7 +385,7 @@ function MusicController.SetVolume(volume: number)
 	end
 end
 
--- Called (deferred) whenever the track starts, changes or stops.
+-- Called (immediately, via task.spawn) whenever the track starts, changes or stops.
 function MusicController.OnChanged(callback: () -> ())
 	table.insert(changedCallbacks, callback)
 end
@@ -397,6 +397,8 @@ end
 local PANEL_FILL = Color3.fromRGB(75, 54, 36)
 local PANEL_ACCENT = Color3.fromRGB(229, 151, 62)
 local PANEL_TEXT = Color3.fromRGB(255, 224, 152)
+
+local TOUCH_STICK_CLEARANCE = 170 -- px above the bottom edge, clear of the thumbstick
 
 local function buildPanel()
 	local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
@@ -411,12 +413,30 @@ local function buildPanel()
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
 	frame.AnchorPoint = Vector2.new(0, 1)
-	frame.Position = UDim2.new(0, 12, 1, -12)
+	-- Bottom-left on desktop (Bryan). Touch devices keep the thumbstick
+	-- there, so the panel moves up above the stick area; a UIScale follows
+	-- the screen height so it stays touchable on phones.
+	local touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	frame.Position = if touch then UDim2.new(0, 12, 1, -(TOUCH_STICK_CLEARANCE + 12)) else UDim2.new(0, 12, 1, -12)
 	frame.Size = UDim2.fromOffset(210, 62)
 	frame.BackgroundColor3 = PANEL_FILL
 	frame.BackgroundTransparency = 0.15
 	frame.BorderSizePixel = 0
 	frame.Parent = gui
+
+	local scale = Instance.new("UIScale")
+	scale.Parent = frame
+	local function updateScale()
+		local height = gui.AbsoluteSize.Y
+		if height <= 0 then
+			return
+		end
+		-- 1.0 at 720 px tall and up; larger on small/high-DPI phone screens
+		-- the panel would otherwise be tiny on, never below 1.
+		scale.Scale = if touch then math.clamp(720 / height * 1.15, 1, 1.6) else 1
+	end
+	gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateScale)
+	updateScale()
 
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 6)
@@ -426,7 +446,7 @@ local function buildPanel()
 	stroke.Thickness = 1
 	stroke.Parent = frame
 
-	local boldFont = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold)
+	local boldFont = Font.fromEnum(Enum.Font.Merriweather)
 
 	local trackLabel = Instance.new("TextLabel")
 	trackLabel.Name = "Track"
