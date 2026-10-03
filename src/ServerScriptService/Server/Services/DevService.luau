@@ -226,6 +226,7 @@ local function helpText(): string
 	for _, name in names do
 		table.insert(lines, string.format(".%s - %s", name, (Commands[name] :: CommandSpec).help))
 	end
+	table.insert(lines, "Run on your own client (forwarded from chat): .region, .music, .lights")
 	return table.concat(lines, "\n")
 end
 
@@ -625,6 +626,12 @@ end)
 
 -- ==================== Dispatch ====================
 
+-- Fires DevLocalCommand at the caller. A field so SelfTestService can swap
+-- it (same stub trick as IsDev) without a real client.
+function DevService.ForwardLocal(player: Player, text: string)
+	Remotes.Server.Fire("DevLocalCommand", player, text)
+end
+
 -- The parse-and-run core, split out from Run so SelfTestService can call it
 -- directly and check the reply text without a real remote or client on the
 -- other end. Returns nil for "nothing to reply to": not a command line at
@@ -646,7 +653,10 @@ function DevService.Dispatch(player: Player, line: string): string?
 
 	local spec = Commands[commandName]
 	if spec == nil then
-		return string.format("Unknown command: .%s\n%s", commandName, helpText())
+		-- BUG-47: not a server command, so hand it to the dev's own client
+		-- (permission was checked above). The client replies for itself.
+		DevService.ForwardLocal(player, string.sub(table.concat(tokens, " "), 2))
+		return nil
 	end
 
 	local ok, result = pcall(spec.run, player, args)
