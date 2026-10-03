@@ -543,21 +543,73 @@ local function findSpawnPart(cityArg: string): (BasePart?, string?)
 	return nil, string.format("no spawn matching %q", cityArg)
 end
 
-register("tp", "<city> - teleport your character to a spawn", function(caller, args)
+-- Bryan (2026-10-03): `.tp saleh` must work for every city, built or not. A
+-- city with no `Workspace.MAP.Spawns.<City>Spawn` part falls back to, in
+-- order: its delivery part (`Workspace.MAP.MISSION.<City>Delivery`, or the
+-- BUG-59 placeholder under `Workspace.MissionPlaceholders`), then its
+-- `<City>REGION` part under `Workspace.Regions` (dropped to the ground below
+-- its centre). Matching is case-insensitive on the city key.
+local function findCityFallback(cityArg: string): (CFrame?, string?)
+	local needle = cityArg:lower()
+
+	local function matchesCity(name: string, suffix: string): boolean
+		local lower = name:lower()
+		return lower == needle .. suffix:lower()
+	end
+
+	local map = Workspace:FindFirstChild("MAP")
+	local mission = map and map:FindFirstChild("MISSION")
+	local placeholders = Workspace:FindFirstChild("MissionPlaceholders")
+	for _, folder in { mission, placeholders } do
+		if folder then
+			for _, child in folder:GetChildren() do
+				if child:IsA("BasePart") and (matchesCity(child.Name, "Delivery") or matchesCity(child.Name, "Delivery_PLACEHOLDER")) then
+					return child.CFrame + Vector3.new(0, child.Size.Y / 2 + PlayerService.SPAWN_RAISE_STUDS, 0), child.Name
+				end
+			end
+		end
+	end
+
+	local regions = Workspace:FindFirstChild("Regions")
+	if regions then
+		for _, part in regions:GetDescendants() do
+			if part:IsA("BasePart") and matchesCity(part.Name, "REGION") then
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				params.FilterDescendantsInstances = { part }
+				local top = part.Position + Vector3.new(0, part.Size.Y / 2, 0)
+				local hit = Workspace:Raycast(top, Vector3.new(0, -(part.Size.Y + 1000), 0), params)
+				local position = if hit then hit.Position + Vector3.new(0, PlayerService.SPAWN_RAISE_STUDS, 0) else part.Position
+				return CFrame.new(position), part.Name
+			end
+		end
+	end
+
+	return nil, nil
+end
+
+register("tp", "<city> - teleport your character to a spawn (or the city's drop-off / region when it has none)", function(caller, args)
 	local cityArg = args[1]
 	if cityArg == nil then
 		return "usage: .tp <city>"
-	end
-	local spawnPart, err = findSpawnPart(cityArg)
-	if spawnPart == nil then
-		return err or "spawn not found"
 	end
 	local character = caller.Character
 	if character == nil then
 		return string.format("%s has no character to teleport", caller.Name)
 	end
-	character:PivotTo(spawnPart.CFrame + Vector3.new(0, spawnPart.Size.Y / 2 + PlayerService.SPAWN_RAISE_STUDS, 0))
-	return string.format("Teleported %s to %s", caller.Name, spawnPart.Name)
+
+	local spawnPart, err = findSpawnPart(cityArg)
+	if spawnPart then
+		character:PivotTo(spawnPart.CFrame + Vector3.new(0, spawnPart.Size.Y / 2 + PlayerService.SPAWN_RAISE_STUDS, 0))
+		return string.format("Teleported %s to %s", caller.Name, spawnPart.Name)
+	end
+
+	local fallbackCFrame, fallbackName = findCityFallback(cityArg)
+	if fallbackCFrame and fallbackName then
+		character:PivotTo(fallbackCFrame)
+		return string.format("Teleported %s to %s (no spawn part yet)", caller.Name, fallbackName)
+	end
+	return err or "spawn not found"
 end)
 
 register("cities", "lists known spawn points", function(_caller, _args)

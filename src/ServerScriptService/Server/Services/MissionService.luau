@@ -335,7 +335,7 @@ type Board = {
 	destinations: { [string]: BoardDestination },
 }
 
-type ValuablePulsePhase = "FadeIn" | "Hold" | "FadeOut" | "Off"
+type ValuablePulsePhase = "FadeIn" | "Hold"
 
 type Run = {
 	player: Player,
@@ -792,8 +792,6 @@ end
 -- machine instead (see tickOnce below) - never a per-frame/per-pack loop.
 local VALUABLE_HIGHLIGHT_COLOR = Color3.fromRGB(239, 187, 65)
 local VALUABLE_FADE_SECONDS = 1
-local VALUABLE_HOLD_SECONDS = 6
-local VALUABLE_OFF_SECONDS = 20
 
 -- Returns the gold Highlight (parented to the package, never the character),
 -- or nil if the art is missing; the caller stores it for the pulse machine.
@@ -858,20 +856,12 @@ local function tickValuablePulse(run: Run, now: number)
 		return
 	end
 
+	-- Bryan (2026-10-03, after BUG-55): the package glow is PERMANENT for the
+	-- whole run - it fades in once and then holds; nothing pulses but the
+	-- courier's own ordinary beacon. The old FadeOut/Off cycle is gone.
 	if run.valuablePhase == "FadeIn" then
 		run.valuablePhase = "Hold"
-		run.valuablePhaseEndsAt = now + VALUABLE_HOLD_SECONDS
-	elseif run.valuablePhase == "Hold" then
-		run.valuablePhase = "FadeOut"
-		run.valuablePhaseEndsAt = now + VALUABLE_FADE_SECONDS
-		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 1, OutlineTransparency = 1 }):Play()
-	elseif run.valuablePhase == "FadeOut" then
-		run.valuablePhase = "Off"
-		run.valuablePhaseEndsAt = now + VALUABLE_OFF_SECONDS
-	elseif run.valuablePhase == "Off" then
-		run.valuablePhase = "FadeIn"
-		run.valuablePhaseEndsAt = now + VALUABLE_FADE_SECONDS
-		TweenService:Create(hl, TweenInfo.new(VALUABLE_FADE_SECONDS), { FillTransparency = 0.75, OutlineTransparency = 0 }):Play()
+		run.valuablePhaseEndsAt = nil
 	end
 end
 
