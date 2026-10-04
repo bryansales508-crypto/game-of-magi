@@ -25,6 +25,10 @@ local log = Log.new("CarryService")
 type Carry = {
 	carrier: Player,
 	target: Player,
+	-- The models the carry was made with. Drop acts on these, never on Player.Character, which may
+	-- already be a replacement (a LoadCharacter) by the time a drop runs.
+	carrierCharacter: Model,
+	targetCharacter: Model,
 	weld: WeldConstraint,
 	-- CanCollide each target part had before the carry turned it off.
 	collide: { [BasePart]: boolean },
@@ -157,8 +161,8 @@ function CarryService.Drop(carrier: Player, reason: string, placeAt: CFrame?): b
 	end
 	carry.weld:Destroy()
 
-	local carrierCharacter = carrier.Character
-	local targetCharacter = carry.target.Character
+	local carrierCharacter = carry.carrierCharacter
+	local targetCharacter = carry.targetCharacter
 	local targetRoot = rootOf(targetCharacter)
 
 	for part, canCollide in carry.collide do
@@ -167,33 +171,33 @@ function CarryService.Drop(carrier: Player, reason: string, placeAt: CFrame?): b
 		end
 	end
 
-	if targetCharacter and targetRoot then
-		local carrierRoot = rootOf(carrierCharacter)
+	-- Only a body that is still the player's current one is moved or given grace.
+	local targetCurrent = carry.target.Character == targetCharacter and targetCharacter.Parent ~= nil
+	local carrierCurrent = carrier.Character == carrierCharacter and carrierCharacter.Parent ~= nil
+
+	if targetCurrent and targetRoot then
+		local carrierRoot = if carrierCurrent then rootOf(carrierCharacter) else nil
 		if placeAt then
 			targetCharacter:PivotTo(placeAt)
 		elseif carrierRoot then
 			local front = carrierRoot.Position + carrierRoot.CFrame.LookVector * Config.Bounty.Carry.DropDistance
 			targetCharacter:PivotTo(CFrame.new(front) * carrierRoot.CFrame.Rotation)
 		end
-		-- The body is the target's own again.
-		if typeof(carry.target) == "Instance" and not targetRoot.Anchored then
-			pcall(function()
-				targetRoot:SetNetworkOwner(carry.target)
-			end)
-		end
+	end
+	-- The body is the target's own again.
+	if targetRoot and typeof(carry.target) == "Instance" and not targetRoot.Anchored then
+		pcall(function()
+			targetRoot:SetNetworkOwner(carry.target)
+		end)
 	end
 
-	if carrierCharacter then
-		StatusService.Remove(carrierCharacter, "Carrying")
-		MovementService.ClearModifier(carrierCharacter, "Carrying")
-	end
-	if targetCharacter then
-		StatusService.Remove(targetCharacter, "Carried")
-		-- A drop is not a free escape: they stay down a little longer.
-		local knocked = StatusService.Get(targetCharacter, "Knocked")
-		if knocked and isAlive(targetCharacter) then
-			StatusService.Apply(targetCharacter, "Knocked", Config.Bounty.Carry.GraceSeconds, knocked.data)
-		end
+	StatusService.Remove(carrierCharacter, "Carrying")
+	MovementService.ClearModifier(carrierCharacter, "Carrying")
+	StatusService.Remove(targetCharacter, "Carried")
+	-- A drop is not a free escape: they stay down a little longer.
+	local knocked = StatusService.Get(targetCharacter, "Knocked")
+	if targetCurrent and knocked and isAlive(targetCharacter) then
+		StatusService.Apply(targetCharacter, "Knocked", Config.Bounty.Carry.GraceSeconds, knocked.data)
 	end
 
 	send(carrier, { carrying = nil, carriedBy = nil, canDeliver = false, dropoffPath = nil })
@@ -251,17 +255,20 @@ function CarryService.PickUp(carrier: Player, target: Player): (boolean, string?
 		end)
 	end
 
-	local carry: Carry = { carrier = carrier, target = target, weld = weld, collide = collide, connections = {}, canDeliver = false }
+	local carry: Carry = { carrier = carrier, target = target, carrierCharacter = carrierCharacter, targetCharacter = targetCharacter, weld = weld, collide = collide, connections = {}, canDeliver = false }
 	byCarrier[carrier] = carry
 	byTarget[target] = carry
 
 	StatusService.Apply(carrierCharacter, "Carrying", nil, { targetUserId = target.UserId })
 	StatusService.Apply(targetCharacter, "Carried", nil, { carrierUserId = carrier.UserId })
+	-- The knockout cannot run out while carried, even one grabbed in its last moments.
+	local knockedInfo = StatusService.Get(targetCharacter, "Knocked")
+	StatusService.Apply(targetCharacter, "Knocked", Combat.Knockout.getUpSeconds, if knockedInfo then knockedInfo.data else nil)
 	MovementService.SetRunning(carrierCharacter, false)
 	MovementService.SetModifier(carrierCharacter, "Carrying", rules.SpeedMult)
 
-	local function endCarry(reason: string)
-		task.defer(CarryService.Drop, carrier, reason, nil)
+	local function endCarry(why: string)
+		task.defer(CarryService.Drop, carrier, why, nil)
 	end
 	for _, character in { carrierCharacter, targetCharacter } do
 		table.insert(

@@ -42,7 +42,7 @@ export type JailSite = {
 }
 
 local PLACEHOLDER_FOLDER_NAME = "MissionPlaceholders"
-local SITE_CACHE_SECONDS = 10
+local SITE_RESCAN_SECONDS = 10
 local SPAWN_RAISE = 3
 local PLACEHOLDER_CITY = "Qarzin"
 
@@ -135,7 +135,7 @@ end
 
 -- Pure: the sentence on the save (os.time() end, 0 = free).
 function JailService.ApplyImprison(data: SaveSchema.Data, seconds: number, now: number)
-	data.Progress.JailUntil = now + math.floor(seconds)
+	data.Progress.JailUntil = now + math.floor(JailData.SafeSeconds(seconds))
 end
 
 -- Pure: frees the save. Returns whether it was serving.
@@ -167,25 +167,43 @@ local function partsUnder(folder: Instance): { BasePart }
 	return parts
 end
 
--- Bryan's jail under `root`: the first descendant named JailFolderName that has a DropoffName part
--- and a CellFolderName folder holding a SpawnName part. Parts are found by name only where the
--- name is unique (the cell's walls are all one name, so they are never looked up).
-function JailService.FindJail(root: Instance): JailSite?
+-- Bryan's jail folder under `root`: the first descendant named JailFolderName with a DropoffName
+-- part, a CellFolderName folder, and a SpawnName part inside that folder or directly under the
+-- jail folder. Scans `root`, so callers cache the result.
+function JailService.FindJailFolder(root: Instance): Instance?
 	local names = Config.Bounty.Jail
 	for _, instance in root:GetDescendants() do
 		if instance.Name == names.JailFolderName and not instance:IsA("BasePart") then
-			local dropoff = partNamed(instance, names.DropoffName)
 			local cell = instance:FindFirstChild(names.CellFolderName)
-			local spawn = if cell then partNamed(cell, names.SpawnName) else nil
-			if dropoff and cell and spawn then
-				local bounds = JailService.BoundsOf(partsUnder(cell), names.BoundsMargin)
-				if bounds then
-					return { city = PLACEHOLDER_CITY, dropoff = dropoff, spawn = spawn, bounds = bounds }
-				end
+			local spawn = (if cell then partNamed(cell, names.SpawnName) else nil) or partNamed(instance, names.SpawnName)
+			if partNamed(instance, names.DropoffName) and cell and spawn then
+				return instance
 			end
 		end
 	end
 	return nil
+end
+
+-- Measures a jail folder found by FindJailFolder. Parts are found by name only where the name is
+-- unique (the cell's walls are all one name, so they are never looked up).
+function JailService.SiteFromFolder(folder: Instance): JailSite?
+	local names = Config.Bounty.Jail
+	local dropoff = partNamed(folder, names.DropoffName)
+	local cell = folder:FindFirstChild(names.CellFolderName)
+	local spawn = (if cell then partNamed(cell, names.SpawnName) else nil) or partNamed(folder, names.SpawnName)
+	if dropoff == nil or cell == nil or spawn == nil then
+		return nil
+	end
+	local bounds = JailService.BoundsOf(partsUnder(cell), names.BoundsMargin)
+	if bounds == nil then
+		return nil
+	end
+	return { city = PLACEHOLDER_CITY, dropoff = dropoff, spawn = spawn, bounds = bounds }
+end
+
+function JailService.FindJail(root: Instance): JailSite?
+	local folder = JailService.FindJailFolder(root)
+	return if folder then JailService.SiteFromFolder(folder) else nil
 end
 
 local placeholders: { [string]: JailSite? } = {}
@@ -246,51 +264,85 @@ local function makePlaceholder(cityKey: string): JailSite?
 	return site
 end
 
-local cachedSites: { JailSite } = {}
-local cachedAt = -math.huge
-
 local function siteValid(site: JailSite): boolean
 	return site.spawn:IsDescendantOf(Workspace) and site.dropoff:IsDescendantOf(Workspace)
 end
 
--- The jail(s): Bryan's, else a placeholder for each hasJail city. Cached for SITE_CACHE_SECONDS
--- (so a changed cell folder is re-measured soon); a site whose parts were destroyed is rebuilt.
+-- The resolved Bryan jail folder and its measured site, kept until the folder leaves the
+-- workspace or something under it changes (then only the measuring repeats, not the Workspace
+-- scan). With no folder, Workspace is rescanned at most every SITE_RESCAN_SECONDS.
+local jailFolder: Instance? = nil
+local jailSite: JailSite? = nil
+local jailDirty = false
+local jailConnections: { RBXScriptConnection } = {}
+local lastScanAt = -math.huge
+
+local function forgetJail()
+	for _, connection in jailConnections do
+		connection:Disconnect()
+	end
+	table.clear(jailConnections)
+	jailFolder = nil
+	jailSite = nil
+	jailDirty = false
+	lastScanAt = -math.huge
+end
+
+local function adoptJail(folder: Instance)
+	forgetJail()
+	jailFolder = folder
+	jailDirty = true
+	table.insert(jailConnections, folder.AncestryChanged:Connect(forgetJail))
+	table.insert(jailConnections, folder.DescendantAdded:Connect(function()
+		jailDirty = true
+	end))
+	table.insert(jailConnections, folder.DescendantRemoving:Connect(function()
+		jailDirty = true
+	end))
+end
+
+local function realSite(): JailSite?
+	if jailFolder and not jailFolder:IsDescendantOf(Workspace) then
+		forgetJail()
+	end
+	if jailFolder == nil then
+		local now = os.clock()
+		if now - lastScanAt < SITE_RESCAN_SECONDS then
+			return nil
+		end
+		lastScanAt = now
+		local found = JailService.FindJailFolder(Workspace)
+		if found == nil then
+			return nil
+		end
+		adoptJail(found)
+	end
+	if jailDirty and jailFolder then
+		jailDirty = false
+		jailSite = JailService.SiteFromFolder(jailFolder)
+	end
+	return jailSite
+end
+
+-- The jail(s): Bryan's, else a placeholder for each hasJail city.
 function JailService.Sites(): { JailSite }
-	local now = os.clock()
-	if now - cachedAt < SITE_CACHE_SECONDS then
-		local valid = true
-		for _, site in cachedSites do
-			if not siteValid(site) then
-				valid = false
-				break
-			end
-		end
-		if valid then
-			return cachedSites
-		end
-	end
-
-	local sites: { JailSite } = {}
-	local real = JailService.FindJail(Workspace)
+	local real = realSite()
 	if real then
-		table.insert(sites, real)
-	else
-		for _, city in Cities.List do
-			if city.hasJail then
-				local site = placeholders[city.key]
-				if site == nil or not siteValid(site) then
-					site = makePlaceholder(city.key)
-					placeholders[city.key] = site
-				end
-				if site then
-					table.insert(sites, site)
-				end
+		return { real }
+	end
+	local sites: { JailSite } = {}
+	for _, city in Cities.List do
+		if city.hasJail then
+			local site = placeholders[city.key]
+			if site == nil or not siteValid(site) then
+				site = makePlaceholder(city.key)
+				placeholders[city.key] = site
+			end
+			if site then
+				table.insert(sites, site)
 			end
 		end
 	end
-
-	cachedSites = sites
-	cachedAt = now
 	return sites
 end
 
@@ -301,6 +353,24 @@ end
 
 local function cellCFrame(site: JailSite): CFrame
 	return site.spawn.CFrame + Vector3.new(0, site.spawn.Size.Y / 2 + SPAWN_RAISE, 0)
+end
+
+-- Puts a prisoner back at the cell spawn if they are outside its bounds. Returns whether it did.
+function JailService.EnforceCell(character: Model, site: JailSite): boolean
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if root == nil or not root:IsA("BasePart") or JailService.Contains(site.bounds, root.Position) then
+		return false
+	end
+	character:PivotTo(cellCFrame(site))
+	return true
+end
+
+-- Pure: the cell spawn a player appears at, or nil when not serving at `now`.
+function JailService.SpawnCFrameFor(jailUntil: number, now: number, site: JailSite?): CFrame?
+	if site == nil or not JailData.IsServing(jailUntil, now) then
+		return nil
+	end
+	return cellCFrame(site)
 end
 
 -- ==================== state ====================
@@ -315,7 +385,8 @@ end
 -- humanoid's own values are put back on release. A new character (respawn) records its own.
 local savedJump: { [Humanoid]: { power: number, height: number } } = setmetatable({}, { __mode = "k" }) :: any
 
-local function lockJump(character: Model)
+-- Stops a prisoner jumping, remembering the humanoid's own values.
+function JailService.LockJump(character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid == nil then
 		return
@@ -327,7 +398,8 @@ local function lockJump(character: Model)
 	humanoid.JumpHeight = 0
 end
 
-local function unlockJump(character: Model)
+-- Puts the humanoid's own jump values back.
+function JailService.UnlockJump(character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local saved = if humanoid then savedJump[humanoid] else nil
 	if humanoid and saved then
@@ -352,7 +424,7 @@ local function enterCell(player: Player, site: JailSite)
 	local character = player.Character
 	if character then
 		StatusService.Apply(character, "Jailed")
-		lockJump(character)
+		JailService.LockJump(character)
 		character:PivotTo(cellCFrame(site))
 	end
 end
@@ -383,7 +455,7 @@ function JailService.Release(player: Player, reason: string): boolean
 	local character = player.Character
 	if character then
 		StatusService.Remove(character, "Jailed")
-		unlockJump(character)
+		JailService.UnlockJump(character)
 		local spawn = PlayerService.GetSpawnCFrame()
 		if spawn then
 			character:PivotTo(spawn)
@@ -394,17 +466,18 @@ function JailService.Release(player: Player, reason: string): boolean
 	return true
 end
 
--- Whether `hunter` could hand `target` over right now, and where the dropoff is: the target is
--- the person their bounty is on (their Wanted) and a jail exists. Feeds CarryState.
-local function deliveryInfo(hunter: Player, target: Player): (boolean, string?)
-	local sites = JailService.Sites()
-	local site = sites[1]
+-- Pure: whether a hunter whose bounty is on `hunterWanted` could hand `targetUserId` over, and the
+-- dropoff's full name (given whenever a jail exists). Feeds CarryState.
+function JailService.DeliveryInfo(hunterWanted: number?, targetUserId: number, site: JailSite?): (boolean, string?)
 	if site == nil then
 		return false, nil
 	end
+	return JailService.IsHunted(hunterWanted, targetUserId), site.dropoff:GetFullName()
+end
+
+local function deliveryInfo(hunter: Player, target: Player): (boolean, string?)
 	local hunterData = DataService.Get(hunter)
-	local hunted = hunterData ~= nil and JailService.IsHunted(hunterData.Progress.Wanted, target.UserId)
-	return hunted, site.dropoff:GetFullName()
+	return JailService.DeliveryInfo(if hunterData then hunterData.Progress.Wanted else nil, target.UserId, JailService.Sites()[1])
 end
 
 -- A hunter hands over the player they carry.
@@ -477,10 +550,8 @@ local function checkPlayer(player: Player)
 	if not StatusService.Has(character, "Jailed") then
 		StatusService.Apply(character, "Jailed")
 	end
-	lockJump(character)
-	if not JailService.Contains(site.bounds, root.Position) then
-		character:PivotTo(cellCFrame(site))
-	end
+	JailService.LockJump(character)
+	JailService.EnforceCell(character, site)
 end
 
 local function devJail(caller: Player, args: { string }): string
@@ -492,9 +563,10 @@ local function devJail(caller: Player, args: { string }): string
 		return if JailService.Release(target, "You were released.") then string.format("%s released", target.Name) else string.format("%s is not jailed", target.Name)
 	end
 	local seconds = tonumber(args[1])
-	if seconds == nil then
-		return "usage: .jail <seconds> [player] | release [player]"
+	if seconds == nil or seconds ~= seconds or seconds < 0 or seconds == math.huge then
+		return "usage: .jail <seconds> [player] | release [player] (seconds is a finite number, 0 or more)"
 	end
+	seconds = math.min(seconds, Config.Bounty.Jail.MaxSeconds)
 	return if JailService.Imprison(target, seconds, nil) then string.format("%s jailed for %d s", target.Name, seconds) else "no save or no jail"
 end
 
@@ -503,11 +575,11 @@ function JailService:Init()
 	DevService.Register("jail", "<seconds> [player] | release [player] - jail a player", devJail)
 	-- A jailed player's respawn, and a rejoin mid-sentence, appear in the cell.
 	PlayerService.SetSpawnOverride(function(player: Player): CFrame?
-		if not JailService.IsJailed(player) then
+		local data = DataService.Get(player)
+		if data == nil or not JailData.IsServing(data.Progress.JailUntil, os.time()) then
 			return nil
 		end
-		local site = defaultSite()
-		return if site then cellCFrame(site) else nil
+		return JailService.SpawnCFrameFor(data.Progress.JailUntil, os.time(), defaultSite())
 	end)
 end
 
@@ -534,7 +606,7 @@ function JailService:Start()
 		local character = player.Character
 		if character then
 			StatusService.Remove(character, "Jailed")
-			unlockJump(character)
+			JailService.UnlockJump(character)
 		end
 	end)
 

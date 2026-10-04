@@ -3568,6 +3568,42 @@ local function testCarryAndJail(results: { Check })
 		return not CarryService.IsCarrying(carrier)
 	end))
 
+	-- A target grabbed in the last moments of their knockout cannot stand up on the shoulder.
+	do
+		local nearBody = body("SelfTestNearlyUp", Vector3.new(8100, 5, 3))
+		local nearCarrierBody = body("SelfTestNearCarrier", Vector3.new(8100, 5, 0))
+		local nearTarget = standIn("SelfTestNearlyUp", 9010, nearBody)
+		local nearCarrier = standIn("SelfTestNearCarrier", 9011, nearCarrierBody)
+		StatusService.Apply(nearBody, "Knocked", 0.2)
+		expect(results, "Carry: a nearly expired knockout can still be picked up", (CarryService.PickUp(nearCarrier, nearTarget)))
+		task.wait(0.4)
+		expect(results, "Carry: a target grabbed late stays Knocked with no refresh tick", StatusService.Has(nearBody, "Knocked"))
+		CarryService.Drop(nearCarrier, "test", nil)
+		StatusService.Unregister(nearBody)
+		StatusService.Unregister(nearCarrierBody)
+	end
+
+	-- A character replaced mid-carry (LoadCharacter) is never touched by the drop.
+	do
+		local oldBody = body("SelfTestSwapOld", Vector3.new(8200, 5, 3))
+		local swapCarrierBody = body("SelfTestSwapCarrier", Vector3.new(8200, 5, 0))
+		local swapTarget = standIn("SelfTestSwap", 9020, oldBody)
+		local swapCarrier = standIn("SelfTestSwapCarrier", 9021, swapCarrierBody)
+		StatusService.Apply(oldBody, "Knocked", 30)
+		CarryService.PickUp(swapCarrier, swapTarget)
+		local oldRoot = oldBody:FindFirstChild("HumanoidRootPart") :: Part
+		local newBody = body("SelfTestSwapNew", Vector3.new(8300, 5, 3))
+		local newStart = newBody:GetPivot().Position
+		swapTarget.Character = newBody
+		CarryService.Drop(swapCarrier, "swap", nil)
+		expect(results, "Carry: a replaced character is not moved by the drop", (newBody:GetPivot().Position - newStart).Magnitude < 0.01)
+		expect(results, "Carry: the old body is unwelded and its status cleared", oldRoot:FindFirstChild("CarryWeld") == nil and not StatusService.Has(oldBody, "Carried"))
+		expect(results, "Carry: the carrier's own state is cleaned on its model", not StatusService.Has(swapCarrierBody, "Carrying") and not CarryService.IsCarrying(swapCarrier))
+		StatusService.Unregister(oldBody)
+		StatusService.Unregister(newBody)
+		StatusService.Unregister(swapCarrierBody)
+	end
+
 	-- Jail rules.
 	do
 		expect(results, "Jail: delivery needs a carried player", not (JailService.CheckDeliver(false, true, true, true)))
@@ -3591,6 +3627,11 @@ local function testCarryAndJail(results: { Check })
 		expect(results, "Jail: imprisoning sets JailUntil from now", data.Progress.JailUntil == 1090 and JailData.IsServing(data.Progress.JailUntil, 1000))
 		expect(results, "Jail: a rejoin mid-sentence is still serving (spawns in the cell)", JailData.IsServing(data.Progress.JailUntil, 1050) and JailData.RemainingSeconds(data.Progress.JailUntil, 1050) == 40)
 		expect(results, "Jail: a finished sentence is not serving", not JailData.IsServing(data.Progress.JailUntil, 1090))
+		expect(results, "Jail: a non-finite or negative dev sentence becomes 0", JailData.SafeSeconds(math.huge) == 0 and JailData.SafeSeconds(0 / 0) == 0 and JailData.SafeSeconds(-5) == 0)
+		expect(results, "Jail: a huge dev sentence is clamped to the maximum", JailData.SafeSeconds(1e9) == Config.Bounty.Jail.MaxSeconds)
+		local guarded = fakeMissionData()
+		JailService.ApplyImprison(guarded, math.huge, 1000)
+		expect(results, "Jail: imprisoning with infinity cannot store infinity", guarded.Progress.JailUntil == 1000)
 		expect(results, "Jail: release clears JailUntil once", JailService.ApplyRelease(data) and data.Progress.JailUntil == 0 and not JailService.ApplyRelease(data))
 	end
 
@@ -3634,10 +3675,80 @@ local function testCarryAndJail(results: { Check })
 			expect(results, "Jail: a point far outside is out of bounds", not JailService.Contains(site.bounds, Vector3.new(9000, 197, 0)) and not JailService.Contains(site.bounds, Vector3.new(9200, 225, 0)))
 			expect(results, "Jail: standing on the dropoff is within reach", JailService.SiteNear(Vector3.new(9010, 200, 8), { site }) == site)
 			expect(results, "Jail: far from the dropoff is not", JailService.SiteNear(Vector3.new(9100, 200, 0), { site }) == nil)
+
+			local spawnAt = JailService.SpawnCFrameFor(2000, 1000, site)
+			expect(results, "Jail: a serving player spawns in the cell", spawnAt ~= nil and JailService.Contains(site.bounds, spawnAt.Position))
+			expect(results, "Jail: a free player keeps the normal spawn", JailService.SpawnCFrameFor(0, 1000, site) == nil and JailService.SpawnCFrameFor(1000, 1000, site) == nil)
+
+			local stray = body("SelfTestStray", Vector3.new(9500, 205, 0))
+			expect(results, "Jail: a prisoner outside the cell is put back", JailService.EnforceCell(stray, site) and JailService.Contains(site.bounds, stray:GetPivot().Position))
+			expect(results, "Jail: a prisoner inside the cell is left alone", not JailService.EnforceCell(stray, site))
+			StatusService.Unregister(stray)
+
+			local can, path = JailService.DeliveryInfo(55, 55, site)
+			expect(results, "Jail: delivery is open for the person the bounty is on", can and path == dropoff:GetFullName())
+			local wrong = JailService.DeliveryInfo(55, 56, site)
+			expect(results, "Jail: delivery is closed for anyone else", not wrong)
+			local noJail, noPath = JailService.DeliveryInfo(55, 55, nil)
+			expect(results, "Jail: no jail means no delivery and no path", not noJail and noPath == nil)
 		end
+		-- JailSpawn directly under the Jail folder is also accepted.
+		local spawnTwin = spawn:Clone()
+		spawn.Parent = nil
+		spawnTwin.Parent = jail
+		local twinSite = JailService.FindJail(scratch)
+		expect(results, "Jail: a JailSpawn directly under the Jail folder is found", twinSite ~= nil and twinSite.spawn == spawnTwin)
+		spawnTwin:Destroy()
+		spawn:Destroy()
 		jail:Destroy()
 		decoy:Destroy()
 		expect(results, "Jail: no jail folder means no real site", JailService.FindJail(scratch) == nil)
+	end
+
+	-- A prisoner's jump is locked and restored.
+	do
+		local jumper = Instance.new("Model")
+		local humanoid = Instance.new("Humanoid")
+		humanoid.JumpPower = 50
+		humanoid.JumpHeight = 7.2
+		humanoid.Parent = jumper
+		jumper.Parent = scratch
+		JailService.LockJump(jumper)
+		expect(results, "Jail: a prisoner cannot jump", humanoid.JumpPower == 0 and humanoid.JumpHeight == 0)
+		JailService.LockJump(jumper)
+		JailService.UnlockJump(jumper)
+		expect(results, "Jail: release restores the humanoid's own jump values", humanoid.JumpPower == 50 and humanoid.JumpHeight == 7.2)
+	end
+
+	-- A hunter's death drops the poster through the real Died path; the Tool goes with it.
+	do
+		local backpack = Instance.new("Folder")
+		backpack.Parent = scratch
+		local hunterCharacter = Instance.new("Model")
+		local hunterHumanoid = Instance.new("Humanoid")
+		hunterHumanoid.Parent = hunterCharacter
+		hunterCharacter.Parent = scratch
+		local hunter = standIn("SelfTestHunter", 9030, hunterCharacter)
+		local tool = BountyService.IssueTool(9031, "Quarry", 30, backpack)
+		BountyService.StartHunt(hunter, tool, 9031, Vector3.new(0, 0, 0), hunterHumanoid, function(parent: Instance): boolean
+			return parent == backpack
+		end)
+		expect(results, "Bounty: a started hunt is held", BountyService.IsHunting(hunter))
+		hunterHumanoid.Health = 0
+		expect(results, "Bounty: a hunter's death drops the poster and its Tool", pollUntil(1, function()
+			return not BountyService.IsHunting(hunter) and tool.Parent == nil
+		end))
+
+		local second = standIn("SelfTestHunter2", 9032, hunterCharacter)
+		local keptHumanoid = Instance.new("Humanoid")
+		local keptTool = BountyService.IssueTool(9033, "Quarry2", 30, backpack)
+		BountyService.StartHunt(second, keptTool, 9033, Vector3.new(0, 0, 0), keptHumanoid, function(parent: Instance): boolean
+			return parent == backpack
+		end)
+		keptHumanoid.Health = 1
+		task.wait(0.1)
+		expect(results, "Bounty: a knockout (health 1, no death) keeps the poster", BountyService.IsHunting(second))
+		BountyService.Drop(second, "test")
 	end
 
 	StatusService.Unregister(carrierBody)

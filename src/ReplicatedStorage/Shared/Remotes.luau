@@ -199,7 +199,7 @@ Remotes.Definitions = {
 		args = { Validate.boolean() },
 		rate = { count = 4, per = 1 },
 	},
-	-- Carrying a knocked-out player. CarryPickUp names the target by UserId (the server checks knocked, reach, both parties' states); CarryDrop puts them down; JailDeliver hands the carried player to a jail when standing at a JailDrop. CarryState is server -> client only, sent to both parties: `{ carrying = { userId, name }?, carriedBy = { userId, name }? }` (both nil = a carry just ended). Refusals are silent except for JailDeliver, whose reason arrives as a DevReply chat line.
+	-- Carrying a knocked-out player. CarryPickUp names the target by UserId (the server checks knocked, reach, both parties' states); CarryDrop puts them down; JailDeliver hands the carried player to the jail when standing at the dropoff. CarryState is server -> client only, sent to both parties: `{ carrying = { userId, name }?, carriedBy = { userId, name }?, canDeliver = boolean, dropoffPath = string? }` (both nil = a carry just ended; canDeliver/dropoffPath are for the carrier). Refusals are silent except for JailDeliver, whose reason arrives as a BountyNotice.
 	CarryPickUp = {
 		kind = "Event",
 		args = { Validate.number({ min = 1, integer = true }) },

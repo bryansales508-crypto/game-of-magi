@@ -170,7 +170,15 @@ local function onCharacterAdded(player: Player, character: Model)
 	end
 
 	-- Needs the save, so it runs after the default placement above.
-	local override = if spawnOverride then spawnOverride(player) else nil
+	local override: CFrame? = nil
+	if spawnOverride then
+		local okOverride, result = pcall(spawnOverride, player)
+		if okOverride then
+			override = result
+		else
+			log:Warn(string.format("Spawn override failed for %s: %s", player.Name, tostring(result)))
+		end
+	end
 	if override and hrp then
 		character:PivotTo(override)
 	end

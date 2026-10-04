@@ -13,6 +13,14 @@ function Jail.SentenceSeconds(bounty: number): number
 	return math.clamp(math.floor(bounty * rules.SecondsPerBountyPoint), rules.MinSeconds, rules.MaxSeconds)
 end
 
+-- A sentence length safe to store: non-finite becomes 0, otherwise clamped to 0..MaxSeconds. Guards dev input; a real sentence comes from SentenceSeconds.
+function Jail.SafeSeconds(seconds: number): number
+	if seconds ~= seconds or seconds == math.huge or seconds == -math.huge then
+		return 0
+	end
+	return math.clamp(seconds, 0, Config.Bounty.Jail.MaxSeconds)
+end
+
 -- Whether a sentence ending at `jailUntil` (os.time(), 0 = free) is still running at `now`.
 function Jail.IsServing(jailUntil: number, now: number): boolean
 	return jailUntil > now

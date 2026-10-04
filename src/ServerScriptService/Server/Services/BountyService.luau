@@ -575,7 +575,15 @@ local function targetState(target: Player?, hunt: Hunt): { [string]: any }
 	}
 end
 
+-- Self-tests use stand-in tables for players; only a real Player has attributes and a client.
+local function isLive(player: Player): boolean
+	return typeof(player) == "Instance"
+end
+
 local function fireState(hunter: Player, hunt: Hunt)
+	if not isLive(hunter) then
+		return
+	end
 	Remotes.Server.Fire("BountyState", hunter, targetState(Players:GetPlayerByUserId(hunt.targetUserId), hunt))
 end
 
@@ -631,6 +639,9 @@ local function trackOne(hunter: Player, hunt: Hunt, advance: boolean)
 end
 
 local function refreshAttributes(player: Player, data: Data)
+	if not isLive(player) then
+		return
+	end
 	player:SetAttribute("Bounty", data.Bounty)
 	local hunt = hunts[player]
 	local target = if hunt then Players:GetPlayerByUserId(hunt.targetUserId) else nil
@@ -653,10 +664,10 @@ function BountyService.Drop(hunter: Player, reason: string): boolean
 	if data then
 		data.Progress.Wanted = nil
 		refreshAttributes(hunter, data)
-	else
+	elseif isLive(hunter) then
 		hunter:SetAttribute("WantedTarget", "")
 	end
-	if hunter:IsDescendantOf(Players) and not leaving[hunter] then
+	if isLive(hunter) and hunter:IsDescendantOf(Players) and not leaving[hunter] then
 		Remotes.Server.Fire("BountyState", hunter, { target = nil, revealed = false, reason = reason })
 	end
 	log:Info(string.format("%s dropped their bounty (%s)", hunter.Name, reason))
@@ -739,6 +750,54 @@ function BountyService.Set(player: Player, amount: number, reason: string)
 	onBountyChanged(player)
 end
 
+-- Registers a hunt: the Tool is the bounty, so losing it (`isHeldAt` refuses its new parent, or it
+-- is destroyed) or the hunter's death (`hunterHumanoid.Died`) drops it. A death is a drop with the
+-- reason "You lost the poster."; a knockout never reaches Died, so it keeps the poster.
+function BountyService.StartHunt(
+	hunter: Player,
+	tool: Tool,
+	targetUserId: number,
+	targetPos: Vector3,
+	hunterHumanoid: Humanoid?,
+	isHeldAt: (parent: Instance) -> boolean
+): Hunt
+	local hunt: Hunt = {
+		targetUserId = targetUserId,
+		tool = tool,
+		tracking = { lastKnown = targetPos, lastSeen = targetPos, revealed = false, beyondSeconds = 0 },
+		equipped = false,
+		connections = {},
+	}
+	hunts[hunter] = hunt
+
+	table.insert(
+		hunt.connections,
+		BountyService.WatchTool(tool, isHeldAt, function()
+			BountyService.Drop(hunter, "You lost the bounty.")
+		end)
+	)
+	if hunterHumanoid then
+		table.insert(
+			hunt.connections,
+			BountyService.WatchDeath(hunterHumanoid, function()
+				BountyService.Drop(hunter, "You lost the poster.")
+			end)
+		)
+	end
+	local function onEquipChange()
+		task.defer(trackOne, hunter, hunt, false)
+	end
+	table.insert(hunt.connections, tool.Equipped:Connect(onEquipChange))
+	table.insert(hunt.connections, tool.Unequipped:Connect(onEquipChange))
+
+	fireState(hunter, hunt)
+	return hunt
+end
+
+function BountyService.IsHunting(hunter: Player): boolean
+	return hunts[hunter] ~= nil
+end
+
 -- Takes a bounty: returns (true) or (false, reason). The Tool goes in the Backpack.
 function BountyService.Take(hunter: Player, targetUserId: number): (boolean, string?)
 	local hunterData = DataService.Get(hunter)
@@ -773,42 +832,13 @@ function BountyService.Take(hunter: Player, targetUserId: number): (boolean, str
 	end
 
 	local tool = BountyService.IssueTool(targetUserId, target.Name, targetData.Bounty, backpack)
-	local hunt: Hunt = {
-		targetUserId = targetUserId,
-		tool = tool,
-		tracking = { lastKnown = targetPos, lastSeen = targetPos, revealed = false, beyondSeconds = 0 },
-		equipped = false,
-		connections = {},
-	}
-	hunts[hunter] = hunt
-
-	table.insert(
-		hunt.connections,
-		BountyService.WatchTool(tool, function(parent: Instance): boolean
-			return parent == hunter:FindFirstChildOfClass("Backpack") or (hunter.Character ~= nil and parent == hunter.Character)
-		end, function()
-			BountyService.Drop(hunter, "You lost the bounty.")
-		end)
-	)
 	local hunterHumanoid = if hunter.Character then hunter.Character:FindFirstChildOfClass("Humanoid") else nil
-	if hunterHumanoid then
-		table.insert(
-			hunt.connections,
-			BountyService.WatchDeath(hunterHumanoid, function()
-				BountyService.Notify(hunter, "You lost the poster.")
-				BountyService.Drop(hunter, "You died and lost the poster.")
-			end)
-		)
-	end
-	local function onEquipChange()
-		task.defer(trackOne, hunter, hunt, false)
-	end
-	table.insert(hunt.connections, tool.Equipped:Connect(onEquipChange))
-	table.insert(hunt.connections, tool.Unequipped:Connect(onEquipChange))
+	BountyService.StartHunt(hunter, tool, targetUserId, targetPos, hunterHumanoid, function(parent: Instance): boolean
+		return parent == hunter:FindFirstChildOfClass("Backpack") or (hunter.Character ~= nil and parent == hunter.Character)
+	end)
 
 	hunterData.Progress.Wanted = targetUserId
 	refreshAttributes(hunter, hunterData)
-	fireState(hunter, hunt)
 	log:Info(string.format("%s took the bounty on %s (%d)", hunter.Name, target.Name, targetData.Bounty))
 	return true, nil
 end

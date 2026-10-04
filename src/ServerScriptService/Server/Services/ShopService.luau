@@ -432,8 +432,7 @@ end
 
 function ShopService:Init()
 	local stand = getStand()
-	if stand then
-	else
+	if stand == nil then
 		log:Warn("Workspace.Qarzin.ClothesStand not found at Init")
 	end
 	registerDevCommands()
