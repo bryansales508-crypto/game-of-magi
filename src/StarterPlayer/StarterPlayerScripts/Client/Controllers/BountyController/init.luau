@@ -13,11 +13,11 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local TextChatService = game:GetService("TextChatService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
+local ChatLines = require(script.Parent.ChatLines)
 
 local log = Log.new("BountyController")
 local player = Players.LocalPlayer
@@ -56,13 +56,7 @@ local highlightedUserId: number? = nil
 local highlightConnections: { RBXScriptConnection } = {}
 local characterConnections: { RBXScriptConnection } = {}
 
-local function postSystemLine(text: string)
-	local channels = TextChatService:FindFirstChild("TextChannels")
-	local general = channels and channels:FindFirstChild("RBXGeneral")
-	if general ~= nil and general:IsA("TextChannel") then
-		general:DisplaySystemMessage(text)
-	end
-end
+local postSystemLine = ChatLines.Post
 
 local function toVector3(position: { [any]: number }?): Vector3?
 	if type(position) ~= "table" then
