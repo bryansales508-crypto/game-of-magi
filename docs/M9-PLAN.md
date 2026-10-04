@@ -7,8 +7,8 @@ Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved un
 ## 1. The loop, in plain words
 
 1. **Crimes raise your bounty.** Interception already adds to `Bounty` (M5C). No bounty for knocking people out (Bryan: farmable); later systems add their own crimes. `Bounty` is a number on the save, visible as a player attribute; `.bounty <n> [player]` sets it for testing.
-2. **The wanted list.** A `BountyBoard` model per city (Bryan places them, like the delivery boards). Click it: a list of everyone online with a bounty above the posting threshold, their bounty, their last known city (from RegionController's current region, reported by the server every so often, not live tracking). Rank gate: you need **Adventurer** to take a bounty; anyone can read the board.
-3. **Take a bounty.** Pick a name: you get a quest-line entry and a tracker that points at their last known city (not at the player). While you hold it, you are not a criminal for knocking them out.
+2. **The board is a real board, not a GUI** (Bryan, 2026-10-03). Bryan places a wooden `BountyBoard` in Qarzin for now (other cities later). The server pins **posters** on it, one per wanted online player: name, bounty, last known city, sorted by bounty, capped at 8, refreshed as the list changes. Anyone can read them; taking one needs **Adventurer**.
+3. **The bounty is a tool.** Click a poster: you get a `Bounty: <name>` tool in your hotbar (one at a time). Equip it and a tracker (the delivery one, reused) points at the target's **last known location**, the spot they stood when you took the poster. Reach that spot and it updates to where they are now; so you follow a trail of snapshots, not a live dot. When you come within range of the target (about 80 studs), the tracker fades away and the target gets a **red highlight** for you alone, so the fight isn't cluttered. Lose them for a few seconds and the tracker comes back at the point you last saw them. Unequip the tool and nothing shows; destroy it (or the target stops being wanted, or leaves) and the bounty is dropped. While you hold a bounty you are not a criminal for knocking that target out.
 4. **Knock them out.** Combat as it runs today (shelved design, but knockout works). A knocked-out player lies ragdolled for `Combat.Knockout.getUpSeconds`.
 5. **Pick them up.** Walk up to a knocked-out player and hold E: they are welded over your shoulder, you walk at `Carry.speedMult`, cannot attack, block, dash or run, and drop them with E again (or when you are knocked out, die, or leave). The carried player stays knocked out while carried and for `Carry.graceSeconds` after being dropped, so a drop isn't a free escape. They see a "You are being carried" state and a dimmed screen, and can do nothing. Anyone knocked out can be carried; only the wanted can be jailed.
 6. **Jail them.** Each city with a jail has a `Jail` model with a `JailDrop` part at the door and a `JailSpawn` inside (Bryan places them; the old game had `JailSpawners`). Carry a wanted player to the drop part and press E: they are released from your shoulder inside the cell, their `Bounty` is cleared, you are paid.
@@ -39,7 +39,7 @@ Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved un
 
 ## 4. Studio pieces Bryan places
 
-- `BountyBoard` model per city (a part to click; the GUI is built from data like the delivery board).
+- `BountyBoard` model: a wooden board with a front-facing Part the server pins posters on (Qarzin first; other cities later). Until it exists, the server places a placeholder board like the delivery drop-offs.
 - `Jail` model per city that has one: `JailDrop` part (door, where the hunter presses E) and `JailSpawn` part (inside). Until built, a placeholder like the delivery drop-offs (`Workspace.MissionPlaceholders`).
 - Which cities have a jail is data (`Cities.luau`); a city without one sends hunters to the nearest.
 
@@ -49,7 +49,7 @@ Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved un
 |---|---|---|
 | M9-01 | server-builder | `BountyService`: crimes, posting, the wanted list payload, take/drop, last-known-city, reward through Economy/Rank; save schema bump; self-tests |
 | M9-02 | server-builder | `CarryService` + `JailService`: pick up / drop / jail with every check in section 2; `Carried`, `Carrying`, `Jailed` statuses in StatusService; MovementService hooks; jail timers that survive rejoin; placeholders |
-| M9-03 | client-builder | Bounty board GUI (Bryan's board look), quest-line entry and tracker; carry/jail E prompts; the carried and jailed screens with the countdown |
+| M9-03 | client-builder | No board GUI (the posters are server-built on the board). Client: tell the server when the bounty tool is equipped; show the delivery tracker at `lastKnown` while equipped; on `revealed` hide the tracker and put a red Highlight on the target for the hunter only; carry/jail E prompts; the carried and jailed screens with the countdown |
 | M9-04 | reviews (Sonnet; Opus for M9-02 since it touches saves and the knockout authority) | |
 | M9-05 | Bryan | playtest scenarios in PLAYTEST.md |
 

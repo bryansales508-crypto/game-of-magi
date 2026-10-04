@@ -1,6 +1,6 @@
 # Task board
 
-Current phase: **Phase 5: Build, closing out M7.** Milestones M1 to M6 are done and playtested green (2026-10-03). Combat (M3 and M3B) is shelved for a from-scratch redesign after everything else. See CLAUDE.md for all phases; bugs live in `docs/BUGS.md`, the plan and loop draft in `docs/ROADMAP.md`.
+Current phase: **Phase 5: Build, M9 Bounty Hunting (M7 closed 2026-10-03).** Milestones M1 to M6 are done and playtested green (2026-10-03). Combat (M3 and M3B) is shelved for a from-scratch redesign after everything else. See CLAUDE.md for all phases; bugs live in `docs/BUGS.md`, the plan and loop draft in `docs/ROADMAP.md`.
 
 ## Phases 1 to 4 (all done, gates passed 2026-09-26)
 
@@ -24,7 +24,7 @@ Each milestone ends with a playtest and Bryan's approval. Commit messages start 
 | M4 Status and Rukh | Rank, alignment, epithets, Rukh flutter, HUD | done |
 | M5 Economy and missions | Currency bands and exact-coin pay, Qarzin clothes shop, delivery missions with the intercepted mark | done (5D supply and demand deferred by Bryan to M11) |
 | M6 World | Regions and music, day/night clock, footsteps, ocean, collisions | done |
-| M7 Restoration close-out | Fold the last old scripts into the new controllers, strip embedded scripts, final regression pass | **done 2026-10-03, awaiting Bryan's gate** (see the note below) |
+| M7 Restoration close-out | Fold the last old scripts into the new controllers, strip embedded scripts, final regression pass | **done, gate passed 2026-10-03** |
 | M8 to M12 | Talking NPCs and tutorial, bounties, weapons and gear, bank, legacy | not started (see "Next") |
 
 ## What is open (M7 close-out)
@@ -39,7 +39,7 @@ Each milestone ends with a playtest and Bryan's approval. Commit messages start 
 | Silent footsteps | The original cause of the first silent-footsteps report is still unexplained | lead |
 | Studio deletions | Done 2026-10-03; Bryan saves and publishes the place (see `docs/WHEN-HOME.md`) | Bryan |
 
-**Restoration complete (lead, 2026-10-03).** Every TRIAGE system is rebuilt or kept on the new services, every old script is folded or deleted (files and Studio), the comments and docs describe the game as it is, and M1 to M6 playtested green. Still open but not blocking: `CityLight` tags (deferred by Bryan), BUG-58 (needs a repro), the original silent-footsteps cause (steps work via the fallback). **Gate:** Bryan approves and M7 closes.
+**Restoration complete (lead, 2026-10-03; Bryan approved closing M7 the same day).** Every TRIAGE system is rebuilt or kept on the new services, every old script is folded or deleted (files and Studio), the comments and docs describe the game as it is, and M1 to M6 playtested green. Still open but not blocking: `CityLight` tags (deferred by Bryan), BUG-58 (needs a repro), the original silent-footsteps cause (steps work via the fallback). M7 is closed.
 
 ## Next (Bryan, 2026-10-03)
 
