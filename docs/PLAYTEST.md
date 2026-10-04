@@ -218,6 +218,19 @@ Dev commands: `.mission start <city>`, `finish`, `fail`, `streak <n>`, `mark [n]
 - Walk into a clothes rack and into a building.
 - **Pass:** you pass through the rack, not the building; the Explorer shows no `Stats`, `OnCharacter` or `Loaded` under your Player; one CollisionService line at start; the self-tests pass.
 
+## M9 Bounty, carry, jail
+
+Dev commands: `.bounty <n> [player]`, `.bounty list|take <player>|drop|clear`, `.rank`/`.magoi` to reach Adventurer, `.knock`, `.jail <s> [player]`, `.jail release`, `.carry drop`. Two players needed (hunter and target).
+
+- **M9-A Board:** `.bounty 30` on the target. **Pass:** a poster with their name, bounty and city appears on the Qarzin board within a few seconds; `.bounty clear` removes it.
+- **M9-B Rank gate:** hunter below Adventurer holds the poster prompt. **Pass:** refused with a chat line; no Tool; at Adventurer the same prompt works.
+- **M9-C Take and track:** take the poster, equip the `Bounty: <name>` Tool (hotbar). **Pass:** a tracker with the target's name and distance sits at the spot they stood when taken; unequipping removes it at once; walking to the spot moves it to where they are now.
+- **M9-D Reveal and lose:** close within about 80 studs of the target. **Pass:** the tracker disappears and the target glows red (only on the hunter's screen); run away for 6+ seconds and the glow goes and the tracker returns at the last place they were seen.
+- **M9-E Pick up:** `.knock` the target, stand next to them. **Pass:** a "Pick up" (E) prompt shows on them only while knocked and in reach (not on yourself, not while you are knocked or already carrying); pressing it puts them on your shoulder; you walk slowly and cannot run, dash or attack; the target sees a dim screen and "You are being carried by <name>"; "Drop" (E) puts them down.
+- **M9-F Deliver:** carry the wanted target to the jail drop-off. **Pass:** the drop-off glows and "Deliver" (E) replaces "Drop" inside its reach; it does nothing (and shows a chat refusal) without the poster or the right prisoner; on success the hunter gets Copper, Magoi and a "Bounty collected." line, the glow vanishes and the carry ends.
+- **M9-G Prisoner:** after delivery. **Pass:** the prisoner is in the cell with a "Jailed" panel counting down from the sentence (bounty 30 = 3:00); they can walk but not jump, run or leave; dying respawns them in the cell; when the clock ends the panel goes and they are at the Qarzin spawn.
+- **M9-H Hunter dies:** hunter holds the poster and dies. **Pass:** a "You lost the poster." line, the Tool is gone, tracker and glow gone; the poster must be taken from the board again. A knockout keeps the poster.
+
 ## M3 Combat (shelved; kept for the redesign)
 
 Combat is shelved. These scenarios describe the retired design and stay as a starting point for the redesign; do not run them as pass/fail checks today. Dev commands: `.combat log on|off`, `.knock`, `.stun <s>`, `.hp`, `.weapon`, `.dummy`, `.npc`.
