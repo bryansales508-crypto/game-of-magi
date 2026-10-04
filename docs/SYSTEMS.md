@@ -351,6 +351,8 @@ Server: `Server/Services/BountyService.luau`. Data: `Shared/Data/Bounty.luau` (p
 - **Prisoners.** `JailService.Imprison` drops the prisoner's own hunt.
 - **Dev commands:** `.bounty <n> [player]` (set), `.bounty list`, `.bounty take <player>` (full rules apply), `.bounty drop`, `.bounty clear [player]`.
 
+- **Client (M9-03), `Client/Controllers/BountyController`.** Watches the Character for a `Bounty: <name>` Tool (name prefix or `BountyTarget` attribute); a Tool in the Character means equipped, and every change sends `BountyToolEquipped`. On `BountyState`, while equipped and not revealed, it shows a copy of the delivery `QuestTracker` billboard (fixed pixel size, FOV-proof, anchor Part at `lastKnown`, the target's name above it, distance refreshed every 0.2 s only while it is up); while `revealed` it hides the tracker and puts a red AlwaysOnTop `Highlight` on the target's character for this client only (re-attached if they respawn). Unequipping, a cleared target or a new character hides both at once without waiting for the server. `BountyNotice.text`, and `BountyState.reason` when `target` is nil, are posted as a local chat system line. MissionController is untouched; the ~40 lines of tracker building are repeated rather than shared so its behaviour cannot change.
+
 ---
 
 ## 18. Carry and jail (M9-02)
@@ -375,6 +377,12 @@ Server: `Server/Services/CarryService.luau`, `JailService.luau`. Data: `Shared/D
 - **Caching:** the Jail folder is found once and kept until it leaves the workspace (a rescan runs at most every 10 s while none exists); only its cell bounds are re-measured when something under it changes. `JailSpawn` may sit inside `LargeCell` or directly under `Jail`.
 - **Replaced characters:** a carry remembers the two models it was made with; a drop never moves or touches a character that has since been replaced.
 - **Dev commands:** `.jail <seconds> [player]`, `.jail release [player]`, `.carry drop`.
+
+**Client (M9-03), `Client/Controllers/CarryController`** (pick-up, drop, deliver, carried and jailed share one `CarryState`, so they live in one controller; `BountyController` is separate). Event-driven, no per-frame work.
+- **Pick up.** A client-made ProximityPrompt "Pick up" (E, reach `Carry.ReachStuds`) sits on the HumanoidRootPart of every other player whose character has `Knocked`; it is enabled unless this player is knocked, carried, jailed or carrying, or that player is `Carried` or `Jailed`. Triggering sends `CarryPickUp(userId)`. Several knocked players in reach each show a prompt (`OnePerButton` keeps one per key).
+- **Drop and deliver.** While `CarryState.carrying` is set a "Drop" prompt (E) sits on the carrier's own root, sending `CarryDrop()`. While `canDeliver` is true the part at `dropoffPath` (resolved from Workspace, waits up to 10 s) gets a gold AlwaysOnTop `Highlight` for this client and a "Deliver" prompt; a 0.2 s loop (running only while deliverable) enables Deliver inside `Jail.ReachStuds` of the part's box and Drop everywhere else so the two never share E. Deliver sends `JailDeliver()`. Everything goes when `canDeliver` or the carry ends, or on respawn.
+- **Being carried.** While `carriedBy` is set: a "You are being carried by <name>" caption. A knocked-out player already has the blind screen and frozen input from EffectsController, so only the caption shows; if they are not `Knocked`, a lighter dim is added and the input is frozen through the PlayerModule controls (restored when the carry ends).
+- **Jailed.** A small top-centre panel "Jailed" with an `m:ss` countdown shows while the character `Jailed` attribute is true or the player attribute `JailUntil` is later than `Workspace:GetServerTimeNow()` (server clock, same epoch as the server's `os.time()`); a 0.5 s loop runs only while jailed. No input is disabled and no containment runs on the client.
 
 ---
 
@@ -420,6 +428,8 @@ HudController, MenuController, CurrencyController, RankController
                           → Player attributes (Health, Age, Rank, Copper ...), CoinMessage, RankUp
 ShopController            → ClothesStand highlight parts and prompts
 MissionController         → MissionBoard/Update, MissionOpenBoard/Start/Exit
+BountyController          → BountyState/Notice/ToolEquipped, MissionGUI.QuestTracker template
+CarryController           → CarryState, CarryPickUp/Drop, JailDeliver, Knocked/Carried/Jailed attributes, JailUntil
 RegionController          → Workspace.Regions → MusicController → Shared/Data/Regions
 LightingController        → Workspace DayStart/DayLength (WorldClockService), Shared/Data/DayNight
 FootstepController        → Animate FootstepEvent, RF.SFX.Steps
