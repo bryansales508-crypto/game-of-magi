@@ -41,11 +41,12 @@ Each milestone ends with a playtest and Bryan's approval. Commit messages start 
 
 M7 ends with a written "restoration complete" note and Bryan's approval.
 
-## Next
+## Next (Bryan, 2026-10-03)
 
-1. **Gameplay-loop conversation** (`docs/ROADMAP.md` section 4), one question at a time.
-2. **M8 Talking NPCs and tutorial:** dialogue as data, the alley teacher, flavour NPCs in Qarzin.
-3. **M9 Bounties:** boards in each city, wanted list, tracking and turning in, rank gate at Adventurer.
+1. **Finish M7:** M7-09-C (cloud, running) folds `InputHandler.client.luau` and `BackpackGUI.client.luau` into the new controllers; then the "restoration complete" note.
+2. **M9 Bounty Hunting + jail + carry** comes next: `docs/M9-PLAN.md` drafted, awaiting Bryan's answers and approval (bounty board and wanted list, picking up a knocked-out player and carrying them, the jail with a bounty-based sentence that survives rejoin).
+3. **M8 Talking NPCs and tutorial:** SHELVED until the new combat exists (the tutorial teaches combat).
+4. **Gameplay-loop conversation** (`docs/ROADMAP.md` section 4), one question at a time, when Bryan wants it.
 4. **M10 Weapons and gear:** the Rathole blacksmith, weapons as items, gear stats, and the shelved dagger and jewelry kits (`assets/dagger-kit-roblox.zip`, `assets/jewelry-kit-roblox-r6.zip`, notes in `docs/reference/dagger-kit.md` and `docs/reference/jewelry-kit.md`).
 5. **M11 Bank:** the money changer, then supply and demand once two shops exist.
 6. **M12 Legacy:** what survives a death, a lives-lived record, a hall of past names.
