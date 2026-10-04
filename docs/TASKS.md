@@ -24,22 +24,22 @@ Each milestone ends with a playtest and Bryan's approval. Commit messages start 
 | M4 Status and Rukh | Rank, alignment, epithets, Rukh flutter, HUD | done |
 | M5 Economy and missions | Currency bands and exact-coin pay, Qarzin clothes shop, delivery missions with the intercepted mark | done (5D supply and demand deferred by Bryan to M11) |
 | M6 World | Regions and music, day/night clock, footsteps, ocean, collisions | done |
-| M7 Restoration close-out | Fold the last old scripts into the new controllers, strip embedded scripts, final regression pass | **in progress** |
+| M7 Restoration close-out | Fold the last old scripts into the new controllers, strip embedded scripts, final regression pass | **done 2026-10-03, awaiting Bryan's gate** (see the note below) |
 | M8 to M12 | Talking NPCs and tutorial, bounties, weapons and gear, bank, legacy | not started (see "Next") |
 
 ## What is open (M7 close-out)
 
 | Item | Detail | Owner |
 | --- | --- | --- |
-| Fold `StarterCharacterScripts/Scripts/InputHandler.client.luau` | Its input locks move into the new client controllers; the file is then deleted | client-builder |
-| Fold `StarterPlayerScripts/BackpackGUI.client.luau` | The hotbar and backpack become a controller in `Client/Controllers`, same look | client-builder |
-| Strip embedded GUI scripts | `Gender.Decisions`, `MenuMechanics` and the DeliveryFrame X-button script live inside `.rbxm` GUI files; they never run, but are still in the files | Bryan in Studio, then re-sync |
+| Fold `StarterCharacterScripts/Scripts/InputHandler.client.luau` | Its input locks move into the new client controllers; the file is then deleted | done (M7-09-C: the input locks were dead, nothing wrote their markers; the file is deleted) |
+| Fold `StarterPlayerScripts/BackpackGUI.client.luau` | The hotbar and backpack become a controller in `Client/Controllers`, same look | done (M7-09-C: `Controllers/HotbarController`, same look; the file is deleted) |
+| Strip embedded GUI scripts | `Gender.Decisions`, `MenuMechanics` and the DeliveryFrame X-button script live inside `.rbxm` GUI files; they never run, but are still in the files | done as "destroyed at runtime": the controllers delete those scripts when they clone the GUI, so they never run; the `.rbxm` files stay untouched (Bryan's art) |
 | `CityLight` tagging | Deferred by Bryan; lamps, torches and fires stay unlit until he tags them | Bryan |
 | BUG-58 desert dash fling | Needs a repro: where Bryan was, and whether on a slope | Bryan |
 | Silent footsteps | The original cause of the first silent-footsteps report is still unexplained | lead |
 | Studio deletions | Done 2026-10-03; Bryan saves and publishes the place (see `docs/WHEN-HOME.md`) | Bryan |
 
-M7 ends with a written "restoration complete" note and Bryan's approval.
+**Restoration complete (lead, 2026-10-03).** Every TRIAGE system is rebuilt or kept on the new services, every old script is folded or deleted (files and Studio), the comments and docs describe the game as it is, and M1 to M6 playtested green. Still open but not blocking: `CityLight` tags (deferred by Bryan), BUG-58 (needs a repro), the original silent-footsteps cause (steps work via the fallback). **Gate:** Bryan approves and M7 closes.
 
 ## Next (Bryan, 2026-10-03)
 
