@@ -14,6 +14,7 @@ local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
 local StatusService = require(script.Parent.Parent.StatusService)
 local CombatService = require(script.Parent.Parent.CombatService)
 local MovementService = require(script.Parent.Parent.MovementService)
+local GripService = require(script.Parent.Parent.GripService)
 
 local log = Log.new("NpcService")
 
@@ -123,6 +124,8 @@ local function targetWithinGiveUpRadius(bb: any): boolean
 end
 
 local attack = BehaviorTree.Action(function(bb: any): BehaviorTree.Status
+	-- Remembered so a later knockout can be told apart from one somebody else dealt.
+	bb.attackedTarget = bb.target
 	CombatService.Attack(bb.character)
 	return "Success"
 end)
@@ -229,9 +232,58 @@ local function wander(bb: any): BehaviorTree.Status
 	return "Running"
 end
 
+-- Whether the target is a knocked-out player this NPC should now grip (Config.Npc.Target.gripsOnKnockout):
+-- Knocked, and not already carried, jailed or gripped by someone else.
+local function shouldGrip(bb: any): boolean
+	if not Config.Npc.Target.gripsOnKnockout then
+		return false
+	end
+	local target = bb.target :: Model?
+	if target == nil or not StatusService.Has(target, "Knocked") then
+		return false
+	end
+	-- Only a knockout this dummy dealt itself (the status names who did it), and not while it is
+	-- waiting out the pause after a broken grip.
+	local knocked = StatusService.Get(target, "Knocked")
+	local by = if knocked and type(knocked.data) == "table" then (knocked.data :: any).by else nil
+	if bb.attackedTarget ~= target or by ~= bb.character.Name then
+		return false
+	end
+	if bb.regripAt ~= nil and os.clock() < bb.regripAt then
+		return false
+	end
+	return not (StatusService.Has(target, "Carried") or StatusService.Has(target, "Jailed") or (StatusService.Has(target, "Gripped") and not GripService.IsGripping(bb.character)))
+end
+
+-- Walks up to a knocked-out target, then grips them. Running while the grip holds; Failure when it
+-- cannot start (so the tree falls through to its other branches).
+local function gripStep(bb: any): BehaviorTree.Status
+	if GripService.IsGripping(bb.character) then
+		bb.wasGripping = true
+		return "Running"
+	end
+	if bb.wasGripping then
+		-- The grip broke (a hit, a knockout): pause before trying again.
+		bb.wasGripping = false
+		bb.regripAt = os.clock() + Config.Npc.Target.regripCooldownSeconds
+		return "Failure"
+	end
+	local target = bb.target :: Model?
+	local victim = if target then Players:GetPlayerFromCharacter(target) else nil
+	if victim == nil then
+		return "Failure"
+	end
+	if not inReach(bb) then
+		return chaseStep(bb)
+	end
+	local ok = GripService.Begin(bb.character, victim)
+	return if ok then "Running" else "Failure"
+end
+
 -- Selector(
 --   Sequence(IsKnocked, Wait),
 --   Sequence(HasTarget, Selector(
+--     Sequence(ShouldGrip, GripStep),
 --     Sequence(InReach, Cooldown(AttackCooldown, Attack)),
 --     Sequence(TargetWithin(GiveUpRadius), ChaseStep),
 --     GiveUp
@@ -248,6 +300,10 @@ function Trees.BuildTarget(): BehaviorTree.Node
 		BehaviorTree.Sequence({
 			BehaviorTree.Condition(hasTarget),
 			BehaviorTree.Selector({
+				BehaviorTree.Sequence({
+					BehaviorTree.Condition(shouldGrip),
+					BehaviorTree.Action(gripStep),
+				}),
 				BehaviorTree.Sequence({
 					BehaviorTree.Condition(inReach),
 					BehaviorTree.Cooldown(Config.Npc.AttackCooldown, attack),

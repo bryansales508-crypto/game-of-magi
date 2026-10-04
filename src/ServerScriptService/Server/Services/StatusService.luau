@@ -3,7 +3,7 @@
 -- Player: NPCs are combatants exactly like players. Players are registered automatically
 -- on PlayerService.Ready; NpcService registers NPCs.
 --
--- Statuses: Carrying, Carried, Jailed (set by CarryService/JailService; attribute only), Hit, Stun, Knocked, Ragdoll, Block, BlockBroken, TrueStun, plus LightStun (a
+-- Statuses: Carrying, Carried, Jailed, Gripping, Gripped (set by CarryService/JailService/GripService; attribute only), Hit, Stun, Knocked, Ragdoll, Block, BlockBroken, TrueStun, plus LightStun (a
 -- landed Light's softer stun: can't block/parry, can still attack or dash), Recovery (a
 -- punished feint: can't attack, block or dash) and Bleed (stacked; data = {stacks,
 -- config}, ticked by HealthService). Anything else can still be Applied/Removed (the API
@@ -66,6 +66,9 @@ local ATTRIBUTE_FOR: { [string]: string } = {
 	Carrying = "Carrying",
 	Carried = "Carried",
 	Jailed = "Jailed",
+	-- Gripping a knocked-out player (GripService): the gripper and the victim.
+	Gripping = "Gripping",
+	Gripped = "Gripped",
 	-- Bleed's attribute is a stack count, not a boolean (see mirrorAttribute).
 	Bleed = "Bleed",
 }

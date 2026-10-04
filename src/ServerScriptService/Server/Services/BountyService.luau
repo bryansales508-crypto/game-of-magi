@@ -2,7 +2,8 @@
 -- Bounty hunting. Owns Player Bounty end to end (save value, `Bounty` attribute), the wanted
 -- list, the physical BountyBoard with one server-built poster per wanted player, taking a bounty
 -- (a "Bounty: <name>" Tool that IS the bounty), tracking the target while the Tool is equipped,
--- and the payout when the jail imprisons a target (ClearForImprisonment).
+-- and the payout when the jail imprisons a target (ClearForImprisonment) or a hunter grips them
+-- (SettleByGrip: the same payout, Black Rukh, no jail).
 --
 -- Hunting rules, all checked here: Adventurer rank, not self, the target online and wanted, one
 -- bounty at a time. The bounty ends when the Tool is lost (dropped, destroyed, death, leaving),
@@ -12,7 +13,9 @@
 -- Workspace that carries a Decal named FrontDecalName; the Decal's Face is the side posters go on.
 -- Without one a placeholder board is made in Workspace.BountyPlaceholders, the way MissionService
 -- makes placeholder drop-offs. Posters are made by the server, not by a GUI: each is a Part (so it
--- carries its own ProximityPrompt) with a SurfaceGui for the text.
+-- carries its own ProximityPrompt) with a SurfaceGui for the text and a ViewportFrame portrait: a
+-- clone of the wanted player's character in a WorldModel, rebuilt when they respawn or change
+-- clothes (never on an ordinary poster refresh) and destroyed with the poster.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -110,6 +113,17 @@ function BountyService.Settle(prisonerData: Data): Reward?
 	end
 	prisonerData.Bounty = 0
 	return BountyData.rewardFor(bounty)
+end
+
+-- Pure: the payout for a grip. Only a hunter whose bounty is on this prisoner (they hold the poster)
+-- is paid; anyone else, or an unwanted prisoner, gets nil and nothing changes. Like Settle, it is
+-- once: the prisoner's bounty is zeroed.
+function BountyService.GripPayout(hunts: { [Player]: Hunt }, hunter: Player, prisonerUserId: number, prisonerData: Data): Reward?
+	local hunt = hunts[hunter]
+	if hunt == nil or hunt.targetUserId ~= prisonerUserId then
+		return nil
+	end
+	return BountyService.Settle(prisonerData)
 end
 
 -- Pure: poster list from candidates: wanted only, highest bounty first (name breaks ties), at
@@ -300,6 +314,253 @@ function BountyService.WatchDeath(humanoid: Humanoid, onDied: () -> ()): RBXScri
 	return humanoid.Died:Once(onDied)
 end
 
+-- ==================== poster portraits ====================
+
+-- Classes a portrait clone never keeps: nothing in it runs, sounds, or animates.
+local PORTRAIT_STRIP = { "Tool", "Script", "LocalScript", "ModuleScript", "Sound", "Animator", "ProximityPrompt", "ForceField", "Highlight", "BillboardGui", "ParticleEmitter" }
+-- Classes whose arrival or removal changes how a character looks.
+local APPEARANCE_CLASSES = { "Accessory", "Clothing", "ShirtGraphic", "BodyColors", "CharacterMesh", "Decal", "SpecialMesh" }
+
+local function isOneOf(instance: Instance, classes: { string }): boolean
+	for _, className in classes do
+		if instance:IsA(className) then
+			return true
+		end
+	end
+	return false
+end
+
+-- A static, anchored, script-free copy of `character` for a poster, standing upright at the origin
+-- facing -Z; nil when it cannot be cloned or has no Head. The original is untouched (its Archivable
+-- is restored).
+function BountyService.BuildPortraitClone(character: Model): Model?
+	if character:FindFirstChild("Head") == nil then
+		return nil
+	end
+	local wasArchivable = character.Archivable
+	character.Archivable = true
+	local clone = character:Clone() :: Model?
+	character.Archivable = wasArchivable
+	if clone == nil then
+		return nil
+	end
+
+	for _, descendant in clone:GetDescendants() do
+		if descendant.Name == "Effects" and descendant:IsA("Folder") or isOneOf(descendant, PORTRAIT_STRIP) then
+			descendant:Destroy()
+		end
+	end
+	local humanoid = clone:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+		end
+	end
+	local root = clone:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		clone.PrimaryPart = root
+	end
+	clone:PivotTo(CFrame.new(0, 0, 0))
+	return clone
+end
+
+-- Where the portrait camera goes for `clone` (as made by BuildPortraitClone): in front of the face,
+-- looking at the point between head and shoulders, far enough back that head and shoulders fill
+-- the frame at `fov` degrees. nil without a Head.
+function BountyService.PortraitCamera(clone: Model, fov: number): CFrame?
+	local head = clone:FindFirstChild("Head")
+	if head == nil or not head:IsA("BasePart") then
+		return nil
+	end
+	local torso = clone:FindFirstChild("UpperTorso") or clone:FindFirstChild("Torso")
+	local torsoPos = if torso and torso:IsA("BasePart") then torso.Position else head.Position - Vector3.new(0, head.Size.Y * 1.5, 0)
+	local headPos = head.Position
+	local focus = headPos:Lerp(torsoPos, 0.35)
+	-- Head and shoulders: from the top of the head to a little below the torso's top edge.
+	local span = (headPos.Y - torsoPos.Y) + head.Size.Y * 2.2
+	local distance = (span / 2) / math.tan(math.rad(fov) / 2)
+	local look = clone:GetPivot().LookVector
+	return CFrame.lookAt(focus + look * distance, focus)
+end
+
+type Portrait = {
+	viewport: ViewportFrame,
+	worldModel: WorldModel,
+	camera: Camera,
+	source: Model?,
+	clone: Model?,
+	-- Connections that live as long as the poster, and those tied to the current source character.
+	permanent: { RBXScriptConnection },
+	watching: { RBXScriptConnection },
+	-- Bumped on every schedule, so a stale debounce does nothing.
+	token: number,
+	characterOf: (userId: number) -> Model?,
+	userId: number,
+}
+
+local portraits: { [Part]: Portrait } = {}
+
+local function defaultCharacterOf(userId: number): Model?
+	local player = Players:GetPlayerByUserId(userId)
+	return if player then player.Character else nil
+end
+
+local function disconnectAll(list: { RBXScriptConnection })
+	for _, connection in list do
+		connection:Disconnect()
+	end
+	table.clear(list)
+end
+
+-- Rebuilds the clone from the player's current character. A character that is mid-knockout (ragdolled)
+-- is skipped and retried, so a poster never shows a crumpled body.
+local scheduleRebuild: (poster: Part, portrait: Portrait) -> ()
+
+local function rebuildPortrait(poster: Part, portrait: Portrait)
+	local character = portrait.characterOf(portrait.userId)
+	if character ~= portrait.source then
+		disconnectAll(portrait.watching)
+		portrait.source = character
+		if character then
+			for _, event in { character.DescendantAdded, character.DescendantRemoving } do
+				table.insert(
+					portrait.watching,
+					event:Connect(function(descendant: Instance)
+						if isOneOf(descendant, APPEARANCE_CLASSES) then
+							scheduleRebuild(poster, portrait)
+						end
+					end)
+				)
+			end
+		end
+	end
+
+	if character == nil then
+		if portrait.clone then
+			portrait.clone:Destroy()
+			portrait.clone = nil
+		end
+		return
+	end
+	-- Nothing is torn down until a replacement is ready, so the poster never shows an empty frame.
+	if character:GetAttribute("Knocked") == true or character:GetAttribute("Carried") == true then
+		scheduleRebuild(poster, portrait)
+		return
+	end
+	local clone = BountyService.BuildPortraitClone(character)
+	if clone == nil then
+		scheduleRebuild(poster, portrait)
+		return
+	end
+	if portrait.clone then
+		portrait.clone:Destroy()
+	end
+	clone.Name = "PortraitClone"
+	clone.Parent = portrait.worldModel
+	portrait.clone = clone
+	local framing = BountyService.PortraitCamera(clone, Config.Bounty.Poster.PortraitFov)
+	if framing then
+		portrait.camera.CFrame = framing
+		portrait.camera.FieldOfView = Config.Bounty.Poster.PortraitFov
+	end
+end
+
+scheduleRebuild = function(poster: Part, portrait: Portrait)
+	portrait.token += 1
+	local token = portrait.token
+	task.delay(Config.Bounty.Poster.PortraitSettleSeconds, function()
+		if portrait.token == token and portraits[poster] == portrait then
+			rebuildPortrait(poster, portrait)
+		end
+	end)
+end
+
+-- Makes the empty portrait frame on a poster's SurfaceGui and starts watching the player's respawns.
+local function makePortrait(poster: Part, gui: SurfaceGui, userId: number, characterOf: (userId: number) -> Model?): Portrait
+	local viewport = Instance.new("ViewportFrame")
+	viewport.Name = "Portrait"
+	viewport.BackgroundColor3 = Color3.fromRGB(205, 182, 135)
+	viewport.BorderSizePixel = 0
+	viewport.Position = UDim2.fromScale(0.1, 0.13)
+	viewport.Size = UDim2.fromScale(0.8, 0.5)
+	viewport.Ambient = Color3.fromRGB(190, 180, 165)
+	viewport.LightColor = Color3.fromRGB(255, 240, 215)
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewport
+	local camera = Instance.new("Camera")
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.Parent = viewport
+	viewport.CurrentCamera = camera
+	viewport.Parent = gui
+
+	local portrait: Portrait = {
+		viewport = viewport,
+		worldModel = worldModel,
+		camera = camera,
+		source = nil,
+		clone = nil,
+		permanent = {},
+		watching = {},
+		token = 0,
+		characterOf = characterOf,
+		userId = userId,
+	}
+	portraits[poster] = portrait
+
+	local player = Players:GetPlayerByUserId(userId)
+	if player then
+		table.insert(
+			portrait.permanent,
+			player.CharacterAdded:Connect(function()
+				scheduleRebuild(poster, portrait)
+			end)
+		)
+	end
+	-- Everything goes with the poster.
+	table.insert(
+		portrait.permanent,
+		poster.Destroying:Connect(function()
+			portraits[poster] = nil
+			portrait.token += 1
+			disconnectAll(portrait.permanent)
+			disconnectAll(portrait.watching)
+		end)
+	)
+	return portrait
+end
+
+-- Brings a poster's portrait up to date: built the first time, and whenever the player's character
+-- is a different model from the one it was built from. An ordinary refresh (name, bounty, city)
+-- changes neither and rebuilds nothing.
+local function refreshPortrait(poster: Part, userId: number, characterOf: (userId: number) -> Model?)
+	local portrait = portraits[poster]
+	if portrait == nil then
+		local gui = poster:FindFirstChildOfClass("SurfaceGui")
+		if gui == nil then
+			return
+		end
+		portrait = makePortrait(poster, gui, userId, characterOf)
+	end
+	portrait.characterOf = characterOf
+	if portrait.source ~= characterOf(userId) or (portrait.clone == nil and portrait.source ~= nil) then
+		-- A pending debounce is superseded.
+		portrait.token += 1
+		rebuildPortrait(poster, portrait)
+	end
+end
+
+-- The portrait of a poster (tests).
+function BountyService.GetPortrait(poster: Part): ViewportFrame?
+	local portrait = portraits[poster]
+	return if portrait then portrait.viewport else nil
+end
+
 -- ==================== board and posters ====================
 
 local function posterFolder(): Folder
@@ -437,10 +698,11 @@ local function makePoster(entry: Entry, folder: Instance, face: Enum.NormalId): 
 		text.TextColor3 = Color3.fromRGB(60, 35, 20)
 		text.Parent = gui
 	end
-	label("Header", 0.05, 0.2, true)
-	label("Name", 0.3, 0.2, true)
-	label("Bounty", 0.55, 0.17, false)
-	label("City", 0.75, 0.15, false)
+	-- Header, then the portrait (made once the poster is synced), then name and bounty under it.
+	label("Header", 0.02, 0.1, true)
+	label("Name", 0.65, 0.11, true)
+	label("Bounty", 0.77, 0.09, false)
+	label("City", 0.87, 0.09, false)
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Take bounty"
@@ -486,7 +748,8 @@ end
 
 -- Makes, updates and removes posters so `set` shows exactly `entries` (already sorted and capped)
 -- on `board`'s face, parented under `folder`. A nil board clears every poster.
-function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: Board?, folder: Instance)
+-- `characterOf` finds the character a portrait shows (default: the online player's); tests pass their own.
+function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: Board?, folder: Instance, characterOf: ((userId: number) -> Model?)?)
 	local keep: { [number]: boolean } = {}
 	if board then
 		for index, entry in entries do
@@ -500,6 +763,7 @@ function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: Bo
 				set[entry.userId] = poster
 			end
 			writePoster(poster, entry)
+			refreshPortrait(poster, entry.userId, characterOf or defaultCharacterOf)
 
 			local cframe, size = BountyService.PosterLayout(board.part, board.face, index, #entries)
 			poster.Size = size
@@ -843,6 +1107,39 @@ function BountyService.Take(hunter: Player, targetUserId: number): (boolean, str
 	return true, nil
 end
 
+-- Pays `hunter` for `prisoner`'s bounty once: Copper and Magoi, plus `deed` Rukh deeds, zeroes the
+-- bounty and ends every hunt on them. `verb` is the log/ledger wording. The caller has already
+-- settled the prisoner's save (Settle) and checked both saves exist.
+-- Where a payout reads saves and pays. Production uses the real services; the self-test swaps in
+-- recorders because a stand-in player has no save.
+BountyService.Ports = {
+	getData = function(player: Player): Data?
+		return DataService.Get(player)
+	end,
+	copper = function(player: Player, amount: number, reason: string)
+		EconomyService.GiveCopperValue(player, amount, reason)
+	end,
+	magoi = function(player: Player, amount: number, reason: string)
+		RankService.AddMagoi(player, amount, reason)
+	end,
+	deed = function(player: Player, kind: "Gold" | "Black", amount: number)
+		RankService.AddDeed(player, kind, amount)
+	end,
+}
+
+local function collect(prisoner: Player, hunter: Player, reward: Reward, deed: "Gold" | "Black", verb: string): Reward
+	local reason = string.format("%s %s", verb, prisoner.Name)
+	BountyService.Ports.copper(hunter, reward.copper, reason)
+	BountyService.Ports.magoi(hunter, reward.magoi, reason)
+	BountyService.Ports.deed(hunter, deed, reward.gold)
+
+	dropHuntersOf(prisoner, string.format("%s is no longer wanted.", prisoner.Name), hunter, "Bounty collected.")
+	BountyService.Notify(hunter, "Bounty collected.")
+	onBountyChanged(prisoner)
+	log:Info(string.format("%s %s %s: %d Copper, %d Magoi, %d %s Rukh", hunter.Name, string.lower(verb), prisoner.Name, reward.copper, reward.magoi, reward.gold, deed))
+	return reward
+end
+
 -- Called by the jail (M9-02) when `hunter` imprisons `prisoner`: pays the hunter once, zeroes the
 -- prisoner's bounty and ends every hunt on them. Returns the reward, or nil (nothing changes)
 -- when the prisoner is not wanted, is the hunter, or either save is missing.
@@ -850,25 +1147,33 @@ function BountyService.ClearForImprisonment(prisoner: Player, hunter: Player): R
 	if prisoner == hunter then
 		return nil
 	end
-	local prisonerData = DataService.Get(prisoner)
-	if prisonerData == nil or DataService.Get(hunter) == nil then
+	local prisonerData = BountyService.Ports.getData(prisoner)
+	if prisonerData == nil or BountyService.Ports.getData(hunter) == nil then
 		return nil
 	end
 	local reward = BountyService.Settle(prisonerData)
 	if reward == nil then
 		return nil
 	end
+	return collect(prisoner, hunter, reward, "Gold", "Imprisoned")
+end
 
-	local reason = string.format("Imprisoned %s", prisoner.Name)
-	EconomyService.GiveCopperValue(hunter, reward.copper, reason)
-	RankService.AddMagoi(hunter, reward.magoi, reason)
-	RankService.AddDeed(hunter, "Gold", reward.gold)
-
-	dropHuntersOf(prisoner, string.format("%s is no longer wanted.", prisoner.Name), hunter, "Bounty collected.")
-	BountyService.Notify(hunter, "Bounty collected.")
-	onBountyChanged(prisoner)
-	log:Info(string.format("%s imprisoned %s: %d Copper, %d Magoi, %d Gold Rukh", hunter.Name, prisoner.Name, reward.copper, reward.magoi, reward.gold))
-	return reward
+-- Called by GripService when `hunter` kills `victim` by gripping: the same payout as a jailing, but
+-- the Rukh is Black and nobody goes to jail. Only a hunter who holds the poster on `victim` is paid
+-- (a bounty someone else holds is not theirs to collect). Returns the reward or nil.
+function BountyService.SettleByGrip(victim: Player, hunter: Player): Reward?
+	if victim == hunter then
+		return nil
+	end
+	local victimData = BountyService.Ports.getData(victim)
+	if victimData == nil or BountyService.Ports.getData(hunter) == nil then
+		return nil
+	end
+	local reward = BountyService.GripPayout(hunts, hunter, victim.UserId, victimData)
+	if reward == nil then
+		return nil
+	end
+	return collect(victim, hunter, reward, "Black", "Gripped")
 end
 
 -- ==================== loops and lifecycle ====================

@@ -42,7 +42,7 @@ local log = Log.new("CombatService")
 
 -- Statuses that block AttackStart/AttackHit (death is checked via Humanoid.Health).
 local BLOCKS_ATTACK: { [string]: boolean } =
-	{ Stun = true, TrueStun = true, Knocked = true, Block = true, Recovery = true, Carrying = true, Carried = true, Jailed = true }
+	{ Stun = true, TrueStun = true, Knocked = true, Block = true, Recovery = true, Carrying = true, Carried = true, Jailed = true, Gripping = true, Gripped = true }
 -- Statuses that forbid starting a block.
 local BLOCKS_BLOCK_START: { [string]: boolean } = {
 	Stun = true,
@@ -54,15 +54,17 @@ local BLOCKS_BLOCK_START: { [string]: boolean } = {
 	Carrying = true,
 	Carried = true,
 	Jailed = true,
+	Gripping = true,
+	Gripped = true,
 }
 -- Statuses that force Block off the instant they turn on.
 local ENDS_BLOCK: { [string]: boolean } =
-	{ Stun = true, TrueStun = true, Knocked = true, LightStun = true, Carrying = true, Jailed = true }
+	{ Stun = true, TrueStun = true, Knocked = true, LightStun = true, Carrying = true, Jailed = true, Gripping = true }
 -- Statuses that interrupt an in-progress attack the instant they turn on,
 -- whatever caused them. A landed hit's own interrupt is in ApplyHit. Not
 -- LightStun (doesn't gate attacks) or Recovery (starts only after the feint's
 -- chain has already ended).
-local INTERRUPTS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Carrying = true, Jailed = true }
+local INTERRUPTS_ATTACK: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Carrying = true, Jailed = true, Gripping = true }
 
 -- One named MovementService modifier per status, set/cleared alongside
 -- StatusService. LightStun and Recovery don't slow movement.
