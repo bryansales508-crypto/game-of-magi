@@ -207,12 +207,12 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 
 **What it does.** Shows health and block bars, the character menu card, the backpack, and chat-style prompts.
 
-**Files:** client `Controllers/HudController`, `Controllers/MenuController`, `StarterPlayerScripts/BackpackGUI.client.luau`, `StarterCharacterScripts/Scripts/InputHandler.client.luau`; art in `StarterGui/HUD` and `RF/GUI`.
+**Files:** client `Controllers/HudController`, `Controllers/MenuController`, `Controllers/HotbarController`; art in `StarterGui/HUD` and `RF/GUI`.
 
 - **HudController.** Drives the health and block bars from the `Health`, `MaxHealth`, `Block`, `MaxBlock` attributes. The HUD ScreenGui resets on every respawn, so the controller re-finds the bars and reconnects each time.
 - **MenuController.** The M-key card. Clones `RF.GUI.UIGUI.MenuGUI` once, destroys its embedded `MenuMechanics` script, and fills it from attributes (`FirstName`, `Kingdom`, `Age`, `HeightStuds`, `Rank`, `Epithet`, `Alignment`, `Lives`). Values show "..." until they arrive.
-- **BackpackGUI.** The hotbar and inventory (a customised Roblox backpack) built from `RF.GUI` frames.
-- **InputHandler.** Blocks input while a `FreezeInput`, `BigFreezeInput` or `ActionFreezeInput` marker sits in `character.Effects`, and posts server-sent forced-chat lines.
+- **HotbarController.** The hotbar (10 slots, keys 1-9 and 0) and the inventory panel (backquote or the arrow opens it; drag slots between the two, double-click to send a tool back to the hotbar, search box), built from the `RF.GUI` `SlotFrame`, `ToolIcon`, `ToolName` and `Number` frames. It only shows the Backpack and equips through `Humanoid:EquipTool`/`UnequipTools`; the only tools in play are the weapon tools. Its ScreenGui survives respawns and the slots are refilled from each new character's tools.
+- **Input freezing.** Nothing writes `FreezeInput`, `BigFreezeInput` or `ActionFreezeInput` into `character.Effects` any more, so the old input sinks are gone; the knockout freeze is EffectsController's. Server-to-client chat lines are `CoinMessage` (section 11); the old `ForcedChat` remote has no sender or listener.
 - **EffectsController** (combat feedback) is covered in section 6.
 
 ---
@@ -322,7 +322,7 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 | ServerScriptService | `src/ServerScriptService` | `Server` (Main, Packages, Services) |
 | ServerStorage | `src/ServerStorage/Parked` | Parked, never-run code: Hunger, Magic, Rank (kept for reference; see its README) |
 | StarterGui | `src/StarterGui/HUD` | The health/block HUD frame |
-| StarterPlayer | `src/StarterPlayer` | `StarterCharacterScripts` (Animate, InputHandler) and `StarterPlayerScripts` (Client controllers, BackpackGUI, RbxCharacterSounds); camera max zoom 15, dynamic heads and layered clothing off, emotes off |
+| StarterPlayer | `src/StarterPlayer` | `StarterCharacterScripts` (Animate) and `StarterPlayerScripts` (Client controllers, RbxCharacterSounds); camera max zoom 15, dynamic heads and layered clothing off, emotes off |
 
 Workspace is never synced.
 
