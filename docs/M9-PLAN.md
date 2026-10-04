@@ -50,8 +50,23 @@ Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved un
 | M9-01 | server-builder | `BountyService`: crimes, posting, the wanted list payload, take/drop, last-known-city, reward through Economy/Rank; save schema bump; self-tests |
 | M9-02 | server-builder | `CarryService` + `JailService`: pick up / drop / jail with every check in section 2; `Carried`, `Carrying`, `Jailed` statuses in StatusService; MovementService hooks; jail timers that survive rejoin; placeholders |
 | M9-03 | client-builder | No board GUI (the posters are server-built on the board). Client: tell the server when the bounty tool is equipped; show the delivery tracker at `lastKnown` while equipped; on `revealed` hide the tracker and put a red Highlight on the target for the hunter only; carry/jail E prompts; the carried and jailed screens with the countdown |
-| M9-04 | reviews (Sonnet; Opus for M9-02 since it touches saves and the knockout authority) | |
-| M9-05 | Bryan | playtest scenarios in PLAYTEST.md |
+| M9-04-S | server-builder | `GripService` (section 7): statuses, timing, interrupts, the kill through LifeService, the Black-Rukh reward path in BountyService, dummies grip after a knockout (NpcService Target tree); poster portraits (section 8) in BountyService |
+| M9-04-C | client-builder | Grip prompt/key on a knocked player, code-posed grip placeholder for gripper and victim, the gripped screen with the choke progress, interrupt feedback; poster portrait camera framing if the client has to help |
+| Reviews | Sonnet; Opus for M9-02 and M9-04-S (saves, knockout and death authority) | |
+| Playtest | Bryan | PLAYTEST.md M9 A-H plus the grip scenarios |
+
+## 7. Gripping (Bryan, 2026-10-03, added to M9)
+
+From the old game: **grip** a knocked-out player to kill them. You crouch over them and choke them for `Grip.seconds` (4); if you are interrupted before it ends (any hit lands on you, you are knocked out, you move away, you release the key, or they get up) the grip breaks and they live. If it finishes they **die** (an ordinary death: costs a life, respawn as usual; last life runs the Rukh scene). Rules:
+- **Reward:** if the victim is wanted AND you hold their poster, you collect the bounty reward exactly as a jailing would (Copper, Magoi), but the Rukh is **Black**, not Gold, and every grip, bounty or not, adds Black Rukh (`Grip.blackRukh`, 1). No bounty on the gripper (Bryan's rule: knockouts and kills don't add bounty this pass).
+- **Dummies grip too:** an NPC that knocks you out walks up and grips you; interrupt it the same way (a landed hit on it, or it gets knocked). Trainers don't (they reset you).
+- **Who can be gripped:** any knocked-out player, carried or not (gripping a carried player is refused: put them down first). Jailed players can't grip or be gripped.
+- **Animation:** Bryan makes the real grip animation later. Until then the client poses it in code: gripper kneeling over the victim, hands at the neck, victim flat; a `Config.Bounty.Grip.Animations` slot takes the asset ids when they exist.
+- **Server authority:** the grip is a server state (`Gripping`/`Gripped` statuses); the client sends start/stop only; progress and the kill are server-timed; the interrupt hooks are CombatService's landed-hit path and StatusService.
+
+## 8. Posters show the face
+
+A poster shows **who you're looking for**, not just a name: a ViewportFrame on the poster with a clone of the wanted player's current character (skin, face, hat, clothes) framed like a wanted-poster portrait, with name and bounty under it. The server clones the character into the poster when it's pinned and refreshes the clone when the player's look changes (respawn, new clothes).
 
 ## 6. Open questions (one at a time)
 
