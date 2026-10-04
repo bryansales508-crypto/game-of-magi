@@ -8,10 +8,11 @@
 -- bounty at a time. The bounty ends when the Tool is lost (dropped, destroyed, death, leaving),
 -- the target stops being wanted (cleared, imprisoned, left), or the hunter leaves.
 --
--- The board is `Workspace.BountyBoard` (a Model with a front-facing Part named `BoardFront`, else
--- its PrimaryPart). Until it exists a placeholder board is made in Workspace.BountyPlaceholders,
--- the way MissionService makes placeholder drop-offs. Posters are made by the server, not by a
--- GUI: each is a Part (so it carries its own ProximityPrompt) with a SurfaceGui for the text.
+-- The board is the first Part named Config.Bounty.BoardName ("QuestBoard", or BoardAltName) under
+-- Workspace that carries a Decal named FrontDecalName; the Decal's Face is the side posters go on.
+-- Without one a placeholder board is made in Workspace.BountyPlaceholders, the way MissionService
+-- makes placeholder drop-offs. Posters are made by the server, not by a GUI: each is a Part (so it
+-- carries its own ProximityPrompt) with a SurfaceGui for the text.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -53,13 +54,12 @@ export type Hunt = {
 -- Poster id -> Part. Production owns one; tests make their own.
 export type PosterSet = { [number]: Part? }
 
-local BOARD_NAME = "BountyBoard"
-local BOARD_FRONT_NAME = "BoardFront"
+local PLACEHOLDER_BOARD_NAME = "BountyBoard_PLACEHOLDER"
 local PLACEHOLDER_FOLDER_NAME = "BountyPlaceholders"
 local POSTER_FOLDER_NAME = "BountyPosters"
 local PLACEHOLDER_CITY = "Qarzin"
-local POSTER_COLUMNS = math.ceil(Config.Bounty.MaxPosters / 2)
 local POSTER_ROWS = 2
+local POSTER_COLUMNS = math.ceil(Config.Bounty.MaxPosters / POSTER_ROWS)
 
 local BountyService = {}
 
@@ -160,17 +160,56 @@ function BountyService.HuntersOf(hunts: { [Player]: Hunt }, targetUserId: number
 	return hunters
 end
 
--- Pure: where poster `index` (1-based, row by row from the viewer's top left) of a board sits,
--- as offsets from the board's centre in its local X/Y, and the poster's size. The board's front
--- is its local -Z, so the viewer's left is local +X.
-function BountyService.PosterSlot(index: number, boardSize: Vector3): (number, number, Vector2)
-	local cellW = boardSize.X / POSTER_COLUMNS
-	local cellH = boardSize.Y / POSTER_ROWS
-	local column = (index - 1) % POSTER_COLUMNS
-	local row = (index - 1) // POSTER_COLUMNS
-	local x = boardSize.X / 2 - cellW * (column + 0.5)
-	local y = boardSize.Y / 2 - cellH * (row + 0.5)
-	return x, y, Vector2.new(cellW * 0.9, cellH * 0.9)
+-- Per board face: the outward normal, and the viewer's right and up, all in the board's local
+-- axes. A viewer faces the face from outside; Top/Bottom take the board's front (-Z) as up.
+type FaceFrame = { normal: Vector3, right: Vector3, up: Vector3 }
+
+local FACE_FRAMES: { [Enum.NormalId]: FaceFrame } = {
+	[Enum.NormalId.Front] = { normal = Vector3.new(0, 0, -1), right = Vector3.new(-1, 0, 0), up = Vector3.new(0, 1, 0) },
+	[Enum.NormalId.Back] = { normal = Vector3.new(0, 0, 1), right = Vector3.new(1, 0, 0), up = Vector3.new(0, 1, 0) },
+	[Enum.NormalId.Right] = { normal = Vector3.new(1, 0, 0), right = Vector3.new(0, 0, -1), up = Vector3.new(0, 1, 0) },
+	[Enum.NormalId.Left] = { normal = Vector3.new(-1, 0, 0), right = Vector3.new(0, 0, 1), up = Vector3.new(0, 1, 0) },
+	[Enum.NormalId.Top] = { normal = Vector3.new(0, 1, 0), right = Vector3.new(1, 0, 0), up = Vector3.new(0, 0, -1) },
+	[Enum.NormalId.Bottom] = { normal = Vector3.new(0, -1, 0), right = Vector3.new(-1, 0, 0), up = Vector3.new(0, 0, -1) },
+}
+
+local POSTER_THICKNESS = 0.1
+local CANVAS_PIXELS_PER_STUD = 60
+local POSTER_OFFSET = 0.03
+
+local function absVector(v: Vector3): Vector3
+	return Vector3.new(math.abs(v.X), math.abs(v.Y), math.abs(v.Z))
+end
+
+-- Pure: where poster `index` of `count` goes on `face` of `board`, as the Part's world CFrame
+-- (same orientation as the board, so a SurfaceGui on the same face reads correctly) and size.
+-- Posters fill a grid of POSTER_COLUMNS x POSTER_ROWS cells over the face, row by row from the
+-- viewer's top left, each row centred, the block centred; a poster is Config.Bounty.Poster's size
+-- or 90% of its cell, whichever is smaller, and sits just proud of the face.
+function BountyService.PosterLayout(board: BasePart, face: Enum.NormalId, index: number, count: number): (CFrame, Vector3)
+	local frame = FACE_FRAMES[face]
+	local size = board.Size
+	local width = absVector(frame.right):Dot(size)
+	local height = absVector(frame.up):Dot(size)
+	local depth = absVector(frame.normal):Dot(size)
+
+	local cellW = width / POSTER_COLUMNS
+	local cellH = height / POSTER_ROWS
+	local posterW = math.min(Config.Bounty.Poster.Width, cellW * 0.9)
+	local posterH = math.min(Config.Bounty.Poster.Height, cellH * 0.9)
+
+	local columns = math.min(count, POSTER_COLUMNS)
+	local rowsUsed = math.ceil(count / columns)
+	local row = (index - 1) // columns
+	local column = (index - 1) % columns
+	local inRow = if row == rowsUsed - 1 then count - row * columns else columns
+	local x = (column - (inRow - 1) / 2) * cellW
+	local y = ((rowsUsed - 1) / 2 - row) * cellH
+
+	local local3 = frame.right * x + frame.up * y + frame.normal * (depth / 2 + POSTER_THICKNESS / 2 + POSTER_OFFSET)
+	-- Poster size in board-local axes: the tangent axes get width/height, the normal axis the thickness.
+	local posterSize = absVector(frame.right) * posterW + absVector(frame.up) * posterH + absVector(frame.normal) * POSTER_THICKNESS
+	return board.CFrame * CFrame.new(local3), posterSize
 end
 
 -- ==================== regions ====================
@@ -213,8 +252,11 @@ local lastCity: { [Player]: string } = {}
 local leaving: { [Player]: boolean } = setmetatable({}, { __mode = "k" }) :: any
 local productionPosters: PosterSet = {}
 
-local function tell(player: Player, text: string)
-	Remotes.Server.Fire("DevReply", player, text)
+-- A one-line player-facing notice (the client shows it as a chat system line).
+function BountyService.Notify(player: Player, text: string)
+	if typeof(player) == "Instance" then
+		Remotes.Server.Fire("BountyNotice", player, { text = text })
+	end
 end
 
 local function vectorTable(v: Vector3): { x: number, y: number, z: number }
@@ -265,24 +307,27 @@ local function posterFolder(): Folder
 	return folder
 end
 
-local function boardPartOf(board: Instance): BasePart?
-	if board:IsA("BasePart") then
-		return board
-	end
-	local front = board:FindFirstChild(BOARD_FRONT_NAME, true)
-	if front and front:IsA("BasePart") then
-		return front
-	end
-	if board:IsA("Model") and board.PrimaryPart then
-		return board.PrimaryPart
+export type Board = { part: BasePart, face: Enum.NormalId }
+
+-- The first BasePart under `root` named BoardName (or BoardAltName) with a Decal named
+-- FrontDecalName; the Decal's Face is the side players look at.
+function BountyService.FindBoard(root: Instance): Board?
+	local rules = Config.Bounty
+	for _, instance in root:GetDescendants() do
+		if instance:IsA("BasePart") and (instance.Name == rules.BoardName or instance.Name == rules.BoardAltName) then
+			local decal = instance:FindFirstChild(rules.FrontDecalName)
+			if decal and decal:IsA("Decal") then
+				return { part = instance, face = decal.Face }
+			end
+		end
 	end
 	return nil
 end
 
-local placeholderBoard: BasePart? = nil
+local placeholderBoard: Board? = nil
 local placeholderLogged = false
 
-local function makePlaceholderBoard(): BasePart?
+local function makePlaceholderBoard(): Board?
 	local regionPart = BountyService.FindRegionPart(PLACEHOLDER_CITY)
 	local configured: Vector3? = Config.Missions.PlaceholderDeliveryPoints[PLACEHOLDER_CITY]
 	local position = if regionPart then regionPart.Position else configured
@@ -290,8 +335,20 @@ local function makePlaceholderBoard(): BasePart?
 		return nil
 	end
 
-	local ground = Workspace:Raycast(position + Vector3.new(0, 200, 0), Vector3.new(0, -600, 0))
-	local center = (if ground then ground.Position else position) + Vector3.new(0, 5, 0)
+	-- Like MissionService.groundBelow: the ray starts at the region box's top and ignores it,
+	-- so it finds the ground rather than the box.
+	local ground: Vector3 = position
+	if regionPart then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { regionPart }
+		local top = Vector3.new(position.X, position.Y + regionPart.Size.Y / 2, position.Z)
+		local hit = Workspace:Raycast(top, Vector3.new(0, -(regionPart.Size.Y + 1000), 0), params)
+		if hit then
+			ground = hit.Position
+		end
+	end
+	local center = ground + Vector3.new(0, 5, 0)
 
 	local folder = Workspace:FindFirstChild(PLACEHOLDER_FOLDER_NAME)
 	if folder == nil then
@@ -301,7 +358,7 @@ local function makePlaceholderBoard(): BasePart?
 	end
 
 	local part = Instance.new("Part")
-	part.Name = BOARD_NAME .. "_PLACEHOLDER"
+	part.Name = PLACEHOLDER_BOARD_NAME
 	part.Size = Vector3.new(16, 8, 0.5)
 	part.Anchored = true
 	part.CanCollide = false
@@ -312,26 +369,42 @@ local function makePlaceholderBoard(): BasePart?
 
 	if not placeholderLogged then
 		placeholderLogged = true
-		log:Warn(string.format("Workspace.%s is missing - using a placeholder board at %s", BOARD_NAME, tostring(center)))
+		log:Warn(string.format("No %s board with a %s decal under Workspace - using a placeholder board at %s", Config.Bounty.BoardName, Config.Bounty.FrontDecalName, tostring(center)))
 	end
-	return part
+	local board: Board = { part = part, face = Enum.NormalId.Front }
+	return board
 end
 
--- The real board's front part, else a placeholder (made once, reused while it exists).
-local function resolveBoard(): BasePart?
-	local board = Workspace:FindFirstChild(BOARD_NAME, true)
-	local part = board and boardPartOf(board)
-	if part then
-		return part
+local cachedBoard: Board? = nil
+local boardCheckedAt = -math.huge
+
+-- The real board, else a placeholder (made once, reused while it exists). The workspace scan
+-- repeats at most every BOARD_RESCAN_SECONDS while there is no valid board.
+local BOARD_RESCAN_SECONDS = 10
+
+local function resolveBoard(): Board?
+	if cachedBoard and cachedBoard.part:IsDescendantOf(Workspace) then
+		return cachedBoard
 	end
-	if placeholderBoard and placeholderBoard:IsDescendantOf(Workspace) then
+	local now = os.clock()
+	if now - boardCheckedAt < BOARD_RESCAN_SECONDS and cachedBoard == nil then
+		return placeholderBoard
+	end
+	boardCheckedAt = now
+	local found = BountyService.FindBoard(Workspace)
+	if found then
+		cachedBoard = found
+		return found
+	end
+	cachedBoard = nil
+	if placeholderBoard and placeholderBoard.part:IsDescendantOf(Workspace) then
 		return placeholderBoard
 	end
 	placeholderBoard = makePlaceholderBoard()
 	return placeholderBoard
 end
 
-local function makePoster(entry: Entry, folder: Instance): Part
+local function makePoster(entry: Entry, folder: Instance, face: Enum.NormalId): Part
 	local poster = Instance.new("Part")
 	poster.Name = "Poster_" .. entry.userId
 	poster.Anchored = true
@@ -342,7 +415,7 @@ local function makePoster(entry: Entry, folder: Instance): Part
 	poster:SetAttribute("TargetUserId", entry.userId)
 
 	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Front
+	gui.Face = face
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
 	gui.CanvasSize = Vector2.new(300, 400)
 	gui.Parent = poster
@@ -375,7 +448,7 @@ local function makePoster(entry: Entry, folder: Instance): Part
 	prompt.Triggered:Connect(function(player: Player)
 		local ok, reason = BountyService.Take(player, userId)
 		if not ok and reason then
-			tell(player, reason)
+			BountyService.Notify(player, reason)
 		end
 	end)
 
@@ -406,8 +479,8 @@ local function writePoster(poster: Part, entry: Entry)
 end
 
 -- Makes, updates and removes posters so `set` shows exactly `entries` (already sorted and capped)
--- on `board`'s front face, parented under `folder`. A nil board clears every poster.
-function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: BasePart?, folder: Instance)
+-- on `board`'s face, parented under `folder`. A nil board clears every poster.
+function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: Board?, folder: Instance)
 	local keep: { [number]: boolean } = {}
 	if board then
 		for index, entry in entries do
@@ -417,14 +490,21 @@ function BountyService.SyncPosters(set: PosterSet, entries: { Entry }, board: Ba
 			if existing then
 				poster = existing
 			else
-				poster = makePoster(entry, folder)
+				poster = makePoster(entry, folder, board.face)
 				set[entry.userId] = poster
 			end
 			writePoster(poster, entry)
 
-			local x, y, size = BountyService.PosterSlot(index, board.Size)
-			poster.Size = Vector3.new(size.X, size.Y, 0.1)
-			poster.CFrame = board.CFrame * CFrame.new(x, y, -(board.Size.Z / 2 + 0.06))
+			local cframe, size = BountyService.PosterLayout(board.part, board.face, index, #entries)
+			poster.Size = size
+			poster.CFrame = cframe
+			local gui = poster:FindFirstChildOfClass("SurfaceGui")
+			if gui then
+				gui.Face = board.face
+				-- The canvas takes the poster's own proportions, so the text is never stretched.
+				local frame = FACE_FRAMES[board.face]
+				gui.CanvasSize = Vector2.new(absVector(frame.right):Dot(size) * CANVAS_PIXELS_PER_STUD, absVector(frame.up):Dot(size) * CANVAS_PIXELS_PER_STUD)
+			end
 		end
 	end
 	for userId, poster in set do
@@ -498,9 +578,12 @@ local function isEquipped(hunter: Player, hunt: Hunt): boolean
 	return character ~= nil and hunt.tool.Parent == character
 end
 
--- One tracking tick for one hunter. Nothing is sent while the Tool is unequipped except one
--- final state clearing `revealed`.
-local function trackOne(hunter: Player, hunt: Hunt)
+-- Brings one hunter's state up to date. `advance` is true only on the tracking tick: it is the
+-- one thing that moves the tracking clock. With it false (an equip or unequip event) only the
+-- equipped flag changes and the current state is re-sent. Nothing is sent while the Tool is
+-- unequipped except one final state clearing `revealed`, which leaves the last known spot where
+-- the hunter last saw the target.
+local function trackOne(hunter: Player, hunt: Hunt, advance: boolean)
 	if hunts[hunter] ~= hunt then
 		return
 	end
@@ -508,7 +591,16 @@ local function trackOne(hunter: Player, hunt: Hunt)
 	if not isEquipped(hunter, hunt) then
 		if hunt.equipped then
 			hunt.equipped = false
-			hunt.tracking = { lastKnown = hunt.tracking.lastKnown, revealed = false, beyondSeconds = 0 }
+			local spot = if hunt.tracking.revealed then hunt.tracking.lastSeen else hunt.tracking.lastKnown
+			hunt.tracking = { lastKnown = spot, lastSeen = spot, revealed = false, beyondSeconds = 0 }
+			fireState(hunter, hunt)
+		end
+		return
+	end
+
+	if not advance then
+		if not hunt.equipped then
+			hunt.equipped = true
 			fireState(hunter, hunt)
 		end
 		return
@@ -678,7 +770,7 @@ function BountyService.Take(hunter: Player, targetUserId: number): (boolean, str
 	local hunt: Hunt = {
 		targetUserId = targetUserId,
 		tool = tool,
-		tracking = { lastKnown = targetPos, revealed = false, beyondSeconds = 0 },
+		tracking = { lastKnown = targetPos, lastSeen = targetPos, revealed = false, beyondSeconds = 0 },
 		equipped = false,
 		connections = {},
 	}
@@ -693,7 +785,7 @@ function BountyService.Take(hunter: Player, targetUserId: number): (boolean, str
 		end)
 	)
 	local function onEquipChange()
-		task.defer(trackOne, hunter, hunt)
+		task.defer(trackOne, hunter, hunt, false)
 	end
 	table.insert(hunt.connections, tool.Equipped:Connect(onEquipChange))
 	table.insert(hunt.connections, tool.Unequipped:Connect(onEquipChange))
@@ -727,6 +819,7 @@ function BountyService.ClearForImprisonment(prisoner: Player, hunter: Player): R
 	RankService.AddDeed(hunter, "Gold", reward.gold)
 
 	dropHuntersOf(prisoner, string.format("%s is no longer wanted.", prisoner.Name), hunter, "Bounty collected.")
+	BountyService.Notify(hunter, "Bounty collected.")
 	onBountyChanged(prisoner)
 	log:Info(string.format("%s imprisoned %s: %d Copper, %d Magoi, %d Gold Rukh", hunter.Name, prisoner.Name, reward.copper, reward.magoi, reward.gold))
 	return reward
@@ -775,7 +868,7 @@ local function onToolEquippedRemote(player: Player, equipped: boolean)
 	if hunt == nil or equipped ~= isEquipped(player, hunt) then
 		return
 	end
-	trackOne(player, hunt)
+	trackOne(player, hunt, false)
 end
 
 -- ==================== dev commands ====================
@@ -862,7 +955,7 @@ function BountyService:Start()
 			task.wait(tickSeconds)
 			sinceCities += tickSeconds
 			for hunter, hunt in hunts do
-				trackOne(hunter, hunt)
+				trackOne(hunter, hunt, true)
 			end
 			if sinceCities >= Config.Bounty.CityRefreshSeconds then
 				sinceCities = 0

@@ -28,15 +28,18 @@ end
 
 export type TrackingState = {
 	lastKnown: Vector3,
+	-- Where the hunter last saw the target (updated every tick the target is within RevealStuds).
+	lastSeen: Vector3,
 	revealed: boolean,
 	-- Seconds the hunter has stayed beyond RevealStuds since being revealed.
 	beyondSeconds: number,
 }
 
--- One tracking tick (Config.Bounty.Tracking.TickSeconds) for a hunter with the bounty Tool equipped. `targetPos` is nil while the target has no character. Returns a new state; never mutates `state`. Reach: a hunter near the last known spot refreshes it to the target's real position. Reveal: a hunter near the target sees them; staying away for LoseSeconds loses them, and the target's position at that moment becomes the last known spot.
+-- One tracking tick (Config.Bounty.Tracking.TickSeconds) for a hunter with the bounty Tool equipped. `targetPos` is nil while the target has no character. Returns a new state; never mutates `state`. Reach: a hunter near the last known spot refreshes it to the target's real position. Reveal: a hunter near the target sees them; staying away for LoseSeconds loses them, and where the hunter last saw them becomes the last known spot.
 function Bounty.NextTrackingState(hunterPos: Vector3, targetPos: Vector3?, state: TrackingState): TrackingState
 	local rules = Config.Bounty.Tracking
 	local lastKnown = state.lastKnown
+	local lastSeen = state.lastSeen
 	local revealed = state.revealed
 	local beyondSeconds = state.beyondSeconds
 
@@ -47,18 +50,19 @@ function Bounty.NextTrackingState(hunterPos: Vector3, targetPos: Vector3?, state
 	if targetPos and (hunterPos - targetPos).Magnitude <= rules.RevealStuds then
 		revealed = true
 		beyondSeconds = 0
+		lastSeen = targetPos
 	elseif revealed then
 		beyondSeconds += rules.TickSeconds
 		if beyondSeconds >= rules.LoseSeconds then
 			revealed = false
 			beyondSeconds = 0
-			lastKnown = targetPos or lastKnown
+			lastKnown = lastSeen
 		end
 	else
 		beyondSeconds = 0
 	end
 
-	return { lastKnown = lastKnown, revealed = revealed, beyondSeconds = beyondSeconds }
+	return { lastKnown = lastKnown, lastSeen = lastSeen, revealed = revealed, beyondSeconds = beyondSeconds }
 end
 
 -- What imprisoning a player with bounty `amount` pays the hunter. A bounty below the threshold pays nothing (the jail refuses it anyway).

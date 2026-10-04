@@ -459,27 +459,6 @@ register("rukh", "<gold> <black> [player] - set both Rukh tallies", function(cal
 	return string.format("%s's Rukh: %d/%d -> %d/%d", target.Name, oldGold, oldBlack, gold, black)
 end)
 
-register("bounty", "<n> [player] - set bounty", function(caller, args)
-	local rest, playerArg = splitTrailingPlayer(args)
-	local n = tonumber(rest[1])
-	if n == nil then
-		return "usage: .bounty <n> [player]"
-	end
-	local target, err = resolvePlayer(caller, playerArg)
-	if target == nil then
-		return err or "player not found"
-	end
-	local data = DataService.Get(target)
-	if data == nil then
-		return string.format("%s has no save loaded", target.Name)
-	end
-
-	local old = data.Bounty
-	data.Bounty = n
-
-	return string.format("%s's bounty: %d -> %d", target.Name, old, n)
-end)
-
 -- Positional: quote a multi-word epithet so it arrives as one token, e.g. .epithet "The Bold"
 -- PlayerName.
 register("epithet", '<text> [player] - set epithet, quote multi-word text', function(caller, args)

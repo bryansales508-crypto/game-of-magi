@@ -3301,6 +3301,7 @@ local function testBounty(results: { Check })
 		board.CFrame = CFrame.new(6000, 10, 6000)
 		board.Parent = scratch
 		local set: BountyService.PosterSet = {}
+		local boardRef: BountyService.Board = { part = board, face = Enum.NormalId.Front }
 
 		local entries = BountyService.BuildEntries({
 			{ userId = 1, name = "Low", bounty = threshold, city = "Unknown" },
@@ -3309,7 +3310,7 @@ local function testBounty(results: { Check })
 		}, Config.Bounty.MaxPosters)
 		expect(results, "Bounty: posters list only the wanted, highest bounty first", #entries == 2 and entries[1].name == "High" and entries[2].name == "Low")
 
-		BountyService.SyncPosters(set, entries, board, scratch)
+		BountyService.SyncPosters(set, entries, boardRef, scratch)
 		local first, second = set[2], set[1]
 		expect(results, "Bounty: a wanted player gets a poster", first ~= nil and second ~= nil and set[3] == nil)
 		expect(results, "Bounty: a poster carries a Take prompt and a SurfaceGui", first ~= nil and first:FindFirstChildOfClass("ProximityPrompt") ~= nil and first:FindFirstChildOfClass("SurfaceGui") ~= nil)
@@ -3318,9 +3319,9 @@ local function testBounty(results: { Check })
 		local nameLabel = if gui then gui:FindFirstChild("Name") else nil
 		expect(results, "Bounty: the poster shows the target's name", nameLabel ~= nil and nameLabel:IsA("TextLabel") and nameLabel.Text == "High")
 
-		BountyService.SyncPosters(set, { entries[2] }, board, scratch)
+		BountyService.SyncPosters(set, { entries[2] }, boardRef, scratch)
 		expect(results, "Bounty: a poster disappears when its player stops being wanted", set[2] == nil and set[1] ~= nil and first ~= nil and first.Parent == nil)
-		BountyService.SyncPosters(set, {}, board, scratch)
+		BountyService.SyncPosters(set, {}, boardRef, scratch)
 		expect(results, "Bounty: no wanted players leaves no posters", next(set) == nil)
 
 		local many: { BountyService.Entry } = {}
@@ -3328,6 +3329,47 @@ local function testBounty(results: { Check })
 			table.insert(many, { userId = i, name = "P" .. i, bounty = threshold + i, city = "Unknown" })
 		end
 		expect(results, "Bounty: the poster list is capped", #BountyService.BuildEntries(many, Config.Bounty.MaxPosters) == Config.Bounty.MaxPosters)
+	end
+
+	-- The board is found by its decal, and posters sit on the decal's face.
+	do
+		local faces = { Enum.NormalId.Front, Enum.NormalId.Back, Enum.NormalId.Left, Enum.NormalId.Right, Enum.NormalId.Top, Enum.NormalId.Bottom }
+		local root = Instance.new("Folder")
+		root.Parent = scratch
+		for _, face in faces do
+			local board = Instance.new("Part")
+			board.Name = Config.Bounty.BoardName
+			board.Anchored = true
+			board.Size = Vector3.new(0.5, 14.1, 45.8)
+			board.CFrame = CFrame.new(7000, 50, 7000) * CFrame.Angles(0, math.rad(30), 0)
+			local decal = Instance.new("Decal")
+			decal.Name = Config.Bounty.FrontDecalName
+			decal.Face = face
+			decal.Parent = board
+			board.Parent = root
+
+			local found = BountyService.FindBoard(root)
+			expect(results, "Bounty: the board is found by its frontface decal (" .. face.Name .. ")", found ~= nil and found.part == board and found.face == face)
+
+			local set: BountyService.PosterSet = {}
+			local entries: { BountyService.Entry } = {}
+			for i = 1, 3 do
+				table.insert(entries, { userId = i, name = "P" .. i, bounty = 50 - i, city = "Unknown" })
+			end
+			BountyService.SyncPosters(set, entries, found, root)
+			local poster = set[1]
+			local normal = board.CFrame:VectorToWorldSpace(Vector3.FromNormalId(face))
+			local beyond = poster ~= nil and (poster.Position - board.Position):Dot(normal) > math.abs(Vector3.FromNormalId(face):Dot(board.Size)) / 2
+			local gui = if poster then poster:FindFirstChildOfClass("SurfaceGui") else nil
+			expect(results, "Bounty: posters sit outside the " .. face.Name .. " face with their SurfaceGui on it", beyond and gui ~= nil and gui.Face == face)
+			if poster then
+				local localPos = board.CFrame:PointToObjectSpace(poster.Position)
+				expect(results, "Bounty: posters stay within the board's extent (" .. face.Name .. ")", math.abs(localPos.Y) <= board.Size.Y / 2 + 0.01 or face == Enum.NormalId.Top or face == Enum.NormalId.Bottom)
+			end
+			BountyService.SyncPosters(set, {}, found, root)
+			board:Destroy()
+		end
+		root:Destroy()
 	end
 
 	-- The Tool is the bounty.
@@ -3368,7 +3410,7 @@ local function testBounty(results: { Check })
 		local reach, reveal, lose = Config.Bounty.Tracking.ReachStuds, Config.Bounty.Tracking.RevealStuds, Config.Bounty.Tracking.LoseSeconds
 		local tickSeconds = Config.Bounty.Tracking.TickSeconds
 		local start = Vector3.new(0, 0, 0)
-		local state: BountyData.TrackingState = { lastKnown = start, revealed = false, beyondSeconds = 0 }
+		local state: BountyData.TrackingState = { lastKnown = start, lastSeen = start, revealed = false, beyondSeconds = 0 }
 
 		local nearTarget = Vector3.new(reach - 5, 0, 0)
 		local next1 = BountyData.NextTrackingState(Vector3.new(0, 0, 5), nearTarget, state)
@@ -3379,7 +3421,7 @@ local function testBounty(results: { Check })
 		local far = BountyData.NextTrackingState(Vector3.new(0, 0, reach + 40), farTarget, state)
 		expect(results, "Bounty: far from the last known spot it is not refreshed", far.lastKnown == start and not far.revealed)
 
-		local revealed: BountyData.TrackingState = { lastKnown = start, revealed = true, beyondSeconds = 0 }
+		local revealed: BountyData.TrackingState = { lastKnown = start, lastSeen = start, revealed = true, beyondSeconds = 0 }
 		local away = Vector3.new(0, 0, reveal + 100)
 		local current = revealed
 		local ticks = math.ceil(lose / tickSeconds)
@@ -3389,12 +3431,22 @@ local function testBounty(results: { Check })
 		expect(results, "Bounty: a revealed target stays revealed until LoseSeconds pass", current.revealed)
 		current = BountyData.NextTrackingState(away, farTarget, current)
 		expect(results, "Bounty: after LoseSeconds beyond reveal range they are lost", not current.revealed)
-		expect(results, "Bounty: losing them marks where they were", current.lastKnown == farTarget)
+		expect(results, "Bounty: losing them marks where they were last seen", current.lastKnown == start)
 
-		local back = BountyData.NextTrackingState(Vector3.new(0, 0, 5), Vector3.new(10, 0, 0), { lastKnown = start, revealed = true, beyondSeconds = lose - 1 })
+		local back = BountyData.NextTrackingState(Vector3.new(0, 0, 5), Vector3.new(10, 0, 0), { lastKnown = start, lastSeen = start, revealed = true, beyondSeconds = lose - 1 })
 		expect(results, "Bounty: coming back in range resets the lose timer", back.revealed and back.beyondSeconds == 0)
-		local noTarget = BountyData.NextTrackingState(start, nil, { lastKnown = start, revealed = false, beyondSeconds = 0 })
+		local noTarget = BountyData.NextTrackingState(start, nil, { lastKnown = start, lastSeen = start, revealed = false, beyondSeconds = 0 })
 		expect(results, "Bounty: a target with no character changes nothing", noTarget.lastKnown == start and not noTarget.revealed)
+
+		-- A target who walks off after being seen is lost at the spot they were last seen, not where they went.
+		local seenAt = Vector3.new(reveal - 10, 0, 0)
+		local moving = BountyData.NextTrackingState(start, seenAt, { lastKnown = start, lastSeen = start, revealed = false, beyondSeconds = 0 })
+		expect(results, "Bounty: a revealed target's last seen spot follows them", moving.revealed and moving.lastSeen == seenAt)
+		local wandered = Vector3.new(reveal + 500, 0, 0)
+		for _ = 1, ticks do
+			moving = BountyData.NextTrackingState(start, wandered, moving)
+		end
+		expect(results, "Bounty: losing a moving target marks their last seen spot", not moving.revealed and moving.lastKnown == seenAt)
 	end
 
 	scratch:Destroy()

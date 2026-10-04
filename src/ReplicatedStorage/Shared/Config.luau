@@ -292,11 +292,46 @@ Config.Bounty = {
 	RankGateIndex = 3,
 	CityRefreshSeconds = 20,
 	MaxPosters = 8,
+	-- The board is the first BasePart under Workspace named BoardName (or BoardAltName) that has a Decal named FrontDecalName; the Decal's Face is the side posters go on. Poster Width/Height (studs) shrink to fit when the board is small.
+	BoardName = "QuestBoard",
+	BoardAltName = "BountyBoard",
+	FrontDecalName = "frontface",
+	Poster = {
+		Width = 6,
+		Height = 6,
+	},
 	Tracking = {
 		TickSeconds = 1,
 		ReachStuds = 25,
 		RevealStuds = 80,
 		LoseSeconds = 6,
+	},
+	-- Carrying a knocked-out player (CarryService): pick-up reach, walk speed while carrying, how long the carried stay knocked after a drop, where the body rides (Offset from the carrier's torso, TiltDegrees of roll so it lies across the shoulder), and how often the carry refreshes the Knocked status.
+	Carry = {
+		ReachStuds = 6,
+		SpeedMult = 0.6,
+		GraceSeconds = 4,
+		Offset = Vector3.new(0.6, 1.4, 0),
+		TiltDegrees = 90,
+		RefreshSeconds = 0.5,
+		DropDistance = 4,
+	},
+	-- The jail (JailService). Sentence = bounty * SecondsPerBountyPoint clamped to MinSeconds..MaxSeconds. A prisoner outside the cell bounds is put back, checked every TickSeconds. PlaceholderOffset: where the placeholder cell (used only when no real jail is found) sits from the city's region centre; CellRadius is the placeholder's equivalent of the bounds.
+	Jail = {
+		-- Bryan's jail: the first Workspace descendant named JailFolderName that has a DropoffName part and a CellFolderName folder holding a SpawnName part. The cell's bounds are every part under CellFolderName, grown by BoundsMargin studs; leaving them (or being teleported out) puts the prisoner back at the spawn.
+		JailFolderName = "Jail",
+		DropoffName = "JailDropoff",
+		CellFolderName = "LargeCell",
+		SpawnName = "JailSpawn",
+		BoundsMargin = 2,
+		-- ReachStuds: how far from the dropoff part's box a hunter may stand to hand someone over.
+		ReachStuds = 8,
+		SecondsPerBountyPoint = 6,
+		MinSeconds = 60,
+		MaxSeconds = 600,
+		CellRadius = 12,
+		TickSeconds = 1,
+		PlaceholderOffset = Vector3.new(40, 0, 40),
 	},
 	Reward = {
 		MagoiBase = 25,
@@ -371,6 +406,9 @@ table.freeze(Config.Missions.Beacon)
 table.freeze(Config.Missions.PlaceholderDeliveryPoints)
 table.freeze(Config.Missions)
 table.freeze(Config.Bounty.Tracking)
+table.freeze(Config.Bounty.Poster)
+table.freeze(Config.Bounty.Carry)
+table.freeze(Config.Bounty.Jail)
 table.freeze(Config.Bounty.Reward)
 table.freeze(Config.Bounty)
 

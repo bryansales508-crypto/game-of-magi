@@ -989,6 +989,11 @@ local function onMissionStart(player: Player, destinationKey: string)
 	if board == nil or runs[player] ~= nil then
 		return
 	end
+	-- A prisoner runs no deliveries.
+	local prisoner = player.Character
+	if prisoner and StatusService.Has(prisoner, "Jailed") then
+		return
+	end
 	local dest = board.destinations[destinationKey]
 	-- Rejected unless the destination is on this board's own route
 	-- (Validate.string only rejects nonsense strings).
