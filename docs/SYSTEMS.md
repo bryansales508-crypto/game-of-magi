@@ -25,9 +25,9 @@ Paths are shortened: `Server` = `ServerScriptService/Server`, `Client` = `Starte
 - `Config.Debug.FreshSave` (Studio only) puts every session on ProfileStore's in-memory mock: nothing persists. DataService also falls back to the mock for the rest of that server's life if the first real session call throws in Studio. On a live server a load failure kicks the player ("Your save couldn't be loaded. Please rejoin in a moment."); a stolen session or a DataStore outage mid-session does the same.
 - API: `Get`, `WaitFor(player, timeout?)`, `IsLoaded`, `Loaded` (signal), `Replaced` (signal, fires when a save is replaced in place so attribute mirrors can re-publish), `OnReleasing(handler)` (runs before the profile is released, so handlers can still read it), `Save`, `Wipe` (full reset, clears the combat unlock), `NewLife` (reset for a new character; keeps `Meta.Lives` plus one, `Meta.Created` and `Meta.Unlocks.Combat`), `ResetToTemplate` (the shared reset step).
 
-**Save shape (schema version 4, `SaveSchema.Template`).**
+**Save shape (schema version 5, `SaveSchema.Template`).**
 ```
-Version   4
+Version   5
 Character = { FirstName, Gender (0 = not chosen), Race (2 = Human), Kingdom, SkinTone (0 = not chosen),
               HairColor {R,G,B}, EyeColor, FaceBase, MouthShape,
               Height (10 = not rolled yet), GrowthProfile ("v1|start|adult|spurtAge|fatEnd"),
@@ -35,7 +35,8 @@ Character = { FirstName, Gender (0 = not chosen), Race (2 = Human), Kingdom, Ski
 Age       = { Years (starts 13), TimePassed (os.time of last aging tick), ProgToAge (seconds banked) }
 Progress  = { Magoi, GoldRukh, BlackRukh, Epithet,
               PendingEpithet? = { rank, choices {3 strings} },
-              DeliveryStreak, Routes = { [cityKey] = count }, Intercepted }
+              DeliveryStreak, Routes = { [cityKey] = count }, Intercepted,
+              Wanted? = UserId of the bounty a hunter holds (nil = none), JailUntil (os.time, 0 = free) }
 Bounty    number
 Economy   = { Copper (starts 20), Silver, Gold }
 Gear      = { Shirt, Pants, Hats {3 slots}, Inventory {item codes} }
@@ -43,7 +44,7 @@ Family, Magic   reserved, empty
 Meta      = { Created, LastSeen, Lives (how many characters this player has had),
               Unlocks = { Combat } }
 ```
-- Missing keys are filled from the template by `Profile:Reconcile()`, then `SaveSchema.Migrate` walks an old save up one version at a time. v2 and v4 are empty migrations (new optional fields); v3 grants existing saves the combat unlock and a full set of lives. A brand-new save is created already at the current version, so no migration runs on it.
+- Missing keys are filled from the template by `Profile:Reconcile()`, then `SaveSchema.Migrate` walks an old save up one version at a time. v2 and v4 are empty migrations (new optional fields); v3 grants existing saves the combat unlock and a full set of lives; v5 sets `Progress.Wanted` nil and `Progress.JailUntil` 0 (M9 bounty hunting and the jail). A brand-new save is created already at the current version, so no migration runs on it.
 - `SaveSchema.NewLife` rolls the random first-time look (first name, hair colour, eye colour, face base, mouth shape).
 - **Changing the save format means updating this section** and adding a migration.
 
@@ -259,11 +260,11 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 - **Modifiers** (one shared table; each has `key`, display `name`, roll weight shown as `chance`, text): TimeCrunch, CourierLoop, HighlyValuable, HeavyCargo, VIP, FragilePackage, CleartheRoute. They roll from the player's own `Progress.Routes[destination]` count and the destination's Safety.
 - **A modifier failing never ends the run.** It marks only that modifier failed (`MarkFailed`, idempotent) and drops its multiplier from the payout, and the client greys its pop-out through a `ModifierFailed` update. TimeCrunch fails after `TimeCrunchSeconds` (180 s); FragilePackage and VIP fail on any landed hit (via `CombatService.HitLanded`); CleartheRoute fails unless the courier is credited with a knockout during the run. HeavyCargo slows the courier (0.75×) and scales the package up. CourierLoop sends the courier back to the start after the first arrival (a `"Started"` update with `returnPosition` and the `failed` list). HighlyValuable gives only a pay multiplier plus a permanent gold glow on the package. Only leaving, dying, respawning, an interception or `.mission fail` end a run early.
 - **Payout.** `floor(1 + 10/rankIndex + population×1.25 + streak×1.25)`, times the combined multiplier of the intact modifiers (additive: `1 + Σ(multiplier − 1)`), times the intercepted-mark offer multiplier. Paid as Copper through `EconomyService.GiveCopperValue`, plus `MagoiPerDelivery` (10) Magoi and 1 Gold Rukh through RankService. A completed delivery adds 1 to `Progress.DeliveryStreak` and to `Progress.Routes[destination]`; any failure or interception resets the streak. Arrival is within `ArriveStuds` (10), checked on one shared 0.5 s loop together with the timer and beacon.
-- **Interception.** If the courier is knocked out by another player (resolved by UserId), and the courier is at least `InterceptMinStuds` (100) from the start or `InterceptMinSeconds` (30) into the run, the run settles as `"Intercepted"` exactly once (`TrySettle`): the courier's save is untouched, and the attacker is paid instantly (`InterceptPay`, which excludes CleartheRoute and ignores the fatal hit's own modifier failures) plus usually 1 Black Rukh, and `Bounty` rises. A knockout outside those limits, or with no player attacker, just fails the run.
+- **Interception.** If the courier is knocked out by another player (resolved by UserId), and the courier is at least `InterceptMinStuds` (100) from the start or `InterceptMinSeconds` (30) into the run, the run settles as `"Intercepted"` exactly once (`TrySettle`): the courier's save is untouched, and the attacker is paid instantly (`InterceptPay`, which excludes CleartheRoute and ignores the fatal hit's own modifier failures) plus usually 1 Black Rukh, and `Bounty` rises (through `BountyService.Add`, section 17). A knockout outside those limits, or with no player attacker, just fails the run.
 - **Intercepted mark.** Each interception adds a stack to the courier's `Progress.Intercepted`. `OfferMultiplier(stacks) = max(InterceptedFloor, InterceptedDecay ^ stacks)` (1× at none, 0.5× at one, floor 0.1×). It scales every board offer, that courier's own next payout, and an interceptor's payout. It is read fresh each time (never baked into the cached roll) and cleared only after a completed delivery pays. A second interception of an already-marked courier gives no Black Rukh (`InterceptorEarnsBlackRukh`).
 - **Package.** A package is strapped to the courier's back; `CourierBeacon` (character attribute) makes the courier visible: a 30 s on / 3 s off cycle, permanently on for HighlyValuable.
 - **Remotes:** `MissionOpenBoard(cityKey)`, `MissionStart(destinationKey)`, `MissionExit()` (client → server, 2 per 1 s; city keys are validated against `Cities.Keys`). `MissionBoard({city, destinations{key, name, color, lore, image, pay, modifiers{key, name, chance, text}}, intercepted, offerMultiplier})` or nil to close; `MissionUpdate({state = "Started"|"Finished"|"Failed"|"Intercepted"|"Cleared"|"ModifierFailed", modifiers, failed, timerEnds, returnPosition, key})` (server → client).
-- **Attributes:** `OnMission`, `MissionDestination`, `MissionStreak`, `Bounty` (Player); `CourierBeacon` (character).
+- **Attributes:** `OnMission`, `MissionDestination`, `MissionStreak` (Player; `Bounty` now belongs to BountyService); `CourierBeacon` (character).
 - **MissionController (client).** Draws the board (city buttons in the old Frame/TextButton layout, per-city colours, modifier cards showing the chance percentage, the pop-outs), the quest tracker (kept clear of FOV changes), and the courier beacon (fades over 45 s).
 - **Dev commands:** `.mission start <city> | finish | fail | streak <n> | mark [n] | intercept | log on|off`, plus `.tp <city>`, which falls back to a city's drop-off or region when it has no spawn.
 
@@ -297,7 +298,7 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 **Dev commands (`Server/Services/DevService.luau`).**
 - Typed in chat as `.command args`, or sent over `DevCommand` (5 per 1 s) from the client dev panel. The server decides who is a dev: everyone while `Config.Debug.Enabled` (Studio), otherwise only UserIds in `Config.Dev.Admins`. A non-dev gets no reply (they can't tell a real command from an unknown one) and a throttled warning is logged.
 - Other services add commands with `DevService.Register(name, help, run)`. A line starting with a dot that is not a server command is forwarded to the caller's client as `DevLocalCommand`.
-- Built into DevService: `.cmd` (list commands), `.state [player]`, `.watch on|off`, `.coins`, `.coins+`, `.age`, `.age+`, `.magoi`, `.magoi+`, `.rukh`, `.bounty`, `.epithet`, `.tp <city>`, `.cities`, `.timescale <n>`, `.mortal on|off`, `.fresh [player]` (wipe and reload), `.save [player]`. Other services register theirs (`.hp`, `.tier`, `.birthday`, `.heart`, `.lives`, `.kill`, `.shop`, `.mission`, `.time`, `.npc`, `.dummy`, combat commands, `.rankup`, `.price`, `.pay`).
+- Built into DevService: `.cmd` (list commands), `.state [player]`, `.watch on|off`, `.coins`, `.coins+`, `.age`, `.age+`, `.magoi`, `.magoi+`, `.rukh`, `.epithet`, `.tp <city>`, `.cities`, `.timescale <n>`, `.mortal on|off`, `.fresh [player]` (wipe and reload), `.save [player]`. Other services register theirs (`.hp`, `.tier`, `.birthday`, `.heart`, `.lives`, `.kill`, `.shop`, `.mission`, `.time`, `.npc`, `.dummy`, combat commands, `.rankup`, `.price`, `.pay`, `.bounty`).
 - Runtime overrides live here because Config is frozen: `GetTimeScale()`, `IsMortal()`, `OnAgeChanged(hook)`.
 - **Client (`Controllers/DevController`).** An F8 status overlay (name, age, Magoi, rank, epithet, bounty, coins, health, position and so on, from `DevState`) and a backquote command panel. Replies come back as `DevReply` and are also posted to chat. Local commands handled on the client: `.region`, `.music`, `.lights`.
 - **Remotes:** `DevCommand(line)` (client → server); `DevReply(text)`, `DevState(table)`, `DevLocalCommand(text)` (server → client).
@@ -311,7 +312,7 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 **Remotes (`RS/Shared/Remotes.luau`).**
 - Every remote is declared once in `Remotes.Definitions` with a kind, argument validators and a rate limit. The server creates them under `ReplicatedStorage.Net` at startup. A call is rate-limited first, then argument-validated (type, range, length, string whitelists); a bad call is dropped with one warning per window, and a handler error is caught and logged. Outbound-only (server → client) remotes declare no arguments, so a client firing them back is dropped.
 - Server: `Remotes.Server.On(name, handler)`, `Handle`, `Fire(name, player, ...)`. Client: `Remotes.Client.On`, `Fire`, `Invoke`.
-- All declared remotes: `DebugPing`, `ClientReady`, `DevCommand`, `DevReply`, `DevState`, `DevLocalCommand`, `CreateCharacter`, `HeartAttack`, `RukhSceneDone`, `Died`, `Run`, `Dash`, `CombatEvent`, `AttackStart`, `AttackHit`, `AttackContinue`, `AttackCancel`, `Block`, `SetStance`, `RankUp`, `AlignmentChanged`, `ChooseEpithet`, `CoinMessage`, `MissionBoard`, `MissionOpenBoard`, `MissionStart`, `MissionExit`, `MissionUpdate`. Payload shapes are in the section of the system that owns each one.
+- All declared remotes: `DebugPing`, `ClientReady`, `DevCommand`, `DevReply`, `DevState`, `DevLocalCommand`, `CreateCharacter`, `HeartAttack`, `RukhSceneDone`, `Died`, `Run`, `Dash`, `CombatEvent`, `AttackStart`, `AttackHit`, `AttackContinue`, `AttackCancel`, `Block`, `SetStance`, `RankUp`, `AlignmentChanged`, `ChooseEpithet`, `CoinMessage`, `MissionBoard`, `MissionOpenBoard`, `MissionStart`, `MissionExit`, `MissionUpdate`, `BountyState`, `BountyToolEquipped`. Payload shapes are in the section of the system that owns each one.
 
 **Rojo layout (`default.project.json`).**
 
@@ -325,6 +326,28 @@ Combat is shelved for a from-scratch redesign after the other systems are finish
 | StarterPlayer | `src/StarterPlayer` | `StarterCharacterScripts` (Animate) and `StarterPlayerScripts` (Client controllers, RbxCharacterSounds); camera max zoom 15, dynamic heads and layered clothing off, emotes off |
 
 Workspace is never synced.
+
+---
+
+## 17. Bounty Hunting (M9-01)
+
+Server: `Server/Services/BountyService.luau`. Data: `Shared/Data/Bounty.luau` (pure rules), `Config.Bounty` (the numbers). Intercepting a courier is the only crime in this pass; knocking someone out adds nothing (it could be farmed).
+
+- **Bounty.** `BountyService` owns `Bounty` on the save and the `Bounty` Player attribute (re-published on load and on `DataService.Replaced`). `Add(player, amount, reason)`, `Get`, `Set` (dev), `IsWanted` (bounty >= `Config.Bounty.PostingThreshold`, 20). MissionService's interception goes through `Add`. The pure `ApplyAdd`/`ApplySet` work on a save table.
+- **Wanted list.** Every online player at or over the threshold, highest bounty first (`GetWanted`). Their last known city is the `<key>REGION` part under `Workspace.Regions` (7 cities) that contains their HumanoidRootPart, re-read every `CityRefreshSeconds` (20) and the moment they become wanted; "Unknown" outside every region. `BountyService.FindRegionPart(cityKey)` is the shared region lookup (MissionService uses it for placeholder drop-offs).
+- **The board.** A physical board, not a GUI. Bryan places `Workspace.BountyBoard`: a Model with a front-facing Part named `BoardFront` (else the Model's PrimaryPart). The front is the Part's local -Z (the face a `Front` surface would show). Until it exists the server makes a placeholder (`Workspace.BountyPlaceholders.BountyBoard_PLACEHOLDER`, wood-brown, 16 x 8 studs, at Qarzin's region centre, dropped to the ground); both placeholder and posters are server-made and swept on start.
+- **Posters.** One Part per wanted player in `Workspace.BountyPosters`, named `Poster_<userId>` (attribute `TargetUserId`), laid in a 4 x 2 grid on the board's front, highest bounty first, at most `MaxPosters` (8). Each is a Part (so it can carry its own ProximityPrompt "Take bounty", hold 0.4 s, 10 studs) with a SurfaceGui (WANTED, name, "Bounty: n", "Last seen: city"). They are reconciled when the wanted list, a bounty or a city changes (`SyncPosters`).
+- **Taking a bounty** (`Take(hunter, userId)`, fired by the prompt). Refused, with the reason sent to the hunter as a `DevReply` line, when: the hunter is the target; below Adventurer (rank index 3, 600 Magoi); the hunter already holds a bounty; the target is offline, unloaded or no longer wanted; the hunter has no Backpack or the target no character. On success the hunter gets a Tool named `Bounty: <name>` in the Backpack (no handle, can't be dropped, attribute `BountyTarget` = target UserId, tooltip with the bounty), `Progress.Wanted` = the target's UserId, the Player attribute `WantedTarget` = their name, and a `BountyState`. The Tool IS the bounty.
+- **Losing the bounty** (`Drop(hunter, reason)`). The Tool is destroyed, `Progress.Wanted` cleared, `WantedTarget` emptied and `BountyState { target = nil, revealed = false, reason }` sent. Triggers: the Tool leaving the hunter's Backpack/Character or being destroyed (including death, which clears the Backpack); the target stops being wanted (cleared, imprisoned, wiped) or leaves; the hunter leaves or starts a new life; `.bounty drop`. A saved `Progress.Wanted` is stale on load and cleared.
+- **Tracking.** On take the target's HumanoidRootPart position is snapshotted as `lastKnown`. Every `Tracking.TickSeconds` (1) for each hunter whose Tool is in their Character (checked by the server; `Tool.Equipped`/`Unequipped` and the client's `BountyToolEquipped` only prompt an immediate check): within `ReachStuds` (25) of `lastKnown`, `lastKnown` follows the target; within `RevealStuds` (80) of the target, `revealed = true`; once revealed, staying beyond `RevealStuds` for `LoseSeconds` (6) sets `revealed = false` and `lastKnown` = where the target was at that moment. Nothing is sent while the Tool is unequipped except one final state clearing `revealed`. The pure rule is `Bounty.NextTrackingState(hunterPos, targetPos?, state) -> state`.
+- **Imprisonment seam (for M9-02's JailService).** `BountyService.ClearForImprisonment(prisoner, hunter) -> Reward?`, `Reward = { copper, magoi, gold }`: refused (nil, nothing changes) if the prisoner is not wanted, is the hunter, or either save is missing; otherwise zeroes the prisoner's bounty and pays the hunter once: Copper = the bounty (`EconomyService.GiveCopperValue`), Magoi = 25 + bounty / 4 capped at 50 (`RankService.AddMagoi`), +1 Gold Rukh deed (`RankService.AddDeed`); drops every hunt on the prisoner (the collecting hunter's reason is "Bounty collected.").
+- **Attributes (Player):** `Bounty` (number), `WantedTarget` (target's name or "").
+- **Save fields:** `Bounty`, `Progress.Wanted` (number?), `Progress.JailUntil` (number, written by M9-02; v5 adds it so one migration covers M9).
+- **Remotes (see section 16 for rates).**
+  - `BountyState` (server -> client), `{ target = { userId: number, name: string, bounty: number }?, lastKnown = { x: number, y: number, z: number }?, revealed: boolean, reason: string? }`. Sent on take (`target` set, `revealed` false), on drop (`target` nil, `reason` set, no `lastKnown`), on equip/unequip, and each tracking tick only when `lastKnown` or `revealed` changed. The client hides its tracker while `revealed` and red-highlights the target (M9-03).
+  - `BountyToolEquipped(boolean)` (client -> server): the Tool went into/out of the hands. The server ignores it unless it matches the real state.
+  - There are no board remotes: the board is read by looking at it and taken by its prompt.
+- **Dev commands:** `.bounty <n> [player]` (set), `.bounty list`, `.bounty take <player>` (full rules apply), `.bounty drop`, `.bounty clear [player]`. This replaces DevService's plain `.bounty <n>` (registered later, so it wins).
 
 ---
 
@@ -349,7 +372,8 @@ RankService               → DataService, Ranks/Alignment/Epithets data
 EconomyService            → DataService, Shared/Data/Economy
 ItemService               → RF.Assets, HeightHandler, DataService
 ShopService               → EconomyService, ItemService, Shared/Data/Shop
-MissionService            → DataService, EconomyService, RankService, MovementService, StatusService, CombatService (HitLanded), Cities
+BountyService             → DataService, EconomyService, RankService, DevService, Shared/Data/Bounty, Cities, Workspace.Regions/BountyBoard
+MissionService            → DataService, EconomyService, RankService, BountyService, MovementService, StatusService, CombatService (HitLanded), Cities
 WorldClockService         → Config
 CollisionService          → Workspace.MAP
 DevService                → DataService, Remotes (other services register their commands with it)

@@ -40,6 +40,8 @@ local NpcTrees = require(script.Parent.NpcService.Trees)
 local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Cities = require(ReplicatedStorage.Shared.Data.Cities)
 local MissionService = require(script.Parent.MissionService)
+local BountyService = require(script.Parent.BountyService)
+local BountyData = require(ReplicatedStorage.Shared.Data.Bounty)
 local WorldClockService = require(script.Parent.WorldClockService)
 local CollisionService = require(script.Parent.CollisionService)
 local Assets = require(ReplicatedFirst.Assets) :: any
@@ -223,7 +225,7 @@ local function testDataService(results: { Check })
 			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "" },
 		} :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
-		expect(results, "SaveSchema: v1 -> v2 migration bumps Version to 2", data.Version == 2)
+		expect(results, "SaveSchema: v1 -> v2 migration walks Version up to the current schema version", data.Version == Config.Data.SchemaVersion)
 		expect(results, "SaveSchema: v1 -> v2 migration leaves PendingEpithet nil (nothing to fill)", data.Progress.PendingEpithet == nil)
 	end
 
@@ -235,7 +237,7 @@ local function testDataService(results: { Check })
 			Meta = { Created = 0, LastSeen = 0, Lives = 1, Unlocks = { Combat = false } },
 		} :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
-		expect(results, "SaveSchema: v2 -> v3 migration bumps Version to 3", data.Version == 3)
+		expect(results, "SaveSchema: v2 -> v3 migration walks Version up to the current schema version", data.Version == Config.Data.SchemaVersion)
 		expect(results, "SaveSchema: v2 -> v3 migration sets Meta.Unlocks.Combat = true (grandfathered - nobody loses combat)", data.Meta.Unlocks.Combat == true)
 	end
 
@@ -247,7 +249,7 @@ local function testDataService(results: { Check })
 			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
 		} :: any) :: SaveSchema.Data
 		SaveSchema.Migrate(data)
-		expect(results, "SaveSchema: v3 -> v4 migration bumps Version to 4", data.Version == 4)
+		expect(results, "SaveSchema: v3 -> v4 migration walks Version up to the current schema version", data.Version == Config.Data.SchemaVersion)
 		expect(
 			results,
 			"SaveSchema: v3 -> v4 migration leaves DeliveryStreak/Routes/Intercepted at their already-backfilled defaults",
@@ -523,7 +525,7 @@ local function fakeCharacterData(): SaveSchema.Data
 			LivesLeft = Config.Life.LivesPerCharacter,
 		},
 		Age = { Years = 13, TimePassed = 0, ProgToAge = 0 },
-		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0 },
+		Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0, JailUntil = 0 },
 		Bounty = 0,
 		Economy = { Copper = 20, Silver = 0, Gold = 0 },
 		Gear = { Shirt = "", Pants = "", Hats = { "", "", "" }, Inventory = {} },
@@ -3123,13 +3125,13 @@ local function testMissionService(results: { Check })
 		expect(results, "MissionService: ApplyFailure never touches Routes", data.Progress.Routes["Qarzin"] == 2)
 	end
 
-	-- Interception pays the attacker's Bounty and never touches the courier's save.
+	-- An interception's reward goes on the attacker's Bounty (BountyService.ApplyAdd) and never touches the courier's save.
 	do
 		local attackerData = fakeMissionData()
 		local courierData = fakeMissionData(nil, 5)
-		MissionService.ApplyInterception(attackerData, 42)
+		BountyService.ApplyAdd(attackerData, 42)
 		MissionService.ApplyFailure(courierData)
-		expect(results, "MissionService: ApplyInterception adds the reward to the attacker's Bounty", attackerData.Bounty == 42)
+		expect(results, "MissionService: an interception adds the reward to the attacker's Bounty", attackerData.Bounty == 42)
 		expect(results, "MissionService: the courier's own Bounty is untouched by an interception", courierData.Bounty == 0)
 		expect(results, "MissionService: the courier's streak still breaks on the interception (ApplyFailure)", courierData.Progress.DeliveryStreak == 0)
 	end
@@ -3197,6 +3199,206 @@ end
 
 
 local SelfTestService = {}
+
+-- Bounty hunting: the pure core, the schema migration, posters and the Tool against scratch
+-- instances (no Player or save is needed).
+local function testBounty(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestBounty"
+	scratch.Parent = Workspace
+
+	local threshold = Config.Bounty.PostingThreshold
+	expect(results, "Bounty: the gate rank is Adventurer", Ranks.List[Config.Bounty.RankGateIndex].title == "Adventurer")
+	expect(results, "Bounty: wanted starts at the posting threshold", BountyData.isWanted(threshold) and not BountyData.isWanted(threshold - 1))
+
+	-- ApplyAdd/ApplySet.
+	do
+		local data = fakeMissionData()
+		expect(results, "Bounty: ApplyAdd adds to the total", BountyService.ApplyAdd(data, 15) == 15 and data.Bounty == 15)
+		expect(results, "Bounty: ApplyAdd floors fractions", BountyService.ApplyAdd(data, 2.9) == 17)
+		expect(results, "Bounty: a negative add never goes below 0", BountyService.ApplyAdd(data, -100) == 0)
+		expect(results, "Bounty: ApplySet sets outright", BountyService.ApplySet(data, 30) == 30)
+	end
+
+	-- Take rules.
+	do
+		local adventurer = Config.Bounty.RankGateIndex
+		expect(results, "Bounty: an Adventurer may take a wanted player", (BountyService.CheckTake(adventurer, 1, 2, threshold, false)))
+		local belowOk, belowReason = BountyService.CheckTake(adventurer - 1, 1, 2, threshold, false)
+		expect(results, "Bounty: Take is refused below Adventurer", not belowOk and belowReason ~= nil)
+		expect(results, "Bounty: Take is refused on yourself", not (BountyService.CheckTake(adventurer, 1, 1, threshold, false)))
+		expect(results, "Bounty: Take is refused on an unwanted target", not (BountyService.CheckTake(adventurer, 1, 2, threshold - 1, false)))
+		expect(results, "Bounty: Take is refused on an offline target", not (BountyService.CheckTake(adventurer, 1, 2, nil, false)))
+		expect(results, "Bounty: Take is refused while holding another bounty", not (BountyService.CheckTake(adventurer, 1, 2, threshold, true)))
+	end
+
+	-- Auto-drop: a target who is no longer wanted releases exactly their hunters.
+	do
+		local hunterA = ({ Name = "A" } :: any) :: Player
+		local hunterB = ({ Name = "B" } :: any) :: Player
+		local hunterC = ({ Name = "C" } :: any) :: Player
+		local fakeHunts = {
+			[hunterA] = { targetUserId = 7 },
+			[hunterB] = { targetUserId = 8 },
+			[hunterC] = { targetUserId = 7 },
+		}
+		local holders = BountyService.HuntersOf((fakeHunts :: any) :: { [Player]: BountyService.Hunt }, 7)
+		local names: { string } = {}
+		for _, hunter in holders do
+			table.insert(names, hunter.Name)
+		end
+		table.sort(names)
+		expect(results, "Bounty: HuntersOf finds every hunter holding a target", table.concat(names, ",") == "A,C")
+	end
+
+	-- Imprisonment pays once and zeroes the bounty.
+	do
+		local prisoner = fakeMissionData()
+		prisoner.Bounty = 60
+		local reward = BountyService.Settle(prisoner)
+		expect(results, "Bounty: Settle pays the Copper = bounty", reward ~= nil and reward.copper == 60)
+		expect(results, "Bounty: Settle pays Magoi = 25 + bounty / 4", reward ~= nil and reward.magoi == 40)
+		expect(results, "Bounty: Settle pays one Gold Rukh deed", reward ~= nil and reward.gold == 1)
+		expect(results, "Bounty: Settle zeroes the prisoner's bounty", prisoner.Bounty == 0)
+		expect(results, "Bounty: a second Settle pays nothing", BountyService.Settle(prisoner) == nil)
+
+		local rich = BountyData.rewardFor(400)
+		expect(results, "Bounty: Magoi is capped", rich.magoi == Config.Bounty.Reward.MagoiCap)
+		local unwanted = fakeMissionData()
+		unwanted.Bounty = threshold - 1
+		expect(results, "Bounty: an unwanted prisoner pays nothing and keeps their bounty", BountyService.Settle(unwanted) == nil and unwanted.Bounty == threshold - 1)
+	end
+
+	-- Migration fills the M9 fields on an old save.
+	do
+		local data = ({
+			Version = 4,
+			Progress = { Magoi = 0, GoldRukh = 0, BlackRukh = 0, Epithet = "", DeliveryStreak = 0, Routes = {}, Intercepted = 0, Wanted = 99 },
+		} :: any) :: SaveSchema.Data
+		SaveSchema.Migrate(data)
+		expect(results, "SaveSchema: v4 -> v5 migration leaves a free save with no target", data.Progress.JailUntil == 0 and data.Progress.Wanted == nil)
+		expect(results, "SaveSchema: the template starts free (JailUntil 0)", SaveSchema.Template.Progress.JailUntil == 0 and SaveSchema.Template.Progress.Wanted == nil)
+	end
+
+	-- Last known city.
+	do
+		local region = Instance.new("Part")
+		region.Name = "RatholeREGION"
+		region.Anchored = true
+		region.Size = Vector3.new(100, 50, 100)
+		region.CFrame = CFrame.new(5000, 0, 5000)
+		region.Parent = scratch
+		local parts: { [string]: BasePart } = { Rathole = region }
+		expect(results, "Bounty: a position inside a region part names its city", BountyService.CityAt(Vector3.new(5010, 5, 4990), parts) == "Rathole")
+		expect(results, "Bounty: a position outside every region is Unknown", BountyService.CityAt(Vector3.new(5200, 5, 5000), parts) == BountyData.UnknownCity)
+	end
+
+	-- Posters.
+	do
+		local board = Instance.new("Part")
+		board.Anchored = true
+		board.Size = Vector3.new(16, 8, 0.5)
+		board.CFrame = CFrame.new(6000, 10, 6000)
+		board.Parent = scratch
+		local set: BountyService.PosterSet = {}
+
+		local entries = BountyService.BuildEntries({
+			{ userId = 1, name = "Low", bounty = threshold, city = "Unknown" },
+			{ userId = 2, name = "High", bounty = threshold + 50, city = "Rathole" },
+			{ userId = 3, name = "Nuisance", bounty = threshold - 1, city = "Unknown" },
+		}, Config.Bounty.MaxPosters)
+		expect(results, "Bounty: posters list only the wanted, highest bounty first", #entries == 2 and entries[1].name == "High" and entries[2].name == "Low")
+
+		BountyService.SyncPosters(set, entries, board, scratch)
+		local first, second = set[2], set[1]
+		expect(results, "Bounty: a wanted player gets a poster", first ~= nil and second ~= nil and set[3] == nil)
+		expect(results, "Bounty: a poster carries a Take prompt and a SurfaceGui", first ~= nil and first:FindFirstChildOfClass("ProximityPrompt") ~= nil and first:FindFirstChildOfClass("SurfaceGui") ~= nil)
+		expect(results, "Bounty: a poster sits just in front of the board", first ~= nil and board.CFrame:PointToObjectSpace(first.Position).Z < -board.Size.Z / 2)
+		local gui = if first then first:FindFirstChildOfClass("SurfaceGui") else nil
+		local nameLabel = if gui then gui:FindFirstChild("Name") else nil
+		expect(results, "Bounty: the poster shows the target's name", nameLabel ~= nil and nameLabel:IsA("TextLabel") and nameLabel.Text == "High")
+
+		BountyService.SyncPosters(set, { entries[2] }, board, scratch)
+		expect(results, "Bounty: a poster disappears when its player stops being wanted", set[2] == nil and set[1] ~= nil and first ~= nil and first.Parent == nil)
+		BountyService.SyncPosters(set, {}, board, scratch)
+		expect(results, "Bounty: no wanted players leaves no posters", next(set) == nil)
+
+		local many: { BountyService.Entry } = {}
+		for i = 1, Config.Bounty.MaxPosters + 4 do
+			table.insert(many, { userId = i, name = "P" .. i, bounty = threshold + i, city = "Unknown" })
+		end
+		expect(results, "Bounty: the poster list is capped", #BountyService.BuildEntries(many, Config.Bounty.MaxPosters) == Config.Bounty.MaxPosters)
+	end
+
+	-- The Tool is the bounty.
+	do
+		local backpack = Instance.new("Folder")
+		backpack.Name = "SelfTestBackpack"
+		backpack.Parent = scratch
+		local lost = 0
+		local tool = BountyService.IssueTool(42, "Target", 30, backpack)
+		expect(results, "Bounty: the Tool is named for the target, handle-less and undroppable", tool.Name == "Bounty: Target" and not tool.RequiresHandle and not tool.CanBeDropped and tool.Parent == backpack)
+		BountyService.WatchTool(tool, function(parent: Instance): boolean
+			return parent == backpack
+		end, function()
+			lost += 1
+		end)
+		tool.Parent = scratch
+		expect(results, "Bounty: moving the Tool somewhere else loses the bounty", pollUntil(1, function()
+			return lost == 1
+		end))
+		tool:Destroy()
+		task.wait()
+		expect(results, "Bounty: destroying the Tool reports the loss only once", lost == 1)
+
+		local second = BountyService.IssueTool(43, "Other", 30, backpack)
+		BountyService.WatchTool(second, function(parent: Instance): boolean
+			return parent == backpack
+		end, function()
+			lost += 1
+		end)
+		second:Destroy()
+		expect(results, "Bounty: destroying a held Tool loses the bounty", pollUntil(1, function()
+			return lost == 2
+		end))
+	end
+
+	-- Tracking transitions with fake positions.
+	do
+		local reach, reveal, lose = Config.Bounty.Tracking.ReachStuds, Config.Bounty.Tracking.RevealStuds, Config.Bounty.Tracking.LoseSeconds
+		local tickSeconds = Config.Bounty.Tracking.TickSeconds
+		local start = Vector3.new(0, 0, 0)
+		local state: BountyData.TrackingState = { lastKnown = start, revealed = false, beyondSeconds = 0 }
+
+		local nearTarget = Vector3.new(reach - 5, 0, 0)
+		local next1 = BountyData.NextTrackingState(Vector3.new(0, 0, 5), nearTarget, state)
+		expect(results, "Bounty: a hunter near the last known spot refreshes it to the target", next1.lastKnown == nearTarget)
+		expect(results, "Bounty: inside reveal range the target is revealed", next1.revealed)
+
+		local farTarget = Vector3.new(reveal + 200, 0, 0)
+		local far = BountyData.NextTrackingState(Vector3.new(0, 0, reach + 40), farTarget, state)
+		expect(results, "Bounty: far from the last known spot it is not refreshed", far.lastKnown == start and not far.revealed)
+
+		local revealed: BountyData.TrackingState = { lastKnown = start, revealed = true, beyondSeconds = 0 }
+		local away = Vector3.new(0, 0, reveal + 100)
+		local current = revealed
+		local ticks = math.ceil(lose / tickSeconds)
+		for _ = 1, ticks - 1 do
+			current = BountyData.NextTrackingState(away, farTarget, current)
+		end
+		expect(results, "Bounty: a revealed target stays revealed until LoseSeconds pass", current.revealed)
+		current = BountyData.NextTrackingState(away, farTarget, current)
+		expect(results, "Bounty: after LoseSeconds beyond reveal range they are lost", not current.revealed)
+		expect(results, "Bounty: losing them marks where they were", current.lastKnown == farTarget)
+
+		local back = BountyData.NextTrackingState(Vector3.new(0, 0, 5), Vector3.new(10, 0, 0), { lastKnown = start, revealed = true, beyondSeconds = lose - 1 })
+		expect(results, "Bounty: coming back in range resets the lose timer", back.revealed and back.beyondSeconds == 0)
+		local noTarget = BountyData.NextTrackingState(start, nil, { lastKnown = start, revealed = false, beyondSeconds = 0 })
+		expect(results, "Bounty: a target with no character changes nothing", noTarget.lastKnown == start and not noTarget.revealed)
+	end
+
+	scratch:Destroy()
+end
 
 -- The shared world clock's pure maths and the `.time` dev command, plus CollisionService's group
 -- assignment on a fake folder of parts.
@@ -3413,6 +3615,7 @@ function SelfTestService:Start()
 		testTrainers(collected)
 		testLifeService(collected)
 		testMissionService(collected)
+		testBounty(collected)
 		testWorld(collected)
 		return collected
 	end)

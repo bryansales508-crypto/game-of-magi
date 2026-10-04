@@ -182,6 +182,17 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 3, per = 5 },
 	},
+	-- Bounty hunting (the board and its posters are server-built world objects; there is no board remote). BountyState is server -> client only: `{ target = { userId, name, bounty }?, lastKnown = { x, y, z }?, revealed = boolean, reason? }`, sent when a bounty is taken or dropped (`target` nil, `reason` says why), when the bounty Tool is equipped/unequipped, and every tracking tick while it is equipped and something changed. Its table argument is not shape-checked since outbound calls are never validated. BountyToolEquipped is the client reporting that the bounty Tool went into or out of its hands; the server checks the Tool really is in the character before it acts, and tracking never depends on it.
+	BountyState = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 5 },
+	},
+	BountyToolEquipped = {
+		kind = "Event",
+		args = { Validate.boolean() },
+		rate = { count = 4, per = 1 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

@@ -28,6 +28,7 @@ local Cities = require(ReplicatedStorage.Shared.Data.Cities)
 local DataService = require(script.Parent.DataService)
 local EconomyService = require(script.Parent.EconomyService)
 local RankService = require(script.Parent.RankService)
+local BountyService = require(script.Parent.BountyService)
 local MovementService = require(script.Parent.MovementService)
 local StatusService = require(script.Parent.StatusService)
 local CombatService = require(script.Parent.CombatService)
@@ -222,12 +223,6 @@ function MissionService.ApplyFailure(data: Data)
 	data.Progress.DeliveryStreak = 0
 end
 
--- Pure: the interceptor's save gets the reward as a Bounty running total. The
--- courier's own copper is never reduced.
-function MissionService.ApplyInterception(attackerData: Data, reward: number)
-	attackerData.Bounty += reward
-end
-
 -- ==================== runtime types ====================
 
 -- Carries no offerMultiplier/pay: the intercepted mark can change while the entry
@@ -317,15 +312,6 @@ local PLACEHOLDER_SUFFIX = "_PLACEHOLDER"
 local PLACEHOLDER_COLOR = Color3.fromRGB(255, 0, 200)
 local placeholderLogged: { [string]: boolean } = {}
 
-local function findRegionPart(cityKey: string): BasePart?
-	local regions = Workspace:FindFirstChild("Regions")
-	local part = regions and regions:FindFirstChild(cityKey .. "REGION", true)
-	if part and part:IsA("BasePart") then
-		return part
-	end
-	return nil
-end
-
 -- Pure: the region part's centre, else the configured point, else nil.
 function MissionService.PlaceholderPosition(cityKey: string, regionPart: BasePart?): Vector3?
 	if regionPart then
@@ -360,7 +346,7 @@ function MissionService.ResolveDeliveryPart(cityKey: string, parent: Instance): 
 		return existing
 	end
 
-	local regionPart = findRegionPart(cityKey)
+	local regionPart = BountyService.FindRegionPart(cityKey)
 	local position = MissionService.PlaceholderPosition(cityKey, regionPart)
 	if position == nil then
 		return nil
@@ -461,7 +447,6 @@ end
 
 local function refreshAttributes(player: Player, data: Data)
 	player:SetAttribute("MissionStreak", data.Progress.DeliveryStreak)
-	player:SetAttribute("Bounty", data.Bounty)
 end
 
 -- ==================== board ====================
@@ -942,11 +927,9 @@ local function interceptRun(courier: Player, run: Run, attacker: Player)
 		RankService.AddDeed(attacker, "Black", 1)
 	end
 
-	local attackerData = DataService.Get(attacker)
-	if attackerData then
-		MissionService.ApplyInterception(attackerData, payout)
-		refreshAttributes(attacker, attackerData)
-	end
+	-- The interceptor's reward is also their crime: it goes on their bounty. The courier's own
+	-- copper is never reduced.
+	BountyService.Add(attacker, payout, string.format("Delivery interception: %s", run.destination))
 
 	local courierData = DataService.Get(courier)
 	if courierData then

@@ -22,7 +22,7 @@ Config.Debug = {
 Config.Data = {
 	StoreName = "GameOfMagi_v1",
 	-- Schema history lives in SaveSchema.Migrations; bump SchemaVersion together with a new migration.
-	SchemaVersion = 4,
+	SchemaVersion = 5,
 }
 
 -- UserIds that always count as devs. Any player also counts as a dev while Config.Debug.Enabled (Studio); see DevService.IsDev.
@@ -286,6 +286,26 @@ Config.Missions = {
 	},
 }
 
+-- Bounty hunting. A player is wanted (huntable, postered) at PostingThreshold or more; taking a bounty needs rank index RankGateIndex (3 = Adventurer, Data/Ranks). The server pins one poster per wanted player to the BountyBoard, highest bounty first, at most MaxPosters. CityRefreshSeconds: how often the server re-reads each wanted player's last known city (a rough report, not live tracking). Taking a bounty gives a "Bounty: <name>" Tool; while it is equipped the server tracks every Tracking.TickSeconds: within ReachStuds of the last known spot, the last known spot follows the target; within RevealStuds of the target, they are revealed; once revealed, staying beyond RevealStuds for LoseSeconds loses them again. Reward (Data/Bounty): Copper = the bounty, Magoi = MagoiBase + bounty / MagoiDivisor capped at MagoiCap, GoldRukhDeeds Gold Rukh deeds.
+Config.Bounty = {
+	PostingThreshold = 20,
+	RankGateIndex = 3,
+	CityRefreshSeconds = 20,
+	MaxPosters = 8,
+	Tracking = {
+		TickSeconds = 1,
+		ReachStuds = 25,
+		RevealStuds = 80,
+		LoseSeconds = 6,
+	},
+	Reward = {
+		MagoiBase = 25,
+		MagoiDivisor = 4,
+		MagoiCap = 50,
+		GoldRukhDeeds = 1,
+	},
+}
+
 -- The Rukh flutter on RankUp/AlignmentChanged. Emitters are ParticleEmitter names under ReplicatedFirst.VFX.RukhEffects; EmitRate multiplies every cloned emitter's own Rate.
 Config.Rukh = {
 	FlutterSeconds = 4,
@@ -350,6 +370,9 @@ table.freeze(Config.Rukh)
 table.freeze(Config.Missions.Beacon)
 table.freeze(Config.Missions.PlaceholderDeliveryPoints)
 table.freeze(Config.Missions)
+table.freeze(Config.Bounty.Tracking)
+table.freeze(Config.Bounty.Reward)
+table.freeze(Config.Bounty)
 
 -- The world: music, the shared day clock, the ocean and footsteps. The night look lives in Shared/Data/DayNight.luau, region playlists in Shared/Data/Regions.luau.
 Config.World = {
