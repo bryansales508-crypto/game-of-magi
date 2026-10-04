@@ -14,6 +14,7 @@ local BehaviorTree = require(ReplicatedStorage.Shared.BehaviorTree)
 local StatusService = require(script.Parent.Parent.StatusService)
 local CombatService = require(script.Parent.Parent.CombatService)
 local MovementService = require(script.Parent.Parent.MovementService)
+local GripService = require(script.Parent.Parent.GripService)
 
 local log = Log.new("NpcService")
 
@@ -229,9 +230,41 @@ local function wander(bb: any): BehaviorTree.Status
 	return "Running"
 end
 
+-- Whether the target is a knocked-out player this NPC should now grip (Config.Npc.Target.gripsOnKnockout):
+-- Knocked, and not already carried, jailed or gripped by someone else.
+local function shouldGrip(bb: any): boolean
+	if not Config.Npc.Target.gripsOnKnockout then
+		return false
+	end
+	local target = bb.target :: Model?
+	if target == nil or not StatusService.Has(target, "Knocked") then
+		return false
+	end
+	return not (StatusService.Has(target, "Carried") or StatusService.Has(target, "Jailed") or (StatusService.Has(target, "Gripped") and not GripService.IsGripping(bb.character)))
+end
+
+-- Walks up to a knocked-out target, then grips them. Running while the grip holds; Failure when it
+-- cannot start (so the tree falls through to its other branches).
+local function gripStep(bb: any): BehaviorTree.Status
+	if GripService.IsGripping(bb.character) then
+		return "Running"
+	end
+	local target = bb.target :: Model?
+	local victim = if target then Players:GetPlayerFromCharacter(target) else nil
+	if victim == nil then
+		return "Failure"
+	end
+	if not inReach(bb) then
+		return chaseStep(bb)
+	end
+	local ok = GripService.Begin(bb.character, victim)
+	return if ok then "Running" else "Failure"
+end
+
 -- Selector(
 --   Sequence(IsKnocked, Wait),
 --   Sequence(HasTarget, Selector(
+--     Sequence(ShouldGrip, GripStep),
 --     Sequence(InReach, Cooldown(AttackCooldown, Attack)),
 --     Sequence(TargetWithin(GiveUpRadius), ChaseStep),
 --     GiveUp
@@ -248,6 +281,10 @@ function Trees.BuildTarget(): BehaviorTree.Node
 		BehaviorTree.Sequence({
 			BehaviorTree.Condition(hasTarget),
 			BehaviorTree.Selector({
+				BehaviorTree.Sequence({
+					BehaviorTree.Condition(shouldGrip),
+					BehaviorTree.Action(gripStep),
+				}),
 				BehaviorTree.Sequence({
 					BehaviorTree.Condition(inReach),
 					BehaviorTree.Cooldown(Config.Npc.AttackCooldown, attack),

@@ -67,7 +67,9 @@ local function onDied(player: Player, character: Model)
 
 	local outcome = LifeService.HandleDeath(data)
 	refreshLivesLeftAttribute(player, data)
-	log:Info(string.format("%s died (%s, %d life/lives left)", player.Name, outcome, data.Character.LivesLeft))
+	-- A killer that wants the death named in the log (gripping) sets this on the character first.
+	local cause = character:GetAttribute("DeathCause")
+	log:Info(string.format("%s died (%s, %d life/lives left)%s", player.Name, outcome, data.Character.LivesLeft, if type(cause) == "string" then ", " .. cause else ""))
 	DataService.Save(player)
 
 	if outcome == "respawn" then

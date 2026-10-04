@@ -72,11 +72,17 @@ Server services live in `ServerScriptService/Server/Services/`, client controlle
 - `Reward`: `MagoiBase` 25 + bounty / `MagoiDivisor` 4, capped at `MagoiCap` 50; `GoldRukhDeeds` 1. Copper paid equals the bounty.
 - The board: a Part named `BoardName` (QuestBoard, or `BoardAltName` BountyBoard) with a Decal named `FrontDecalName` (frontface); posters go on the decal's face, sized `Poster.Width` x `Height` (shrunk to fit). No board = a placeholder in `Workspace.BountyPlaceholders` at Qarzin.
 
+## Gripping and poster portraits
+- `Config.Bounty.Grip`: `ReachStuds` (5) how close to start; `Seconds` (4) how long the choke takes; `TickSeconds` (0.25) how often progress is sent and the victim kept down; `BreakDistance` (3) how far the gripper may be pushed before it breaks; `GraceSeconds` (2) extra knocked time after a broken grip; `BlackRukh` (1) Black deeds per completed grip; `Animations = { Gripper, Victim }` asset ids for the grip poses once Bryan has them.
+- `Config.Npc.Target.gripsOnKnockout` (true): set false and the chasing dummy just stands over a player it knocked out instead of gripping.
+- `Config.Bounty.Poster.PortraitFov` (30): the portrait camera's field of view (smaller = closer on the face); `PortraitSettleSeconds` (0.75): how long a respawn or clothes change settles before the portrait is redrawn.
+- Test: `.knock` someone, stand next to them, `.grip <name>`; `.grip stop` lets go.
+
 ## Carrying and the jail
 - `Config.Bounty.Carry`: `ReachStuds` (6) how close to pick someone up; `SpeedMult` (0.6) the carrier's walk speed; `GraceSeconds` (4) how long the dropped stay down; `Offset` and `TiltDegrees` where the body rides on the shoulder (tune in Studio); `RefreshSeconds` how often the knockout is renewed; `DropDistance` how far in front a drop lands.
 - `Config.Bounty.Jail`: `JailFolderName`, `DropoffName`, `CellFolderName`, `SpawnName` the names the server looks for (rename here if Bryan renames the parts); `BoundsMargin` (2) grows the cell box; `ReachStuds` (8) from the dropoff zone; `SecondsPerBountyPoint` (6), `MinSeconds` (60), `MaxSeconds` (600): the sentence; `TickSeconds` (1): how often prisoners are checked; `PlaceholderOffset`: where the stand-in cell goes when no real jail exists.
 - `Data/Cities.luau` `hasJail`: which city gets a placeholder jail (Qarzin).
-- Commands: `.jail <seconds> [player]`, `.jail release [player]`, `.carry drop`. To test: knock a player out (`.knock`), stand within 6 studs and send `CarryPickUp` (client prompt comes in M9-03), then `.carry drop`.
+- Commands: `.jail <seconds> [player]`, `.jail release [player]`, `.carry drop`, `.grip <player>`, `.grip stop`. To test: knock a player out (`.knock`), stand within 6 studs and send `CarryPickUp` (client prompt comes in M9-03), then `.carry drop`.
 
 ## World
 - Music: `Data/Regions.luau` (per region `priority`, `playlist`, `ambient`, `banner`); `Config.World.Music` has `Volume`, `CrossfadeSeconds`, `RegionPollSeconds`. A region is a part named `<Key>REGION` under `Workspace.Regions`. The music panel and `.music` change the track and volume for you only.

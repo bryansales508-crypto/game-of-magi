@@ -42,6 +42,7 @@ local Cities = require(ReplicatedStorage.Shared.Data.Cities)
 local MissionService = require(script.Parent.MissionService)
 local BountyService = require(script.Parent.BountyService)
 local CarryService = require(script.Parent.CarryService)
+local GripService = require(script.Parent.GripService)
 local JailService = require(script.Parent.JailService)
 local JailData = require(ReplicatedStorage.Shared.Data.Jail)
 local BountyData = require(ReplicatedStorage.Shared.Data.Bounty)
@@ -3940,6 +3941,286 @@ local function testRagdollAndLock(results: { Check })
 	scratch:Destroy()
 end
 
+-- Gripping (M9-04): fake bodies and stand-in players in a scratch folder. Rewards are swapped for
+-- recorders (stand-ins have no saves), and the grip clock is advanced by passing `now` to Tick.
+local function testGrip(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestGrip"
+	scratch.Parent = Workspace
+	local rules = Config.Bounty.Grip
+	local fist = Combat.styleFor("Fist") :: Combat.Style
+
+	local bodies: { Model } = {}
+	local function body(name: string, position: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local root = Instance.new("Part")
+		root.Name = "HumanoidRootPart"
+		root.Size = Vector3.new(2, 2, 1)
+		root.Anchored = true
+		root.CanCollide = false
+		root.CFrame = CFrame.new(position)
+		root.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		StatusService.Register(model)
+		MovementService.Register(model, nil)
+		CombatService.Register(model, nil, "Fist")
+		model:SetAttribute("InCombat", true)
+		table.insert(bodies, model)
+		return model
+	end
+	local function standIn(name: string, userId: number, character: Model): Player
+		return ({ Name = name, UserId = userId, Character = character } :: any) :: Player
+	end
+	-- A gripper and a knocked-out victim in reach, `x` apart from other scenarios.
+	local function scenario(tag: string, x: number, userId: number): (Model, Model, Player, Player)
+		local gripperBody = body("Gripper" .. tag, Vector3.new(x, 5, 0))
+		local victimBody = body("Victim" .. tag, Vector3.new(x, 5, 3))
+		local gripper = standIn("Gripper" .. tag, userId, gripperBody)
+		local victim = standIn("Victim" .. tag, userId + 1, victimBody)
+		StatusService.Apply(victimBody, "Knocked", 30)
+		return gripperBody, victimBody, gripper, victim
+	end
+	local function healthOf(model: Model): number
+		return (model:FindFirstChildOfClass("Humanoid") :: Humanoid).Health
+	end
+
+	local blackDeeds = 0
+	local settles = 0
+	local originalRewards = GripService.Rewards
+	GripService.Rewards = {
+		settle = function(_victim: Player, _gripper: Player): BountyData.Reward?
+			settles += 1
+			return nil
+		end,
+		blackDeed = function(_gripper: Player, amount: number)
+			blackDeeds += amount
+		end,
+	}
+
+	-- Every refusal.
+	do
+		local gripperBody, victimBody, gripper, victim = scenario("Refuse", 9000, 9100)
+		StatusService.Remove(victimBody, "Knocked")
+		expect(results, "Grip: a standing victim cannot be gripped", not (GripService.Begin(gripper, victim)))
+		StatusService.Apply(victimBody, "Knocked", 30)
+		expect(results, "Grip: you cannot grip yourself", not (GripService.Begin(victim, victim)))
+
+		local farBody = body("GripFar", Vector3.new(9000, 5, 40))
+		local far = standIn("GripFar", 9102, farBody)
+		StatusService.Apply(farBody, "Knocked", 30)
+		expect(results, "Grip: a victim out of reach cannot be gripped", not (GripService.Begin(gripper, far)))
+
+		StatusService.Apply(victimBody, "Carried", nil, nil)
+		expect(results, "Grip: a carried victim cannot be gripped", not (GripService.Begin(gripper, victim)))
+		StatusService.Remove(victimBody, "Carried")
+		StatusService.Apply(victimBody, "Jailed", nil, nil)
+		expect(results, "Grip: a jailed victim cannot be gripped", not (GripService.Begin(gripper, victim)))
+		StatusService.Remove(victimBody, "Jailed")
+
+		for _, status in { "Knocked", "Stun", "TrueStun", "Jailed", "Carrying", "Carried" } do
+			StatusService.Apply(gripperBody, status, 5, nil)
+			expect(results, "Grip: a " .. string.lower(status) .. " gripper cannot start", not (GripService.Begin(gripper, victim)))
+			StatusService.Remove(gripperBody, status)
+		end
+
+		expect(results, "Grip: a gripper in reach of a knocked-out victim starts", (GripService.Begin(gripper, victim)))
+		expect(results, "Grip: a gripper cannot start a second grip", not (GripService.Begin(gripper, far)))
+		local thirdBody = body("GripThird", Vector3.new(9000, 5, 6))
+		local third = standIn("GripThird", 9103, thirdBody)
+		expect(results, "Grip: an already-gripped victim cannot be gripped again", not (GripService.Begin(third, victim)))
+		GripService.Stop(gripper, "test")
+	end
+
+	-- A completed grip kills, rewards once, and pins both sides while it runs.
+	do
+		local gripperBody, victimBody, gripper, victim = scenario("Done", 9200, 9200)
+		blackDeeds, settles = 0, 0
+		expect(results, "Grip: starts", (GripService.Begin(gripper, victim)))
+		expect(results, "Grip: the gripper is Gripping and the victim Gripped", StatusService.Has(gripperBody, "Gripping") and StatusService.Has(victimBody, "Gripped"))
+		expect(results, "Grip: the gripper cannot run", MovementService.SetRunning(gripperBody, true) == false)
+		expect(results, "Grip: the gripper cannot dash", MovementService.Dash(gripperBody, 0, 1) == false)
+		expect(results, "Grip: the gripper cannot attack", CombatService.AttackStart(gripperBody) == false)
+		expect(results, "Grip: the gripper is pinned in place", (gripperBody:FindFirstChildOfClass("Humanoid") :: Humanoid).WalkSpeed == 0)
+		expect(results, "Grip: the gripper publishes who they grip", gripperBody:GetAttribute("GrippingTarget") == victim.Name)
+
+		GripService.Tick(os.clock() + rules.Seconds / 2)
+		local progress = victimBody:GetAttribute("GripProgress")
+		expect(results, "Grip: progress is published on the victim", type(progress) == "number" and progress > 0.4 and progress < 0.6)
+		expect(results, "Grip: halfway the victim is alive", healthOf(victimBody) > 0 and GripService.IsGripping(gripper))
+
+		GripService.Tick(os.clock() + rules.Seconds + 1)
+		expect(results, "Grip: a completed grip kills the victim", healthOf(victimBody) <= 0)
+		expect(results, "Grip: the death names the gripper", victimBody:GetAttribute("DeathCause") == "gripped by " .. gripper.Name)
+		expect(results, "Grip: a completed grip gives exactly one Black deed", blackDeeds == rules.BlackRukh and settles == 1)
+		expect(results, "Grip: a finished grip is cleaned up", not GripService.IsGripping(gripper) and not GripService.IsGripped(victim) and not StatusService.Has(gripperBody, "Gripping") and gripperBody:GetAttribute("GrippingTarget") == nil)
+		expect(results, "Grip: the gripper walks again afterwards", (gripperBody:FindFirstChildOfClass("Humanoid") :: Humanoid).WalkSpeed > 0)
+	end
+
+	-- A landed hit breaks the grip, with grace Knocked and no kill.
+	do
+		local gripperBody, victimBody, gripper, victim = scenario("Hit", 9300, 9300)
+		local attackerBody = body("GripHitter", Vector3.new(9300, 5, -3))
+		blackDeeds = 0
+		GripService.Begin(gripper, victim)
+		CombatService.ApplyHit(attackerBody, gripperBody, fist, fist.chain[1], 1)
+		expect(results, "Grip: a landed hit on the gripper breaks the grip", pollUntil(1, function()
+			return not GripService.IsGripping(gripper)
+		end))
+		expect(results, "Grip: a broken grip kills nobody and pays nothing", healthOf(victimBody) > 0 and blackDeeds == 0)
+		local info = StatusService.Get(victimBody, "Knocked")
+		local remaining = if info and info.expiresAt then (info.expiresAt :: number) - os.clock() else -1
+		expect(results, "Grip: a broken grip leaves the victim Knocked for the grace seconds", remaining > 0 and remaining <= rules.GraceSeconds + 0.1)
+		expect(results, "Grip: the victim is free of the Gripped status", not StatusService.Has(victimBody, "Gripped"))
+	end
+
+	-- Moving too far breaks it; so does the client letting go; a knocked gripper too.
+	do
+		local gripperBody, victimBody, gripper, victim = scenario("Move", 9400, 9400)
+		GripService.Begin(gripper, victim)
+		local root = gripperBody:FindFirstChild("HumanoidRootPart") :: Part
+		root.CFrame = root.CFrame + Vector3.new(0, 0, -(rules.BreakDistance + 1))
+		GripService.Tick()
+		expect(results, "Grip: moving past BreakDistance breaks the grip", not GripService.IsGripping(gripper) and healthOf(victimBody) > 0)
+
+		local _, releaseVictimBody, releaseGripper, releaseVictim = scenario("Release", 9500, 9500)
+		GripService.Begin(releaseGripper, releaseVictim)
+		expect(results, "Grip: letting go (GripStop) ends it", GripService.Stop(releaseGripper, "released") and not GripService.IsGripping(releaseGripper) and healthOf(releaseVictimBody) > 0)
+		expect(results, "Grip: stopping with no grip is a no-op", GripService.Stop(releaseGripper, "released") == false)
+
+		local knockedBody, _, knockedGripper, knockedVictim = scenario("KnockedGrip", 9600, 9600)
+		GripService.Begin(knockedGripper, knockedVictim)
+		StatusService.Apply(knockedBody, "Knocked", 5)
+		expect(results, "Grip: a knocked-out gripper loses the grip", pollUntil(1, function()
+			return not GripService.IsGripping(knockedGripper)
+		end))
+
+		local _, getUpBody, getUpGripper, getUpVictim = scenario("GetUp", 9700, 9700)
+		GripService.Begin(getUpGripper, getUpVictim)
+		StatusService.Remove(getUpBody, "Knocked")
+		expect(results, "Grip: a victim who is no longer Knocked breaks the grip", pollUntil(1, function()
+			return not GripService.IsGripping(getUpGripper)
+		end))
+
+		local _, carriedBody, carriedGripper, carriedVictim = scenario("CarriedGrip", 9800, 9800)
+		GripService.Begin(carriedGripper, carriedVictim)
+		StatusService.Apply(carriedBody, "Carried", nil, nil)
+		expect(results, "Grip: a victim who is picked up breaks the grip", pollUntil(1, function()
+			return not GripService.IsGripping(carriedGripper)
+		end))
+	end
+
+	-- A dummy grips too: no player, no poster, no reward path.
+	do
+		local dummy = body("GripDummy", Vector3.new(9900, 5, 0))
+		local victimBody = body("GripDummyVictim", Vector3.new(9900, 5, 3))
+		local victim = standIn("GripDummyVictim", 9901, victimBody)
+		StatusService.Apply(victimBody, "Knocked", 30)
+		blackDeeds, settles = 0, 0
+		expect(results, "Grip: a dummy can grip a knocked-out player", (GripService.Begin(dummy, victim)))
+		GripService.Tick(os.clock() + rules.Seconds + 1)
+		expect(results, "Grip: a dummy's completed grip kills the victim", healthOf(victimBody) <= 0)
+		expect(results, "Grip: a dummy's grip has no reward path", blackDeeds == 0 and settles == 0)
+	end
+
+	-- The bounty is paid only to the hunter who holds the poster, once, and never jails.
+	do
+		local hunter = standIn("GripHunter", 9950, body("GripHunterBody", Vector3.new(9950, 5, 0)))
+		local other = standIn("GripOther", 9951, body("GripOtherBody", Vector3.new(9951, 5, 0)))
+		local hunts = ({ [hunter] = { targetUserId = 77 } } :: any) :: { [Player]: any }
+		local wanted = fakeMissionData()
+		wanted.Bounty = 60
+		expect(results, "Grip: a hunter without the poster is not paid", BountyService.GripPayout(hunts, other, 77, wanted) == nil and wanted.Bounty == 60)
+		expect(results, "Grip: a hunter holding a different poster is not paid", BountyService.GripPayout(hunts, hunter, 78, wanted) == nil and wanted.Bounty == 60)
+		local reward = BountyService.GripPayout(hunts, hunter, 77, wanted)
+		expect(results, "Grip: the poster holder is paid the bounty", reward ~= nil and reward.copper == 60 and reward.magoi == 40)
+		expect(results, "Grip: the bounty is zeroed and pays only once", wanted.Bounty == 0 and BountyService.GripPayout(hunts, hunter, 77, wanted) == nil)
+		local black = fakeMissionData()
+		local before = black.Progress.BlackRukh
+		RankService.ApplyDeed(black, "Black", rules.BlackRukh)
+		expect(results, "Grip: the deed is Black Rukh, not Gold", black.Progress.BlackRukh == before + rules.BlackRukh and black.Progress.GoldRukh == fakeMissionData().Progress.GoldRukh)
+	end
+
+	-- Poster portraits: a ViewportFrame with a script-free clone, rebuilt only when the look changes.
+	do
+		local board = Instance.new("Part")
+		board.Anchored = true
+		board.Size = Vector3.new(16, 8, 0.5)
+		board.CFrame = CFrame.new(9990, 10, 9990)
+		board.Parent = scratch
+		local boardRef: BountyService.Board = { part = board, face = Enum.NormalId.Front }
+
+		local character = Instance.new("Model")
+		character.Name = "PortraitSubject"
+		local layout: { { name: string, offset: Vector3 } } = {
+			{ name = "HumanoidRootPart", offset = Vector3.new(0, 5, 0) },
+			{ name = "Torso", offset = Vector3.new(0, 5, 0) },
+			{ name = "Head", offset = Vector3.new(0, 7, 0) },
+		}
+		for _, spec in layout do
+			local name, offset = spec.name, spec.offset
+			local part = Instance.new("Part")
+			part.Name = name
+			part.Size = if name == "Head" then Vector3.new(2, 1, 1) else Vector3.new(2, 2, 1)
+			part.Position = offset + Vector3.new(500, 0, 500)
+			part.Parent = character
+		end
+		Instance.new("Humanoid").Parent = character
+		Instance.new("Script").Parent = character
+		Instance.new("Sound").Parent = character:FindFirstChild("Head")
+		character.Parent = scratch
+		local entry: BountyService.Entry = { userId = 9990, name = "Portrait", bounty = 50, city = "Unknown" }
+		local set: BountyService.PosterSet = {}
+		local function characterOf(_userId: number): Model?
+			return character
+		end
+		BountyService.SyncPosters(set, { entry }, boardRef, scratch, characterOf)
+		local poster = set[entry.userId]
+		local viewport = if poster then BountyService.GetPortrait(poster) else nil
+		local gui = if poster then poster:FindFirstChildOfClass("SurfaceGui") else nil
+		expect(results, "Grip: a poster carries a portrait ViewportFrame inside its SurfaceGui", viewport ~= nil and gui ~= nil and viewport.Parent == gui)
+		local worldModel = if viewport then viewport:FindFirstChildOfClass("WorldModel") else nil
+		local clone = if worldModel then worldModel:FindFirstChild("PortraitClone") else nil
+		expect(results, "Grip: the portrait is a clone with a Head", clone ~= nil and clone:FindFirstChild("Head") ~= nil and clone ~= character)
+		local clean = clone ~= nil
+		if clone then
+			for _, descendant in clone:GetDescendants() do
+				if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("Sound") then
+					clean = false
+				end
+			end
+		end
+		expect(results, "Grip: the portrait clone carries no scripts or sounds", clean)
+		expect(results, "Grip: the portrait has a camera looking at the clone", viewport ~= nil and (viewport.CurrentCamera :: Camera?) ~= nil)
+
+		BountyService.SyncPosters(set, { { userId = 9990, name = "Portrait", bounty = 80, city = "Rathole" } }, boardRef, scratch, characterOf)
+		local sameClone = if worldModel then worldModel:FindFirstChild("PortraitClone") else nil
+		expect(results, "Grip: an ordinary poster refresh does not rebuild the portrait", sameClone == clone and clone ~= nil)
+
+		local hat = Instance.new("Accessory")
+		hat.Parent = character
+		expect(results, "Grip: a look change rebuilds the portrait", pollUntil(Config.Bounty.Poster.PortraitSettleSeconds + 2, function()
+			local rebuilt = if worldModel then worldModel:FindFirstChild("PortraitClone") else nil
+			return rebuilt ~= nil and rebuilt ~= clone
+		end))
+
+		BountyService.SyncPosters(set, {}, boardRef, scratch, characterOf)
+		expect(results, "Grip: a destroyed poster takes its portrait with it", poster ~= nil and poster.Parent == nil and BountyService.GetPortrait(poster) == nil)
+	end
+
+	GripService.Rewards = originalRewards
+	for _, model in bodies do
+		StatusService.Unregister(model)
+		MovementService.Unregister(model)
+		CombatService.Unregister(model)
+	end
+	scratch:Destroy()
+end
+
 function SelfTestService:Init() end
 
 function SelfTestService:Start()
@@ -3975,6 +4256,7 @@ function SelfTestService:Start()
 		testMissionService(collected)
 		testBounty(collected)
 		testCarryAndJail(collected)
+		testGrip(collected)
 		testWorld(collected)
 		return collected
 	end)

@@ -220,6 +220,22 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 2, per = 1 },
 	},
+	-- Gripping a knocked-out player (GripService). GripStart names the victim by UserId (the server checks knocked, reach, both parties' states); GripStop releases. GripState is server -> client only, sent to both parties on start, every tick and on stop: `{ gripping = { userId, name }?, grippedBy = { userId, name }?, progress = number (0..1), reason = string? }` (both nil = a grip just ended; `reason` only on that final send). A dummy gripper has userId 0.
+	GripStart = {
+		kind = "Event",
+		args = { Validate.number({ min = 1, integer = true }) },
+		rate = { count = 2, per = 1 },
+	},
+	GripStop = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 1 },
+	},
+	GripState = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 5 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

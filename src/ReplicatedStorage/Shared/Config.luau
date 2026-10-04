@@ -196,6 +196,8 @@ Config.Npc = {
 	ContinueDelay = 0.35,
 	WanderRadius = 12,
 	MaxHealth = { Dummy = 100, Target = 100 },
+	-- The Target NPC (the one that chases and punches): gripsOnKnockout makes it walk up and grip a player it knocked out (GripService). Turn it off to have it just stand over them. Trainers never grip.
+	Target = { gripsOnKnockout = true },
 	-- Optional fallback asset ids for walk/run/flinch; the model's own Animation instances (by name, see Trees.luau) are tried first.
 	Animations = { Walk = "", Run = "", Flinch = "" },
 	-- The seven training dummies, all Fist style. reactionSeconds: delay before reacting to the player's attributes (CurrentHitIndex/Attacking). rhythmSeconds: pace of a dummy that throws on its own schedule. weights: Sparring Sinbad's throw/cancel/parry/dash mix. engageRadius: a trainer only fights its spawner or the nearest player within this many studs. All values are placeholders to tune.
@@ -299,6 +301,9 @@ Config.Bounty = {
 	Poster = {
 		Width = 6,
 		Height = 6,
+		-- The portrait: the camera's field of view (degrees, smaller = closer) and how long a look change (clothes, respawn) settles before the clone is rebuilt.
+		PortraitFov = 30,
+		PortraitSettleSeconds = 0.75,
 	},
 	Tracking = {
 		TickSeconds = 1,
@@ -315,6 +320,16 @@ Config.Bounty = {
 		TiltDegrees = 90,
 		RefreshSeconds = 0.5,
 		DropDistance = 4,
+	},
+	-- Gripping a knocked-out player to kill them (GripService). ReachStuds: how close the gripper must be to start. Seconds: how long the choke takes; TickSeconds: how often progress is sent and the victim kept down. BreakDistance: how far the gripper may be pushed from where they started before it breaks. GraceSeconds: extra Knocked the victim gets when a grip is broken. BlackRukh: Black deeds every completed grip gives the gripper. Animations: asset ids for the gripper/victim poses once they exist (the client poses it in code until then).
+	Grip = {
+		ReachStuds = 5,
+		Seconds = 4,
+		TickSeconds = 0.25,
+		BreakDistance = 3,
+		GraceSeconds = 2,
+		BlackRukh = 1,
+		Animations = { Gripper = "", Victim = "" },
 	},
 	-- The jail (JailService). Sentence = bounty * SecondsPerBountyPoint clamped to MinSeconds..MaxSeconds. A prisoner outside the cell bounds is put back, checked every TickSeconds. PlaceholderOffset: where the placeholder cell (used only when no real jail is found) sits from the city's region centre.
 	Jail = {
@@ -384,6 +399,7 @@ table.freeze(Config.Sfx)
 table.freeze(Config.Scene)
 table.freeze(Config.Npc.MaxHealth)
 table.freeze(Config.Npc.Animations)
+table.freeze(Config.Npc.Target)
 table.freeze(Config.Npc.Trainers.StraightSam)
 table.freeze(Config.Npc.Trainers.TurtleTariq)
 table.freeze(Config.Npc.Trainers.JabbingJamal)
@@ -407,6 +423,8 @@ table.freeze(Config.Missions)
 table.freeze(Config.Bounty.Tracking)
 table.freeze(Config.Bounty.Poster)
 table.freeze(Config.Bounty.Carry)
+table.freeze(Config.Bounty.Grip.Animations)
+table.freeze(Config.Bounty.Grip)
 table.freeze(Config.Bounty.Jail)
 table.freeze(Config.Bounty.Reward)
 table.freeze(Config.Bounty)
