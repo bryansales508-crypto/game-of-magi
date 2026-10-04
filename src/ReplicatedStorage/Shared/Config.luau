@@ -196,8 +196,8 @@ Config.Npc = {
 	ContinueDelay = 0.35,
 	WanderRadius = 12,
 	MaxHealth = { Dummy = 100, Target = 100 },
-	-- The Target NPC (the one that chases and punches): gripsOnKnockout makes it walk up and grip a player it knocked out (GripService). Turn it off to have it just stand over them. Trainers never grip.
-	Target = { gripsOnKnockout = true },
+	-- The Target NPC (the one that chases and punches): gripsOnKnockout makes it walk up and grip a player it knocked out (GripService). Turn it off to have it just stand over them. It only grips someone it knocked out itself, and after a broken grip waits regripCooldownSeconds before trying again (a hit on it buys the victim that long). Trainers never grip.
+	Target = { gripsOnKnockout = true, regripCooldownSeconds = 3 },
 	-- Optional fallback asset ids for walk/run/flinch; the model's own Animation instances (by name, see Trees.luau) are tried first.
 	Animations = { Walk = "", Run = "", Flinch = "" },
 	-- The seven training dummies, all Fist style. reactionSeconds: delay before reacting to the player's attributes (CurrentHitIndex/Attacking). rhythmSeconds: pace of a dummy that throws on its own schedule. weights: Sparring Sinbad's throw/cancel/parry/dash mix. engageRadius: a trainer only fights its spawner or the nearest player within this many studs. All values are placeholders to tune.

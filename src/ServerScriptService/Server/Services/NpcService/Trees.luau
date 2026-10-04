@@ -124,6 +124,8 @@ local function targetWithinGiveUpRadius(bb: any): boolean
 end
 
 local attack = BehaviorTree.Action(function(bb: any): BehaviorTree.Status
+	-- Remembered so a later knockout can be told apart from one somebody else dealt.
+	bb.attackedTarget = bb.target
 	CombatService.Attack(bb.character)
 	return "Success"
 end)
@@ -240,6 +242,16 @@ local function shouldGrip(bb: any): boolean
 	if target == nil or not StatusService.Has(target, "Knocked") then
 		return false
 	end
+	-- Only a knockout this dummy dealt itself (the status names who did it), and not while it is
+	-- waiting out the pause after a broken grip.
+	local knocked = StatusService.Get(target, "Knocked")
+	local by = if knocked and type(knocked.data) == "table" then (knocked.data :: any).by else nil
+	if bb.attackedTarget ~= target or by ~= bb.character.Name then
+		return false
+	end
+	if bb.regripAt ~= nil and os.clock() < bb.regripAt then
+		return false
+	end
 	return not (StatusService.Has(target, "Carried") or StatusService.Has(target, "Jailed") or (StatusService.Has(target, "Gripped") and not GripService.IsGripping(bb.character)))
 end
 
@@ -247,7 +259,14 @@ end
 -- cannot start (so the tree falls through to its other branches).
 local function gripStep(bb: any): BehaviorTree.Status
 	if GripService.IsGripping(bb.character) then
+		bb.wasGripping = true
 		return "Running"
+	end
+	if bb.wasGripping then
+		-- The grip broke (a hit, a knockout): pause before trying again.
+		bb.wasGripping = false
+		bb.regripAt = os.clock() + Config.Npc.Target.regripCooldownSeconds
+		return "Failure"
 	end
 	local target = bb.target :: Model?
 	local victim = if target then Players:GetPlayerFromCharacter(target) else nil

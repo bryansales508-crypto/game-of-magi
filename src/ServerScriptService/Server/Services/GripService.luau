@@ -64,7 +64,7 @@ export type StartFacts = {
 local GRIPPER_BLOCKERS = { "Knocked", "Stun", "TrueStun", "Jailed", "Carrying", "Carried", "Gripping", "Gripped" }
 local VICTIM_BLOCKERS = { "Carried", "Jailed", "Gripped" }
 -- A status turning on for the gripper that ends the grip.
-local ENDS_FOR_GRIPPER: { [string]: boolean } = { Knocked = true, Stun = true, TrueStun = true, Jailed = true, Carried = true }
+local ENDS_FOR_GRIPPER: { [string]: boolean } = { Knocked = true, Stun = true, TrueStun = true, Jailed = true, Carried = true, Carrying = true }
 -- A status turning on for the victim that ends the grip (Knocked turning off does too).
 local ENDS_FOR_VICTIM: { [string]: boolean } = { Carried = true, Jailed = true }
 
@@ -151,6 +151,11 @@ end
 local function isAlive(character: Model?): boolean
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	return humanoid ~= nil and humanoid.Health > 0
+end
+
+-- A player in the age-death scene (heart attack) is past gripping, and past being gripped.
+local function isDying(gripper: Gripper): boolean
+	return typeof(gripper) == "Instance" and not isModel(gripper) and (gripper :: Player):GetAttribute("Dying") == true
 end
 
 local function identity(gripper: Gripper): { userId: number, name: string }
@@ -252,18 +257,25 @@ local function complete(grip: Grip)
 	local gripperName = nameOf(grip.gripper)
 	local victimName = grip.victim.Name
 	local gripperPlayer = grip.gripperPlayer
-	local paidBounty = false
-	if gripperPlayer then
-		-- Settle first: it needs the victim's save, and the death must not race it.
-		paidBounty = GripService.Rewards.settle(grip.victim, gripperPlayer) ~= nil
-		GripService.Rewards.blackDeed(gripperPlayer, Config.Bounty.Grip.BlackRukh)
-	end
 
-	-- An ordinary death: LifeService charges the life from Humanoid.Died.
+	-- The kill comes first, so a failing reward can never spare the victim. An ordinary death:
+	-- LifeService charges the life from Humanoid.Died (deferred, so the saves are still there for
+	-- the payout below).
 	setAttribute(grip.victimModel, "DeathCause", "gripped by " .. gripperName)
 	local humanoid = grip.victimModel:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.Health = 0
+	end
+
+	local paidBounty = false
+	if gripperPlayer then
+		local ok, err = pcall(function()
+			paidBounty = GripService.Rewards.settle(grip.victim, gripperPlayer) ~= nil
+			GripService.Rewards.blackDeed(gripperPlayer, Config.Bounty.Grip.BlackRukh)
+		end)
+		if not ok then
+			log:Error(string.format("reward for %s gripping %s failed: %s", gripperName, victimName, tostring(err)))
+		end
 	end
 	log:Info(string.format("%s gripped %s to death%s", gripperName, victimName, if paidBounty then " (bounty collected)" else ""))
 end
@@ -285,6 +297,9 @@ function GripService.Begin(gripper: Gripper, victimRef: Player | number): (boole
 	end
 	if byGripper[gripper] ~= nil then
 		return false, "already gripping"
+	end
+	if isDying(gripper) or isDying(victim) then
+		return false, "a party is in the death scene"
 	end
 	local gripperRoot = rootOf(gripperModel)
 	local victimRoot = rootOf(victimModel)
@@ -325,7 +340,12 @@ function GripService.Begin(gripper: Gripper, victimRef: Player | number): (boole
 	setAttribute(victimModel, "GripProgress", 0)
 
 	local function endIt(why: string)
-		task.defer(GripService.Stop, gripper, why)
+		task.defer(function()
+			-- Only this grip: a newer one by the same gripper is not ours to end.
+			if byGripper[gripper] == grip then
+				GripService.Stop(gripper, why)
+			end
+		end)
 	end
 	for _, character in { gripperModel, victimModel } do
 		table.insert(
@@ -371,6 +391,10 @@ function GripService.Tick(now: number?)
 		local victimCurrent = grip.victim.Character == grip.victimModel and grip.victimModel.Parent ~= nil
 		if not gripperCurrent or not victimCurrent or not isAlive(grip.gripperModel) or not isAlive(grip.victimModel) then
 			GripService.Stop(grip.gripper, "a party is gone")
+			continue
+		end
+		if isDying(grip.gripper) or isDying(grip.victim) then
+			GripService.Stop(grip.gripper, "death scene")
 			continue
 		end
 		local knocked = StatusService.Get(grip.victimModel, "Knocked")

@@ -47,7 +47,7 @@ export type PickUpFacts = {
 	distance: number?, -- nil when a root part is missing
 }
 
-local CARRIER_BLOCKERS = { "Knocked", "Stun", "TrueStun", "Jailed", "Carrying", "Carried" }
+local CARRIER_BLOCKERS = { "Knocked", "Stun", "TrueStun", "Jailed", "Carrying", "Carried", "Gripping" }
 local TARGET_BLOCKERS = { "Jailed", "Carrying", "Carried" }
 
 local CarryService = {}

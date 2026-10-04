@@ -4114,6 +4114,56 @@ local function testGrip(results: { Check })
 		end))
 	end
 
+	-- Every other interrupt: a gripper stunned or jailed, either side dying or replaced, and a gripper
+	-- that takes on a carry (a gripper never also carries).
+	do
+		for index, status in { "Stun", "TrueStun", "Jailed", "Carrying" } do
+			local gripperBody, victimBody, gripper, victim = scenario("Int" .. status, 10000 + index * 100, 10000 + index * 10)
+			GripService.Begin(gripper, victim)
+			StatusService.Apply(gripperBody, status, 5, nil)
+			expect(results, "Grip: a " .. string.lower(status) .. " gripper loses the grip", pollUntil(1, function()
+				return not GripService.IsGripping(gripper)
+			end) and healthOf(victimBody) > 0)
+		end
+
+		local _, deadVictimBody, deadGripper, deadVictim = scenario("DeadVictim", 10500, 10500)
+		GripService.Begin(deadGripper, deadVictim)
+		;(deadVictimBody:FindFirstChildOfClass("Humanoid") :: Humanoid).Health = 0
+		expect(results, "Grip: a victim who dies ends the grip", pollUntil(1, function()
+			return not GripService.IsGripping(deadGripper)
+		end))
+
+		local deadGripperBody, _, deadGripper2, deadVictim2 = scenario("DeadGripper", 10600, 10600)
+		blackDeeds = 0
+		GripService.Begin(deadGripper2, deadVictim2)
+		;(deadGripperBody:FindFirstChildOfClass("Humanoid") :: Humanoid).Health = 0
+		expect(results, "Grip: a gripper who dies ends the grip and pays nothing", pollUntil(1, function()
+			return not GripService.IsGripping(deadGripper2)
+		end) and blackDeeds == 0)
+
+		-- A respawn (or a leave: the same "character is not theirs any more" check) is caught by the tick.
+		local _, _, swapGripper, swapVictim = scenario("Swap", 10700, 10700)
+		GripService.Begin(swapGripper, swapVictim)
+		swapVictim.Character = body("GripSwapNew", Vector3.new(10700, 5, 40))
+		GripService.Tick()
+		expect(results, "Grip: a victim whose character was replaced ends the grip", not GripService.IsGripping(swapGripper))
+
+		-- A gripper cannot pick up a second body (and a third party may rescue the gripped one).
+		local _, _, carryGripper, carryVictim = scenario("NoCarry", 10800, 10800)
+		local spareBody = body("GripSpare", Vector3.new(10800, 5, 4))
+		local spare = standIn("GripSpare", 10802, spareBody)
+		StatusService.Apply(spareBody, "Knocked", 30)
+		GripService.Begin(carryGripper, carryVictim)
+		expect(results, "Grip: a gripper cannot pick up another body", not (CarryService.PickUp(carryGripper, spare)) and GripService.IsGripping(carryGripper))
+		local rescuerBody = body("GripRescuer", Vector3.new(10800, 5, 6))
+		local rescuer = standIn("GripRescuer", 10803, rescuerBody)
+		expect(results, "Grip: a third party can rescue the gripped victim", (CarryService.PickUp(rescuer, carryVictim)))
+		expect(results, "Grip: the rescue ends the grip", pollUntil(1, function()
+			return not GripService.IsGripping(carryGripper)
+		end))
+		CarryService.Drop(rescuer, "test", nil)
+	end
+
 	-- A dummy grips too: no player, no poster, no reward path.
 	do
 		local dummy = body("GripDummy", Vector3.new(9900, 5, 0))
@@ -4139,10 +4189,42 @@ local function testGrip(results: { Check })
 		local reward = BountyService.GripPayout(hunts, hunter, 77, wanted)
 		expect(results, "Grip: the poster holder is paid the bounty", reward ~= nil and reward.copper == 60 and reward.magoi == 40)
 		expect(results, "Grip: the bounty is zeroed and pays only once", wanted.Bounty == 0 and BountyService.GripPayout(hunts, hunter, 77, wanted) == nil)
-		local black = fakeMissionData()
-		local before = black.Progress.BlackRukh
-		RankService.ApplyDeed(black, "Black", rules.BlackRukh)
-		expect(results, "Grip: the deed is Black Rukh, not Gold", black.Progress.BlackRukh == before + rules.BlackRukh and black.Progress.GoldRukh == fakeMissionData().Progress.GoldRukh)
+		-- SettleByGrip end to end through recorders: Black deed, no jail, paid once.
+		local victim = standIn("GripWanted", 77, body("GripWantedBody", Vector3.new(9960, 5, 0)))
+		local victimData = fakeMissionData()
+		victimData.Bounty = 60
+		local hunterData = fakeMissionData()
+		local saves: { [any]: any } = { [victim] = victimData, [hunter] = hunterData }
+		local paid: { string } = {}
+		local originalPorts = BountyService.Ports
+		BountyService.Ports = {
+			getData = function(player: Player)
+				return saves[player]
+			end,
+			copper = function(_player: Player, amount: number, _reason: string)
+				table.insert(paid, "copper:" .. amount)
+			end,
+			magoi = function(_player: Player, amount: number, _reason: string)
+				table.insert(paid, "magoi:" .. amount)
+			end,
+			deed = function(_player: Player, kind: "Gold" | "Black", amount: number)
+				table.insert(paid, kind .. ":" .. amount)
+			end,
+		}
+		local backpack = Instance.new("Folder")
+		backpack.Parent = scratch
+		local tool = BountyService.IssueTool(77, "GripWanted", 60, backpack)
+		BountyService.StartHunt(hunter, tool, 77, Vector3.zero, nil, function(parent: Instance): boolean
+			return parent == backpack
+		end)
+		local jailBefore = victimData.Progress.JailUntil
+		expect(results, "Grip: a hunter without the poster is paid nothing by SettleByGrip", BountyService.SettleByGrip(victim, other) == nil and #paid == 0)
+		local settled = BountyService.SettleByGrip(victim, hunter)
+		expect(results, "Grip: SettleByGrip pays Copper, Magoi and a Black deed", settled ~= nil and table.concat(paid, ",") == "copper:60,magoi:40,Black:1")
+		expect(results, "Grip: SettleByGrip jails nobody and zeroes the bounty", victimData.Progress.JailUntil == jailBefore and victimData.Bounty == 0)
+		expect(results, "Grip: SettleByGrip pays only once", BountyService.SettleByGrip(victim, hunter) == nil and #paid == 3)
+		expect(results, "Grip: the collected hunt is dropped", not BountyService.IsHunting(hunter))
+		BountyService.Ports = originalPorts
 	end
 
 	-- Poster portraits: a ViewportFrame with a script-free clone, rebuilt only when the look changes.

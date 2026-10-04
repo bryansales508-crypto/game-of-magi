@@ -441,13 +441,14 @@ local function rebuildPortrait(poster: Part, portrait: Portrait)
 		end
 	end
 
-	if portrait.clone then
-		portrait.clone:Destroy()
-		portrait.clone = nil
-	end
 	if character == nil then
+		if portrait.clone then
+			portrait.clone:Destroy()
+			portrait.clone = nil
+		end
 		return
 	end
+	-- Nothing is torn down until a replacement is ready, so the poster never shows an empty frame.
 	if character:GetAttribute("Knocked") == true or character:GetAttribute("Carried") == true then
 		scheduleRebuild(poster, portrait)
 		return
@@ -456,6 +457,9 @@ local function rebuildPortrait(poster: Part, portrait: Portrait)
 	if clone == nil then
 		scheduleRebuild(poster, portrait)
 		return
+	end
+	if portrait.clone then
+		portrait.clone:Destroy()
 	end
 	clone.Name = "PortraitClone"
 	clone.Parent = portrait.worldModel
@@ -1106,11 +1110,28 @@ end
 -- Pays `hunter` for `prisoner`'s bounty once: Copper and Magoi, plus `deed` Rukh deeds, zeroes the
 -- bounty and ends every hunt on them. `verb` is the log/ledger wording. The caller has already
 -- settled the prisoner's save (Settle) and checked both saves exist.
+-- Where a payout reads saves and pays. Production uses the real services; the self-test swaps in
+-- recorders because a stand-in player has no save.
+BountyService.Ports = {
+	getData = function(player: Player): Data?
+		return DataService.Get(player)
+	end,
+	copper = function(player: Player, amount: number, reason: string)
+		EconomyService.GiveCopperValue(player, amount, reason)
+	end,
+	magoi = function(player: Player, amount: number, reason: string)
+		RankService.AddMagoi(player, amount, reason)
+	end,
+	deed = function(player: Player, kind: "Gold" | "Black", amount: number)
+		RankService.AddDeed(player, kind, amount)
+	end,
+}
+
 local function collect(prisoner: Player, hunter: Player, reward: Reward, deed: "Gold" | "Black", verb: string): Reward
 	local reason = string.format("%s %s", verb, prisoner.Name)
-	EconomyService.GiveCopperValue(hunter, reward.copper, reason)
-	RankService.AddMagoi(hunter, reward.magoi, reason)
-	RankService.AddDeed(hunter, deed, reward.gold)
+	BountyService.Ports.copper(hunter, reward.copper, reason)
+	BountyService.Ports.magoi(hunter, reward.magoi, reason)
+	BountyService.Ports.deed(hunter, deed, reward.gold)
 
 	dropHuntersOf(prisoner, string.format("%s is no longer wanted.", prisoner.Name), hunter, "Bounty collected.")
 	BountyService.Notify(hunter, "Bounty collected.")
@@ -1126,8 +1147,8 @@ function BountyService.ClearForImprisonment(prisoner: Player, hunter: Player): R
 	if prisoner == hunter then
 		return nil
 	end
-	local prisonerData = DataService.Get(prisoner)
-	if prisonerData == nil or DataService.Get(hunter) == nil then
+	local prisonerData = BountyService.Ports.getData(prisoner)
+	if prisonerData == nil or BountyService.Ports.getData(hunter) == nil then
 		return nil
 	end
 	local reward = BountyService.Settle(prisonerData)
@@ -1144,8 +1165,8 @@ function BountyService.SettleByGrip(victim: Player, hunter: Player): Reward?
 	if victim == hunter then
 		return nil
 	end
-	local victimData = DataService.Get(victim)
-	if victimData == nil or DataService.Get(hunter) == nil then
+	local victimData = BountyService.Ports.getData(victim)
+	if victimData == nil or BountyService.Ports.getData(hunter) == nil then
 		return nil
 	end
 	local reward = BountyService.GripPayout(hunts, hunter, victim.UserId, victimData)
