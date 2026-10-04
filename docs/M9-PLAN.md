@@ -1,10 +1,12 @@
-# M9 plan: Bounty Hunting, the jail, and carrying the knocked out (draft for Bryan, 2026-10-03)
+# M9 plan: Bounty Hunting, the jail, and carrying the knocked out (approved by Bryan 2026-10-03)
+
+> **Bryan's decisions (2026-10-03):** approved as written with two changes. (1) The old jail was time-based; the sentence scales with the bounty, as proposed in section 1.8. (2) **No bounty for knocking someone out** - it could be farmed. In this pass the only crime is intercepting a courier (already live); other crimes come with later systems. Lead defaults for the remaining questions, vetoable: no struggling free while carried; jailing someone with no bounty is refused ("they're not wanted").
 
 Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved until the new combat exists; M9 comes next and grows to three parts: bounties (TRIAGE #26, DESIGN section 3), the **jail** from the old game, and **picking up a knocked-out player** so a hunter can knock out someone with a bounty, carry them to the jail, and have them imprisoned. Nothing below is built until Bryan approves it. Numbers are proposals and go in `Config.Bounty` / `Shared/Data/Bounty.luau`.
 
 ## 1. The loop, in plain words
 
-1. **Crimes raise your bounty.** Interception already adds to `Bounty` (M5C). M9 adds: knocking out a player who has no bounty (assault), and later any crime the design names. Each crime adds a fixed amount; `Bounty` is a number on the save, visible as a player attribute.
+1. **Crimes raise your bounty.** Interception already adds to `Bounty` (M5C). No bounty for knocking people out (Bryan: farmable); later systems add their own crimes. `Bounty` is a number on the save, visible as a player attribute; `.bounty <n> [player]` sets it for testing.
 2. **The wanted list.** A `BountyBoard` model per city (Bryan places them, like the delivery boards). Click it: a list of everyone online with a bounty above the posting threshold, their bounty, their last known city (from RegionController's current region, reported by the server every so often, not live tracking). Rank gate: you need **Adventurer** to take a bounty; anyone can read the board.
 3. **Take a bounty.** Pick a name: you get a quest-line entry and a tracker that points at their last known city (not at the player). While you hold it, you are not a criminal for knocking them out.
 4. **Knock them out.** Combat as it runs today (shelved design, but knockout works). A knocked-out player lies ragdolled for `Combat.Knockout.getUpSeconds`.
@@ -25,8 +27,7 @@ Bryan's direction (2026-10-03): M8 (talking NPCs and the tutorial) is shelved un
 
 | Knob | Proposal | Why |
 |---|---|---|
-| Crime: knock out an innocent | +15 bounty | A couple of assaults make you worth hunting |
-| Crime: intercept a courier | existing | unchanged |
+| Crime: intercept a courier | existing | the only crime in this pass (Bryan: no bounty for knockouts, farmable) |
 | Posting threshold | 20 | Below it you're a nuisance, not wanted |
 | Rank gate to take a bounty | Adventurer (100 Magoi) | DESIGN table |
 | Carry speed | 0.6 of walk, no run/dash | Carrying someone is slow and risky |

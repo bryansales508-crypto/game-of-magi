@@ -27,7 +27,7 @@ export type PayFailure = "no" | "convert"
 local EconomyService = {}
 
 -- ==================== flavour lines (old MarketHandler, generalized) ====================
--- Flavour lines (ForcedChat pools), generalized to name whichever coin the price needed.
+-- Flavour lines, generalized to name whichever coin the price needed.
 
 local NEED_MONEY_LINES = {
 	"I need more money...",
