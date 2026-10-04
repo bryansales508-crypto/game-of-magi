@@ -294,6 +294,12 @@ function BountyService.WatchTool(tool: Tool, isHeldAt: (parent: Instance) -> boo
 	end)
 end
 
+-- Calls `onDied` once when `humanoid` dies. A hunter's death costs them the poster (a knockout
+-- does not: it never reaches Humanoid.Died).
+function BountyService.WatchDeath(humanoid: Humanoid, onDied: () -> ()): RBXScriptConnection
+	return humanoid.Died:Once(onDied)
+end
+
 -- ==================== board and posters ====================
 
 local function posterFolder(): Folder
@@ -784,6 +790,16 @@ function BountyService.Take(hunter: Player, targetUserId: number): (boolean, str
 			BountyService.Drop(hunter, "You lost the bounty.")
 		end)
 	)
+	local hunterHumanoid = if hunter.Character then hunter.Character:FindFirstChildOfClass("Humanoid") else nil
+	if hunterHumanoid then
+		table.insert(
+			hunt.connections,
+			BountyService.WatchDeath(hunterHumanoid, function()
+				BountyService.Notify(hunter, "You lost the poster.")
+				BountyService.Drop(hunter, "You died and lost the poster.")
+			end)
+		)
+	end
 	local function onEquipChange()
 		task.defer(trackOne, hunter, hunt, false)
 	end

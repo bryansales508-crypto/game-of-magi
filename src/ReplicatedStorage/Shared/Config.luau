@@ -316,7 +316,7 @@ Config.Bounty = {
 		RefreshSeconds = 0.5,
 		DropDistance = 4,
 	},
-	-- The jail (JailService). Sentence = bounty * SecondsPerBountyPoint clamped to MinSeconds..MaxSeconds. A prisoner outside the cell bounds is put back, checked every TickSeconds. PlaceholderOffset: where the placeholder cell (used only when no real jail is found) sits from the city's region centre; CellRadius is the placeholder's equivalent of the bounds.
+	-- The jail (JailService). Sentence = bounty * SecondsPerBountyPoint clamped to MinSeconds..MaxSeconds. A prisoner outside the cell bounds is put back, checked every TickSeconds. PlaceholderOffset: where the placeholder cell (used only when no real jail is found) sits from the city's region centre.
 	Jail = {
 		-- Bryan's jail: the first Workspace descendant named JailFolderName that has a DropoffName part and a CellFolderName folder holding a SpawnName part. The cell's bounds are every part under CellFolderName, grown by BoundsMargin studs; leaving them (or being teleported out) puts the prisoner back at the spawn.
 		JailFolderName = "Jail",
@@ -329,7 +329,6 @@ Config.Bounty = {
 		SecondsPerBountyPoint = 6,
 		MinSeconds = 60,
 		MaxSeconds = 600,
-		CellRadius = 12,
 		TickSeconds = 1,
 		PlaceholderOffset = Vector3.new(40, 0, 40),
 	},

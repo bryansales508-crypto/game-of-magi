@@ -41,6 +41,9 @@ local Combat = require(ReplicatedStorage.Shared.Data.Combat)
 local Cities = require(ReplicatedStorage.Shared.Data.Cities)
 local MissionService = require(script.Parent.MissionService)
 local BountyService = require(script.Parent.BountyService)
+local CarryService = require(script.Parent.CarryService)
+local JailService = require(script.Parent.JailService)
+local JailData = require(ReplicatedStorage.Shared.Data.Jail)
 local BountyData = require(ReplicatedStorage.Shared.Data.Bounty)
 local WorldClockService = require(script.Parent.WorldClockService)
 local CollisionService = require(script.Parent.CollisionService)
@@ -3405,6 +3408,23 @@ local function testBounty(results: { Check })
 		end))
 	end
 
+	-- A hunter's death is its own event (a knockout is not).
+	do
+		local character = Instance.new("Model")
+		local humanoid = Instance.new("Humanoid")
+		humanoid.Parent = character
+		character.Parent = scratch
+		local deaths = 0
+		BountyService.WatchDeath(humanoid, function()
+			deaths += 1
+		end)
+		humanoid.Health = 0
+		expect(results, "Bounty: a hunter's death is reported", pollUntil(1, function()
+			return deaths == 1
+		end))
+		character:Destroy()
+	end
+
 	-- Tracking transitions with fake positions.
 	do
 		local reach, reveal, lose = Config.Bounty.Tracking.ReachStuds, Config.Bounty.Tracking.RevealStuds, Config.Bounty.Tracking.LoseSeconds
@@ -3449,6 +3469,181 @@ local function testBounty(results: { Check })
 		expect(results, "Bounty: losing a moving target marks their last seen spot", not moving.revealed and moving.lastKnown == seenAt)
 	end
 
+	scratch:Destroy()
+end
+
+-- Carrying a knocked-out player and the jail: fake bodies and stand-in players in a scratch
+-- folder; the jail is found in a fake folder with the real structure.
+local function testCarryAndJail(results: { Check })
+	local scratch = Instance.new("Folder")
+	scratch.Name = "SelfTestCarry"
+	scratch.Parent = Workspace
+
+	local function body(name: string, position: Vector3): Model
+		local model = Instance.new("Model")
+		model.Name = name
+		local root = Instance.new("Part")
+		root.Name = "HumanoidRootPart"
+		root.Size = Vector3.new(2, 2, 1)
+		root.Anchored = true
+		root.CanCollide = false
+		root.CFrame = CFrame.new(position)
+		root.Parent = model
+		local torso = Instance.new("Part")
+		torso.Name = "Torso"
+		torso.Size = Vector3.new(2, 2, 1)
+		torso.Anchored = true
+		torso.CFrame = CFrame.new(position)
+		torso.Parent = model
+		local humanoid = Instance.new("Humanoid")
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.Parent = model
+		model.Parent = scratch
+		StatusService.Register(model)
+		MovementService.Register(model, nil)
+		return model
+	end
+	local function standIn(name: string, userId: number, character: Model): Player
+		return ({ Name = name, UserId = userId, Character = character } :: any) :: Player
+	end
+
+	local carrierBody = body("SelfTestCarrier", Vector3.new(8000, 5, 0))
+	local targetBody = body("SelfTestCarried", Vector3.new(8000, 5, 3))
+	local carrier = standIn("SelfTestCarrier", 9001, carrierBody)
+	local target = standIn("SelfTestCarried", 9002, targetBody)
+	local knockedFor = Combat.Knockout.getUpSeconds
+	local rules = Config.Bounty.Carry
+	local targetRoot = targetBody:FindFirstChild("HumanoidRootPart") :: Part
+
+	expect(results, "Carry: a standing target cannot be picked up", not (CarryService.PickUp(carrier, target)))
+	StatusService.Apply(targetBody, "Knocked", 0.3)
+	expect(results, "Carry: you cannot carry yourself", not (CarryService.PickUp(carrier, carrier)))
+
+	local farBody = body("SelfTestFar", Vector3.new(8000, 5, 40))
+	local far = standIn("SelfTestFar", 9003, farBody)
+	StatusService.Apply(farBody, "Knocked", 5)
+	expect(results, "Carry: a target out of reach cannot be picked up", not (CarryService.PickUp(carrier, far)))
+
+	StatusService.Apply(carrierBody, "Knocked", 5)
+	expect(results, "Carry: a knocked-out carrier cannot pick anyone up", not (CarryService.PickUp(carrier, target)))
+	StatusService.Remove(carrierBody, "Knocked")
+
+	expect(results, "Carry: a knocked-out player in reach can be picked up", (CarryService.PickUp(carrier, target)))
+	expect(results, "Carry: the carrier is Carrying and the target Carried", StatusService.Has(carrierBody, "Carrying") and StatusService.Has(targetBody, "Carried"))
+	expect(results, "Carry: the target is welded to the carrier", targetRoot:FindFirstChild("CarryWeld") ~= nil and CarryService.GetCarried(carrier) == target)
+	expect(results, "Carry: a carrier cannot run", MovementService.SetRunning(carrierBody, true) == false)
+	expect(results, "Carry: a carrier cannot dash", MovementService.Dash(carrierBody, 0, 1) == false)
+	expect(results, "Carry: a carrier cannot be picked up or pick up again", not (CarryService.PickUp(carrier, far)))
+	local walk = carrierBody:FindFirstChildOfClass("Humanoid") :: Humanoid
+	expect(results, "Carry: a carrier walks at the carrying speed", math.abs(walk.WalkSpeed - 16 * rules.SpeedMult) < 0.5)
+
+	CombatService.Register(carrierBody, nil, "Fist")
+	carrierBody:SetAttribute("InCombat", true)
+	expect(results, "Carry: a carrier cannot attack", CombatService.AttackStart(carrierBody) == false)
+
+	-- Knocked outlasts its own duration while carried.
+	for _ = 1, 10 do
+		task.wait(0.1)
+		CarryService.RefreshCarried()
+	end
+	local info = StatusService.Get(targetBody, "Knocked")
+	expect(results, "Carry: a carried target stays Knocked past their original get-up time", info ~= nil and info.expiresAt ~= nil and (info.expiresAt :: number) - os.clock() > knockedFor - 1)
+
+	expect(results, "Carry: Drop ends the carry", CarryService.Drop(carrier, "test", nil) and not CarryService.IsCarrying(carrier))
+	expect(results, "Carry: Drop removes the statuses and the weld", not StatusService.Has(carrierBody, "Carrying") and not StatusService.Has(targetBody, "Carried") and targetRoot:FindFirstChild("CarryWeld") == nil)
+	local after = StatusService.Get(targetBody, "Knocked")
+	local remaining = if after and after.expiresAt then (after.expiresAt :: number) - os.clock() else -1
+	expect(results, "Carry: a dropped target stays Knocked for the grace seconds", remaining > 0 and remaining <= rules.GraceSeconds + 0.1 and remaining > rules.GraceSeconds - 1)
+	expect(results, "Carry: a carrier runs again after dropping", MovementService.SetRunning(carrierBody, true) == true)
+	MovementService.SetRunning(carrierBody, false)
+	expect(results, "Carry: a carrier can attack again after dropping", CombatService.AttackStart(carrierBody) == true)
+	CombatService.AttackCancel(carrierBody)
+
+	-- A carrier who is knocked out puts the target down.
+	StatusService.Apply(targetBody, "Knocked", 30)
+	CarryService.PickUp(carrier, target)
+	StatusService.Apply(carrierBody, "Knocked", 5)
+	expect(results, "Carry: a knocked-out carrier drops their burden", pollUntil(1, function()
+		return not CarryService.IsCarrying(carrier)
+	end))
+
+	-- Jail rules.
+	do
+		expect(results, "Jail: delivery needs a carried player", not (JailService.CheckDeliver(false, true, true, true)))
+		expect(results, "Jail: delivery needs a jail dropoff", not (JailService.CheckDeliver(true, false, true, true)))
+		expect(results, "Jail: delivery needs the carried player to be the hunter's bounty", not (JailService.CheckDeliver(true, true, false, true)))
+		expect(results, "Jail: an unwanted prisoner is refused", not (JailService.CheckDeliver(true, true, true, false)))
+		expect(results, "Jail: a wanted bounty target at the dropoff is accepted", (JailService.CheckDeliver(true, true, true, true)))
+		expect(results, "Jail: only the person the bounty is on counts", JailService.IsHunted(5, 5) and not JailService.IsHunted(5, 6) and not JailService.IsHunted(nil, 6))
+	end
+
+	-- Sentence maths and the save.
+	do
+		local rulesJail = Config.Bounty.Jail
+		expect(results, "Jail: a small bounty serves the minimum", JailData.SentenceSeconds(1) == rulesJail.MinSeconds)
+		expect(results, "Jail: a mid bounty serves bounty x seconds per point", JailData.SentenceSeconds(30) == 30 * rulesJail.SecondsPerBountyPoint)
+		expect(results, "Jail: a huge bounty serves the maximum", JailData.SentenceSeconds(100000) == rulesJail.MaxSeconds)
+
+		local data = fakeMissionData()
+		data.Progress.JailUntil = 0
+		JailService.ApplyImprison(data, 90, 1000)
+		expect(results, "Jail: imprisoning sets JailUntil from now", data.Progress.JailUntil == 1090 and JailData.IsServing(data.Progress.JailUntil, 1000))
+		expect(results, "Jail: a rejoin mid-sentence is still serving (spawns in the cell)", JailData.IsServing(data.Progress.JailUntil, 1050) and JailData.RemainingSeconds(data.Progress.JailUntil, 1050) == 40)
+		expect(results, "Jail: a finished sentence is not serving", not JailData.IsServing(data.Progress.JailUntil, 1090))
+		expect(results, "Jail: release clears JailUntil once", JailService.ApplyRelease(data) and data.Progress.JailUntil == 0 and not JailService.ApplyRelease(data))
+	end
+
+	-- Bryan's jail found by its real structure: eight parts all named Jail1, bars, a spawn, a dropoff.
+	do
+		local names = Config.Bounty.Jail
+		local jail = Instance.new("Folder")
+		jail.Name = names.JailFolderName
+		local dropoff = Instance.new("Part")
+		dropoff.Name = names.DropoffName
+		dropoff.Anchored = true
+		dropoff.Size = Vector3.new(24.5, 1, 20.5)
+		dropoff.CFrame = CFrame.new(9000, 197, 0)
+		dropoff.Parent = jail
+		local cell = Instance.new("Folder")
+		cell.Name = names.CellFolderName
+		cell.Parent = jail
+		for i = 1, 8 do
+			local wall = Instance.new("Part")
+			wall.Name = "Jail1"
+			wall.Anchored = true
+			wall.Size = Vector3.new(10, 10, 1)
+			wall.CFrame = CFrame.new(9000 + (i - 4.5) * 5, 230, 0) * CFrame.Angles(0, math.rad(i * 10), 0)
+			wall.Parent = cell
+		end
+		local spawn = Instance.new("Part")
+		spawn.Name = names.SpawnName
+		spawn.Anchored = true
+		spawn.CFrame = CFrame.new(9000, 223, 0)
+		spawn.Parent = cell
+		local decoy = Instance.new("Folder")
+		decoy.Name = names.JailFolderName
+		decoy.Parent = scratch
+		jail.Parent = scratch
+
+		local site = JailService.FindJail(scratch)
+		expect(results, "Jail: Bryan's jail is found by folder, dropoff and spawn names", site ~= nil and site.spawn == spawn and site.dropoff == dropoff)
+		if site then
+			expect(results, "Jail: a point inside the cell is inside the bounds", JailService.Contains(site.bounds, Vector3.new(9000, 225, 0)))
+			expect(results, "Jail: the margin grows the bounds past the walls", JailService.Contains(site.bounds, Vector3.new(site.bounds.max.X - 0.5, 225, 0)) and not JailService.Contains(site.bounds, Vector3.new(site.bounds.max.X + 0.5, 225, 0)))
+			expect(results, "Jail: a point far outside is out of bounds", not JailService.Contains(site.bounds, Vector3.new(9000, 197, 0)) and not JailService.Contains(site.bounds, Vector3.new(9200, 225, 0)))
+			expect(results, "Jail: standing on the dropoff is within reach", JailService.SiteNear(Vector3.new(9010, 200, 8), { site }) == site)
+			expect(results, "Jail: far from the dropoff is not", JailService.SiteNear(Vector3.new(9100, 200, 0), { site }) == nil)
+		end
+		jail:Destroy()
+		decoy:Destroy()
+		expect(results, "Jail: no jail folder means no real site", JailService.FindJail(scratch) == nil)
+	end
+
+	StatusService.Unregister(carrierBody)
+	StatusService.Unregister(targetBody)
+	StatusService.Unregister(farBody)
+	CombatService.Unregister(carrierBody)
 	scratch:Destroy()
 end
 
@@ -3668,6 +3863,7 @@ function SelfTestService:Start()
 		testLifeService(collected)
 		testMissionService(collected)
 		testBounty(collected)
+		testCarryAndJail(collected)
 		testWorld(collected)
 		return collected
 	end)
