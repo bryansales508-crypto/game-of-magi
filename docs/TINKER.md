@@ -74,7 +74,7 @@ Server services live in `ServerScriptService/Server/Services/`, client controlle
 
 ## Gripping and poster portraits
 - `Config.Bounty.Grip`: `ReachStuds` (5) how close to start; `Seconds` (4) how long the choke takes; `TickSeconds` (0.25) how often progress is sent and the victim kept down; `BreakDistance` (3) how far the gripper may be pushed before it breaks; `GraceSeconds` (2) extra knocked time after a broken grip; `BlackRukh` (1) Black deeds per completed grip; `Animations = { Gripper, Victim }` asset ids for the grip poses once Bryan has them.
-- `Config.Npc.Target.gripsOnKnockout` (true): set false and the chasing dummy just stands over a player it knocked out instead of gripping.
+- `Config.Npc.Target.gripsOnKnockout` (true): set false and the chasing dummy just stands over a player it knocked out instead of gripping. `regripCooldownSeconds` (3): how long the dummy waits after a broken grip before gripping again (raise it and a hit buys the victim more time). It only grips players it knocked out itself.
 - `Config.Bounty.Poster.PortraitFov` (30): the portrait camera's field of view (smaller = closer on the face); `PortraitSettleSeconds` (0.75): how long a respawn or clothes change settles before the portrait is redrawn.
 - Test: `.knock` someone, stand next to them, `.grip <name>`; `.grip stop` lets go.
 
