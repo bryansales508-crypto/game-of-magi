@@ -25,6 +25,7 @@ export type City = {
 	image: string, -- rbxassetid:// - every city shares one placeholder
 	personality: string, -- display only
 	safety: number, -- 0-1; > Config.Missions.SafeRouteThreshold = "SafeRoute"
+	hasJail: boolean?, -- JailService gives this city a placeholder cell until a Jail model exists
 }
 
 export type ModifierDef = {
@@ -85,6 +86,7 @@ local cityList: { City } = {
 		image = "rbxassetid://80085994447501",
 		personality = "Busy",
 		safety = 0.9,
+		hasJail = true,
 	},
 	{
 		key = "Sahraqin",

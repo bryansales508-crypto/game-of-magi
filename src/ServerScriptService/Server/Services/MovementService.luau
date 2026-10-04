@@ -28,8 +28,10 @@ local RUN_SPEED = WALK_SPEED * Combat.Run.speedMult
 
 -- Statuses that cancel/forbid Run and Dash (StatusService names). LightStun does not:
 -- light-stunned combatants can still attack and dash.
-local BLOCKS_RUN: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Block = true }
-local BLOCKS_DASH: { [string]: boolean } = { Stun = true, TrueStun = true, Knocked = true, Recovery = true }
+local BLOCKS_RUN: { [string]: boolean } =
+	{ Stun = true, TrueStun = true, Knocked = true, Block = true, Carrying = true, Carried = true, Jailed = true }
+local BLOCKS_DASH: { [string]: boolean } =
+	{ Stun = true, TrueStun = true, Knocked = true, Recovery = true, Carrying = true, Carried = true, Jailed = true }
 
 type Entry = {
 	owner: Player?,

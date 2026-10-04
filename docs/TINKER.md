@@ -65,6 +65,19 @@ Server services live in `ServerScriptService/Server/Services/`, client controlle
 - Placeholder drop-offs: a city with no `<Key>Delivery` part uses its `<Key>REGION` part, or the point in `PlaceholderDeliveryPoints`. A city with neither refuses runs. The tracker points at the real drop-off when it exists.
 - `Tick`: how often arrival, expiry and the beacon are checked.
 
+## Bounty hunting
+- `Config.Bounty.PostingThreshold` (20): the bounty at which a player is wanted (postered, huntable). `RankGateIndex` (3 = Adventurer): the rank needed to take one.
+- `MaxPosters` (8): posters on the board, highest bounty first. `CityRefreshSeconds` (20): how often a wanted player's last known city is re-read.
+- `Tracking.TickSeconds` (1), `ReachStuds` (25), `RevealStuds` (80), `LoseSeconds` (6): how the equipped bounty Tool follows the target (see SYSTEMS.md section 17).
+- `Reward`: `MagoiBase` 25 + bounty / `MagoiDivisor` 4, capped at `MagoiCap` 50; `GoldRukhDeeds` 1. Copper paid equals the bounty.
+- The board: a Part named `BoardName` (QuestBoard, or `BoardAltName` BountyBoard) with a Decal named `FrontDecalName` (frontface); posters go on the decal's face, sized `Poster.Width` x `Height` (shrunk to fit). No board = a placeholder in `Workspace.BountyPlaceholders` at Qarzin.
+
+## Carrying and the jail
+- `Config.Bounty.Carry`: `ReachStuds` (6) how close to pick someone up; `SpeedMult` (0.6) the carrier's walk speed; `GraceSeconds` (4) how long the dropped stay down; `Offset` and `TiltDegrees` where the body rides on the shoulder (tune in Studio); `RefreshSeconds` how often the knockout is renewed; `DropDistance` how far in front a drop lands.
+- `Config.Bounty.Jail`: `JailFolderName`, `DropoffName`, `CellFolderName`, `SpawnName` the names the server looks for (rename here if Bryan renames the parts); `BoundsMargin` (2) grows the cell box; `ReachStuds` (8) from the dropoff zone; `SecondsPerBountyPoint` (6), `MinSeconds` (60), `MaxSeconds` (600): the sentence; `TickSeconds` (1): how often prisoners are checked; `PlaceholderOffset`: where the stand-in cell goes when no real jail exists.
+- `Data/Cities.luau` `hasJail`: which city gets a placeholder jail (Qarzin).
+- Commands: `.jail <seconds> [player]`, `.jail release [player]`, `.carry drop`. To test: knock a player out (`.knock`), stand within 6 studs and send `CarryPickUp` (client prompt comes in M9-03), then `.carry drop`.
+
 ## World
 - Music: `Data/Regions.luau` (per region `priority`, `playlist`, `ambient`, `banner`); `Config.World.Music` has `Volume`, `CrossfadeSeconds`, `RegionPollSeconds`. A region is a part named `<Key>REGION` under `Workspace.Regions`. The music panel and `.music` change the track and volume for you only.
 - Day and night: `Config.World.DayNight` (`DaySeconds`, `NightSeconds`, `DawnHour`, `DuskHour`, `TransitionSeconds`, `LightFadeSeconds`); the four looks are in `Data/DayNight.luau`. Tag a lamp part or model `CityLight` and it lights only at night (`Tag`, `DayMaterial`).
@@ -79,10 +92,11 @@ Combat is shelved and will be redesigned from the top. Its numbers stay where th
 Server commands (`DevService`, checked on the server; `.cmd` lists them):
 - State and saves: `.state`, `.watch on|off`, `.save`, `.fresh` (wipes the save; the coin purse refreshes), `.timescale <n>`, `.mortal on|off`.
 - Life: `.age`, `.age+`, `.birthday`, `.heart [fatal]`, `.lives <n>`, `.kill`.
-- Rank: `.magoi`, `.magoi+`, `.rukh <gold> <black>`, `.rankup`, `.bounty <n>`, `.epithet <text>` or `.epithet clear`.
+- Rank: `.magoi`, `.magoi+`, `.rukh <gold> <black>`, `.rankup`, `.epithet <text>` or `.epithet clear`.
 - Money and shop: `.coins`, `.coins+`, `.price <copper>`, `.pay <coin> <amount>`, `.shop restock|list`.
 - Health: `.hp <n>`, `.tier Idle|Combat|Knocked`.
 - Travel: `.tp <city>` (a city's spawn, else its drop-off or region), `.cities`.
+- Bounty: `.bounty <n> [player]`, `.bounty list`, `.bounty take <player>`, `.bounty drop`, `.bounty clear [player]`.
 - Missions: `.mission start <city>|finish|fail|streak <n>|mark [n]|intercept|log on|off`.
 - World: `.time [0-24 | speed <x> | pause | resume]`.
 - Combat (shelved): `.combat log on|off`, `.knock`, `.stun <s>`, `.weapon Fist|Dagger`, `.style`, `.unlock combat`, `.lock combat`, `.npc list|reset|type`, `.dummy spawn <name>|clear|list`.

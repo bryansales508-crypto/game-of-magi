@@ -41,6 +41,10 @@ export type Data = {
 		Routes: { [string]: number },
 		-- Intercepted mark: +1 each time this player is intercepted mid-delivery; cleared to 0 only by completing a delivery (paid at the reduced rate). See MissionService.OfferMultiplier.
 		Intercepted: number,
+		-- Bounty hunting: UserId of the wanted player this hunter currently holds (BountyService.Take); nil = none. Cleared on load when that player is not online and wanted.
+		Wanted: number?,
+		-- Jail sentence end as an os.time() timestamp; 0 = free. Written by the jail (M9-02); present from v5 so one migration covers M9.
+		JailUntil: number,
 	},
 	Bounty: number,
 	Economy: {
@@ -98,6 +102,7 @@ local template: Data = {
 		DeliveryStreak = 0,
 		Routes = {},
 		Intercepted = 0,
+		JailUntil = 0,
 	},
 	Bounty = 0,
 	Economy = {
@@ -138,6 +143,15 @@ end
 
 -- v4 adds Progress.DeliveryStreak, Routes and Intercepted. A no-op: Profile:Reconcile() already backfills their defaults before Migrate runs.
 SaveSchema.Migrations[4] = function(_data: Data) end
+
+-- v5 adds Progress.Wanted (nil = no target) and Progress.JailUntil (0 = free). Old saves are free and hunting nobody; the guard keeps a partial save (self-test fakes) from erroring.
+SaveSchema.Migrations[5] = function(data: Data)
+	local progress = data.Progress
+	if progress then
+		progress.Wanted = nil
+		progress.JailUntil = 0
+	end
+end
 
 -- Runs every migration from data.Version + 1 up to Config.Data.SchemaVersion, in order. Call Profile:Reconcile() first so a migration can assume its own version's shape.
 function SaveSchema.Migrate(data: Data)

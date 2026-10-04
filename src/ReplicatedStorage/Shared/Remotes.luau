@@ -182,6 +182,44 @@ Remotes.Definitions = {
 		args = {},
 		rate = { count = 3, per = 5 },
 	},
+	-- Bounty hunting (the board and its posters are server-built world objects; there is no board remote). BountyState is server -> client only: `{ target = { userId, name, bounty }?, lastKnown = { x, y, z }?, revealed = boolean, reason? }`, sent when a bounty is taken or dropped (`target` nil, `reason` says why), when the bounty Tool is equipped/unequipped, and every tracking tick while it is equipped and something changed. Its table argument is not shape-checked since outbound calls are never validated. BountyToolEquipped is the client reporting that the bounty Tool went into or out of its hands; the server checks the Tool really is in the character before it acts, and tracking never depends on it.
+	BountyState = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 5 },
+	},
+	-- Server -> client only: `{ text = string }`, a one-line player-facing notice (a refused take, "Bounty collected."). The client shows it as a chat system line.
+	BountyNotice = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 5 },
+	},
+	BountyToolEquipped = {
+		kind = "Event",
+		args = { Validate.boolean() },
+		rate = { count = 4, per = 1 },
+	},
+	-- Carrying a knocked-out player. CarryPickUp names the target by UserId (the server checks knocked, reach, both parties' states); CarryDrop puts them down; JailDeliver hands the carried player to the jail when standing at the dropoff. CarryState is server -> client only, sent to both parties: `{ carrying = { userId, name }?, carriedBy = { userId, name }?, canDeliver = boolean, dropoffPath = string? }` (both nil = a carry just ended; canDeliver/dropoffPath are for the carrier). Refusals are silent except for JailDeliver, whose reason arrives as a BountyNotice.
+	CarryPickUp = {
+		kind = "Event",
+		args = { Validate.number({ min = 1, integer = true }) },
+		rate = { count = 2, per = 1 },
+	},
+	CarryDrop = {
+		kind = "Event",
+		args = {},
+		rate = { count = 2, per = 1 },
+	},
+	CarryState = {
+		kind = "Event",
+		args = {},
+		rate = { count = 3, per = 5 },
+	},
+	JailDeliver = {
+		kind = "Event",
+		args = {},
+		rate = { count = 2, per = 1 },
+	},
 } :: { [string]: RemoteDef }
 
 local NET_FOLDER_NAME = "Net"

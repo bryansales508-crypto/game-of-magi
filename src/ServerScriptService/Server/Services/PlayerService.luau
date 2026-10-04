@@ -119,6 +119,18 @@ local function getSpawnCFrame(): CFrame?
 	return qarzin.CFrame + Vector3.new(0, qarzin.Size.Y / 2 + SPAWN_RAISE_STUDS, 0)
 end
 
+-- Where a player should appear instead of the city spawn (the jail cell while serving a sentence), or nil. One provider; JailService sets it.
+local spawnOverride: ((player: Player) -> CFrame?)? = nil
+
+function PlayerService.SetSpawnOverride(provider: (player: Player) -> CFrame?)
+	spawnOverride = provider
+end
+
+-- The city spawn point (QarzinSpawn), or nil if the map is missing. May yield briefly.
+function PlayerService.GetSpawnCFrame(): CFrame?
+	return getSpawnCFrame()
+end
+
 -- Logs once (never kicks) if this exact character is still "Loading" after
 -- STUCK_LOADING_SECONDS. Stale (silent) if player.Character has moved on.
 local function startStuckWatchdog(player: Player, character: Model)
@@ -155,6 +167,20 @@ local function onCharacterAdded(player: Player, character: Model)
 	local data = DataService.WaitFor(player)
 	if data == nil or player.Parent ~= Players or player.Character ~= character then
 		return
+	end
+
+	-- Needs the save, so it runs after the default placement above.
+	local override: CFrame? = nil
+	if spawnOverride then
+		local okOverride, result = pcall(spawnOverride, player)
+		if okOverride then
+			override = result
+		else
+			log:Warn(string.format("Spawn override failed for %s: %s", player.Name, tostring(result)))
+		end
+	end
+	if override and hrp then
+		character:PivotTo(override)
 	end
 
 	setState(player, "CharacterPlaced")
