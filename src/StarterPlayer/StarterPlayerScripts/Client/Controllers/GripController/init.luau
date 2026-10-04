@@ -14,14 +14,13 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
-local TextChatService = game:GetService("TextChatService")
-local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
 local Config = require(Shared:WaitForChild("Config"))
+local ChatLines = require(script.Parent.ChatLines)
 
 local log = Log.new("GripController")
 local player = Players.LocalPlayer
@@ -33,8 +32,9 @@ local REACH = GripConfig.ReachStuds
 -- Config.Bounty.Grip.Key is the server builder's to add; fall back to G until it exists.
 local configuredKey = (GripConfig :: any).Key
 local GRIP_KEY: Enum.KeyCode = if typeof(configuredKey) == "EnumItem" then configuredKey :: any else Enum.KeyCode.G
+local GRIP_BUTTON = Enum.KeyCode.ButtonY
 local NPC_TAG = "NPC"
-local TICK_TWEEN = TweenInfo.new(0.25, Enum.EasingStyle.Linear)
+local HOLD_SECONDS = 0.15 -- a short hold so the prompt's hold-end event is reliable on touch and gamepad
 
 local GOLD = Color3.fromRGB(239, 187, 65)
 local BLOOD = Color3.fromRGB(150, 10, 10)
@@ -62,6 +62,7 @@ local VICTIM_ARM_OUT = math.rad(35) -- victim's arms slightly out
 
 type Posed = {
 	originals: { [Motor6D]: CFrame },
+	enabled: { [Motor6D]: boolean },
 	track: AnimationTrack?,
 }
 
@@ -79,9 +80,17 @@ local function findMotor(character: Model, parentName: string, motorName: string
 	return if motor and motor:IsA("Motor6D") then motor else nil
 end
 
-local function setC0(entry: Posed, motor: Motor6D?, build: (CFrame) -> CFrame)
+-- `forceEnabled` switches the joint on for this client only: the knockout ragdoll disables the victim's
+-- limb joints, and Enabled is local (it is not sent to the server), so the pose can show.
+local function setC0(entry: Posed, motor: Motor6D?, build: (CFrame) -> CFrame, forceEnabled: boolean?)
 	if not motor then
 		return
+	end
+	if forceEnabled == true then
+		if entry.enabled[motor] == nil then
+			entry.enabled[motor] = motor.Enabled
+		end
+		motor.Enabled = true
 	end
 	local original = entry.originals[motor]
 	if not original then
@@ -125,6 +134,11 @@ local function clearPose(character: Model)
 			motor.C0 = c0
 		end
 	end
+	for motor, wasEnabled in entry.enabled do
+		if motor.Parent then
+			motor.Enabled = wasEnabled
+		end
+	end
 	if entry.track then
 		entry.track:Stop(0.2)
 		entry.track:Destroy()
@@ -132,7 +146,7 @@ local function clearPose(character: Model)
 end
 
 local function poseGripper(character: Model)
-	local entry: Posed = { originals = {}, track = nil }
+	local entry: Posed = { originals = {}, enabled = {}, track = nil }
 	posed[character] = entry
 	local id = GripConfig.Animations.Gripper
 	if id ~= "" then
@@ -152,7 +166,7 @@ local function poseGripper(character: Model)
 end
 
 local function poseVictim(character: Model)
-	local entry: Posed = { originals = {}, track = nil }
+	local entry: Posed = { originals = {}, enabled = {}, track = nil }
 	posed[character] = entry
 	local id = GripConfig.Animations.Victim
 	if id ~= "" then
@@ -162,10 +176,10 @@ local function poseVictim(character: Model)
 	-- Flat on the back (the knockout ragdoll lays them down), arms slightly out.
 	setC0(entry, findMotor(character, "Torso", "Right Shoulder"), function(c0)
 		return rotateAboutPivot(c0, CFrame.Angles(0, 0, VICTIM_ARM_OUT))
-	end)
+	end, true)
 	setC0(entry, findMotor(character, "Torso", "Left Shoulder"), function(c0)
 		return rotateAboutPivot(c0, CFrame.Angles(0, 0, -VICTIM_ARM_OUT))
-	end)
+	end, true)
 end
 
 -- "gripper", "victim" or nil, read from the replicated attributes.
@@ -279,8 +293,8 @@ local function refreshPrompt(other: Player)
 		made.ActionText = "Grip"
 		made.ObjectText = other.DisplayName
 		made.KeyboardKeyCode = GRIP_KEY
-		made.GamepadKeyCode = Enum.KeyCode.ButtonY
-		made.HoldDuration = 0
+		made.GamepadKeyCode = GRIP_BUTTON
+		made.HoldDuration = HOLD_SECONDS
 		made.MaxActivationDistance = REACH
 		made.RequiresLineOfSight = false
 		made.Exclusivity = Enum.ProximityPromptExclusivity.OnePerButton
@@ -393,7 +407,6 @@ local barLabel: TextLabel? = nil
 local dimFrame: Frame? = nil
 local vignetteEdges: { Frame } = {}
 local captionLabel: TextLabel? = nil
-local activeTweens: { Tween } = {}
 
 local function edge(parent: Instance, anchor: Vector2, position: UDim2, size: UDim2, rotation: number): Frame
 	local frame = Instance.new("Frame")
@@ -496,29 +509,19 @@ local function ensureGui(): ScreenGui?
 	return screen
 end
 
-local function tween(instance: Instance, goal: { [string]: any })
-	local made = TweenService:Create(instance, TICK_TWEEN, goal)
-	table.insert(activeTweens, made)
-	made.Completed:Connect(function()
-		local index = table.find(activeTweens, made)
-		if index then
-			table.remove(activeTweens, index)
-		end
-	end)
-	made:Play()
-end
-
-local function cancelTweens()
-	for _, made in activeTweens do
-		made:Cancel()
-	end
-	table.clear(activeTweens)
-end
-
 local function hideScreens()
-	cancelTweens()
 	if gui then
 		gui.Enabled = false
+	end
+	-- Leave the next grip starting from a clean screen.
+	if barFill then
+		barFill.Size = UDim2.fromScale(0, 1)
+	end
+	if dimFrame then
+		dimFrame.BackgroundTransparency = 1
+	end
+	for _, frame in vignetteEdges do
+		frame.BackgroundTransparency = 1
 	end
 	if barFrame then
 		barFrame.Visible = false
@@ -539,7 +542,7 @@ local function showGripping(victim: Person, progress: number)
 	screen.Enabled = true
 	barFrame.Visible = true
 	barLabel.Text = "Gripping " .. victim.name
-	tween(barFill, { Size = UDim2.fromScale(progress, 1) })
+	barFill.Size = UDim2.fromScale(progress, 1)
 end
 
 local function showGripped(gripper: Person, progress: number)
@@ -552,20 +555,45 @@ local function showGripped(gripper: Person, progress: number)
 	captionLabel.Visible = true
 	captionLabel.Text = gripper.name .. " is choking you"
 	-- The knockout blind screen is already up; this darkens further as the choke fills.
-	tween(dimFrame, { BackgroundTransparency = 1 - 0.6 * progress })
+	dimFrame.BackgroundTransparency = 1 - 0.6 * progress
 	local red = math.clamp((progress - 0.5) / 0.5, 0, 1)
 	for _, frame in vignetteEdges do
-		tween(frame, { BackgroundTransparency = 1 - 0.85 * red })
+		frame.BackgroundTransparency = 1 - 0.85 * red
 	end
 end
 
-local function postSystemLine(text: string)
-	local channels = TextChatService:FindFirstChild("TextChannels")
-	local general = channels and channels:FindFirstChild("RBXGeneral")
-	if general ~= nil and general:IsA("TextChannel") then
-		general:DisplaySystemMessage(text)
-	end
-end
+-- Plain lines for the server's stop reasons, per role; reasons not listed (completed, a party is gone,
+-- death scene, dev command, ...) stay silent.
+local GRIPPER_LINES: { [string]: string } = {
+	released = "You let go.",
+	hit = "You were hit.",
+	["moved away"] = "You moved away.",
+	["victim no longer knocked out"] = "They got up.",
+	["victim carried"] = "Someone picked them up.",
+	["victim jailed"] = "They were taken to jail.",
+	["victim left"] = "They left.",
+	["gripper knocked"] = "You were knocked down.",
+	["gripper stun"] = "You were stunned.",
+	["gripper truestun"] = "You were stunned.",
+	["gripper jailed"] = "You were jailed.",
+	["gripper carried"] = "You were picked up.",
+	["gripper carrying"] = "You picked someone up.",
+}
+local VICTIM_LINES: { [string]: string } = {
+	released = "They let go.",
+	hit = "Someone hit them.",
+	["moved away"] = "They moved away.",
+	["victim no longer knocked out"] = "You got up.",
+	["victim carried"] = "Someone picked you up.",
+	["victim jailed"] = "You were taken to jail.",
+	["gripper left"] = "They left.",
+	["gripper knocked"] = "They were knocked down.",
+	["gripper stun"] = "They were stunned.",
+	["gripper truestun"] = "They were stunned.",
+	["gripper jailed"] = "They were jailed.",
+	["gripper carried"] = "They were picked up.",
+	["gripper carrying"] = "They picked someone up.",
+}
 
 local function onGripState(payload: any)
 	if type(payload) ~= "table" then
@@ -580,10 +608,15 @@ local function onGripState(payload: any)
 		showGripped(state.grippedBy, progress)
 	else
 		holding = false
+		-- Which role just ended is known from what was on screen.
+		local wasGripping = barFrame ~= nil and barFrame.Visible
 		hideScreens()
 		local reason = state.reason
-		if type(reason) == "string" and reason ~= "" and reason ~= "completed" then
-			postSystemLine("The grip broke: " .. reason .. ".")
+		if type(reason) == "string" then
+			local line = (if wasGripping then GRIPPER_LINES else VICTIM_LINES)[reason]
+			if line then
+				ChatLines.Post(line)
+			end
 		end
 	end
 	refreshAllPrompts()
@@ -592,8 +625,8 @@ end
 local function onLocalCharacter(character: Model)
 	disconnectAll(localConnections)
 	table.clear(localConnections)
-	-- A new character is gripping and gripped by no one.
-	holding = false
+	-- A new character is gripping and gripped by no one; let go of any grip still held first.
+	releaseGrip()
 	hideScreens()
 	for _, attribute in { "Knocked", "Carried", "Carrying", "Jailed", "Gripping", "Gripped" } do
 		table.insert(
@@ -611,10 +644,12 @@ function GripController:Start()
 
 	-- Letting go of the key breaks the grip; the prompt may be gone by then, so listen globally.
 	UserInputService.InputEnded:Connect(function(input)
-		if input.KeyCode == GRIP_KEY then
+		if input.KeyCode == GRIP_KEY or input.KeyCode == GRIP_BUTTON then
 			releaseGrip()
 		end
 	end)
+	-- Alt-tabbing away mid-hold never delivers the key release.
+	UserInputService.WindowFocusReleased:Connect(releaseGrip)
 
 	player.CharacterAdded:Connect(onLocalCharacter)
 	if player.Character then

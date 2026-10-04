@@ -7,12 +7,12 @@
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TextChatService = game:GetService("TextChatService")
 local UserInputService = game:GetService("UserInputService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Log = require(Shared:WaitForChild("Log"))
 local Remotes = require(Shared:WaitForChild("Remotes"))
+local ChatLines = require(script.Parent.ChatLines)
 
 local log = Log.new("DevController")
 
@@ -307,11 +307,7 @@ function DevController:Start()
 
 		-- The panel is hidden unless opened, so every reply (server or local command)
 		-- also shows as a local-only chat system message.
-		local channels = TextChatService:FindFirstChild("TextChannels")
-		local general = channels and channels:FindFirstChild("RBXGeneral")
-		if general ~= nil and general:IsA("TextChannel") then
-			general:DisplaySystemMessage(text)
-		end
+		ChatLines.Post(text)
 	end
 
 	Remotes.Client.On("DevReply", function(text: any)
